@@ -1,0 +1,127 @@
+name: Release
+
+# Manually triggered from the Actions tab. Validates the requested version, runs the full test
+# suite as a gate, then bumps Project.toml, tags vX.Y.Z, and creates a GitHub Release.
+# No package registry yet — a "release" here is a version bump + git tag + GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version, strict SemVer X.Y.Z (e.g. 0.1.1; a leading 'v' is accepted)"
+        required: true
+        type: string
+
+# Never run two releases at once.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # push the bump commit + tag and create the Release
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need every tag for the monotonic check
+      - id: check
+        env:
+          RAW: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          ver="${RAW#v}"   # strip an optional leading 'v'
+
+          # 1. Strict SemVer X.Y.Z (prerelease/build intentionally not supported yet).
+          if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$RAW' is not a valid version. Expected strict SemVer X.Y.Z (e.g. 0.1.1)."
+            exit 1
+          fi
+          tag="v$ver"
+
+          # 2. The tag must not already exist.
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists — pick a higher version."
+            exit 1
+          fi
+
+          # 3. No going backwards: must be strictly greater than the latest v* tag.
+          latest="$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -n1 || true)"
+          if [[ -n "$latest" ]]; then
+            highest="$(printf '%s\n%s\n' "$latest" "$ver" | sort -V | tail -n1)"
+            if [[ "$ver" == "$latest" || "$highest" != "$ver" ]]; then
+              echo "::error::$ver is not greater than the latest release ($latest)."
+              exit 1
+            fi
+          fi
+
+          # 4. Project.toml must not already be ahead of the requested version.
+          proj="$(grep -E '^version *= *"' Project.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ -n "$proj" && "$proj" != "$ver" ]]; then
+            highestp="$(printf '%s\n%s\n' "$proj" "$ver" | sort -V | tail -n1)"
+            if [[ "$highestp" != "$ver" ]]; then
+              echo "::error::Project.toml version ($proj) is newer than requested ($ver)."
+              exit 1
+            fi
+          fi
+
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"     >> "$GITHUB_OUTPUT"
+          echo "Validated $tag (latest release: ${latest:-none}, Project.toml: ${proj:-none})."
+
+  test:
+    name: Test gate
+    needs: validate
+    uses: ./.github/workflows/CI.yml
+
+  release:
+    name: Tag & release
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "Victor Iheanacho"
+          git config user.email "victor@fyul.com"
+
+      - name: Bump Project.toml version
+        run: |
+          set -euo pipefail
+          perl -i -pe 's/^version\s*=\s*"[^"]*"/version = "$ENV{VERSION}"/' Project.toml
+          grep -E '^version = ' Project.toml
+
+      - name: Commit version bump (if changed)
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Project.toml; then
+            echo "Project.toml already at $VERSION; tagging current HEAD."
+          else
+            git add Project.toml
+            # [skip ci]: the test gate above already validated this tree; the bump only touches the
+            # version string, so a second CI run on the bump commit would be redundant.
+            git commit -m "Release $TAG [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Create and push annotated tag
+        run: |
+          set -euo pipefail
+          git tag -a "$TAG" -m "DynamicsKit $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" --title "$TAG" --generate-notes

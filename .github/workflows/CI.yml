@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:   # lets the release workflow reuse this as a pre-tag gate
 
 # Cancel superseded runs on the same ref (e.g. new push to a PR branch).
 concurrency:
