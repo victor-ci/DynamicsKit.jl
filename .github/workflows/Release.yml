@@ -94,7 +94,7 @@ jobs:
       - name: Configure git identity
         run: |
           git config user.name "Victor Iheanacho"
-          git config user.email "victor@fyul.com"
+          git config user.email "victor.iheanacho@outlook.com"
 
       - name: Bump Project.toml version
         run: |
