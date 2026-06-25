@@ -1,0 +1,6 @@
+.DS_Store
+.idea/
+*.png
+# Library: do NOT commit Manifest.toml — consumers resolve against compat bounds.
+Manifest.toml
+var/

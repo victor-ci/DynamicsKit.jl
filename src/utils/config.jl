@@ -1,0 +1,539 @@
+"""
+Configuration types for analysis algorithms.
+"""
+
+"""
+    BruteForceConfig
+
+Configuration for brute-force bifurcation diagram generation.
+
+# Fields
+- `param_min`: Minimum bifurcation parameter value
+- `param_max`: Maximum bifurcation parameter value
+- `param_steps`: Number of parameter steps
+- `iterations`: Total iterations per parameter value
+- `transient`: Number of initial iterations to discard
+- `param_index`: Which parameter to vary (index into params vector)
+- `fixed_params`: Values for non-varied parameters
+ - `linked_param_indices`: Additional parameter slots that should be set to the same swept value
+ - `min_crossing_time`: Ignore section crossings before this time for continuous-time systems
+"""
+@with_kw struct BruteForceConfig
+    param_min::Float64
+    param_max::Float64
+    param_steps::Int = 400
+    iterations::Int = 500
+    transient::Int = 300
+    param_index::Int = 1
+    fixed_params::Vector{Float64} = Float64[]
+    linked_param_indices::Vector{Int} = Int[]
+    min_crossing_time::Float64 = 1e-6
+    @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BruteForceConfig.min_crossing_time must be finite and >= 0"
+end
+
+"""
+    LyapunovConfig
+
+Configuration for a 1D largest-Lyapunov-Exponent parameter sweep.
+
+# Fields
+- `param_min`, `param_max`, `param_steps`: Bifurcation-parameter sweep range
+- `param_index`: Which parameter to vary
+- `linked_param_indices`: Additional parameter slots set to the same swept value
+- `fixed_params`: Base parameter vector for non-varied parameters
+- `transient`: Steps / Poincare returns discarded before estimation
+- `iterations`: Renormalized steps / returns used for the finite-time estimate
+- `perturbation`: Initial trajectory separation for the two-trajectory estimator
+- `neutral_tolerance`: Absolute exponent threshold used to classify near-neutral samples
+- `divergence_cutoff`: Optional state-amplitude cutoff; `Inf` disables bailout
+- `min_crossing_time`: Ignore section crossings before this time for continuous-time Poincare-return estimation
+"""
+@with_kw struct LyapunovConfig
+    param_min::Float64
+    param_max::Float64
+    param_steps::Int = 400
+    param_index::Int = 1
+    linked_param_indices::Vector{Int} = Int[]
+    fixed_params::Vector{Float64} = Float64[]
+    transient::Int = 150
+    iterations::Int = 300
+    perturbation::Float64 = 1e-8
+    neutral_tolerance::Float64 = 1e-3
+    divergence_cutoff::Float64 = Inf
+    min_crossing_time::Float64 = 1e-6
+    @assert isfinite(param_min) && isfinite(param_max) && param_max >= param_min "LyapunovConfig requires finite param_min/param_max with param_max >= param_min"
+    @assert param_steps >= 1 "LyapunovConfig.param_steps must be >= 1"
+    @assert param_index >= 1 "LyapunovConfig.param_index must be >= 1"
+    @assert all(>=(1), linked_param_indices) "LyapunovConfig.linked_param_indices must be positive indices"
+    @assert transient >= 0 "LyapunovConfig.transient must be >= 0"
+    @assert iterations >= 1 "LyapunovConfig.iterations must be >= 1"
+    @assert isfinite(perturbation) && perturbation > 0.0 "LyapunovConfig.perturbation must be finite and > 0"
+    @assert isfinite(neutral_tolerance) && neutral_tolerance >= 0.0 "LyapunovConfig.neutral_tolerance must be finite and >= 0"
+    @assert isfinite(divergence_cutoff) || divergence_cutoff == Inf "LyapunovConfig.divergence_cutoff must be finite or Inf"
+    @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "LyapunovConfig.min_crossing_time must be finite and >= 0"
+end
+
+"""
+    ContinuationConfig
+
+Configuration for branch continuation via BifurcationKit.
+
+# Fields
+- `p_min`: Minimum bifurcation parameter
+- `p_max`: Maximum bifurcation parameter
+- `ds`: Initial step size (sign determines direction)
+- `dsmax`: Maximum step size
+- `dsmin`: Minimum step size
+- `max_steps`: Maximum continuation steps
+- `newton_tol`: Newton solver tolerance
+- `newton_max_iter`: Maximum Newton iterations
+- `detect_bifurcation`: Bifurcation detection level (0–3)
+- `param_index`: Which parameter to vary
+ - `linked_param_indices`: Additional parameter slots that should follow the same continuation value
+- `a`: PALC step-adaptation aggressiveness factor (BifurcationKit default 0.5; higher allows larger ds changes per step)
+- `detect_fold`: Record fold/limit points in `specialpoint` (BifurcationKit default true)
+- `save_sol_every_step`: Save the full solution every N steps; must be > 0 so `branch.sol` carries full state vectors (needed by re-seeding)
+- `ode_jacobian_method`: Continuous-ODE Poincaré-map derivative method (`:finite_difference` or `:variational`)
+"""
+@with_kw struct ContinuationConfig
+    p_min::Float64
+    p_max::Float64
+    ds::Float64 = 0.01
+    dsmax::Float64 = 0.05
+    dsmin::Float64 = 1e-6
+    max_steps::Int = 1000
+    newton_tol::Float64 = 1e-10
+    newton_max_iter::Int = 25
+    detect_bifurcation::Int = 3
+    param_index::Int = 1
+     linked_param_indices::Vector{Int} = Int[]
+    a::Float64 = 0.5
+    detect_fold::Bool = true
+    save_sol_every_step::Int = 1
+    ode_jacobian_method::Symbol = :finite_difference
+    @assert isfinite(p_min) && isfinite(p_max) && p_max >= p_min "ContinuationConfig requires finite p_min/p_max with p_max >= p_min"
+    @assert isfinite(ds) && ds != 0.0 "ContinuationConfig.ds must be finite and non-zero"
+    @assert isfinite(dsmax) && dsmax > 0.0 "ContinuationConfig.dsmax must be finite and > 0"
+    @assert isfinite(dsmin) && dsmin > 0.0 "ContinuationConfig.dsmin must be finite and > 0"
+    @assert dsmax >= dsmin "ContinuationConfig requires dsmax >= dsmin"
+    @assert max_steps >= 1 "ContinuationConfig.max_steps must be >= 1"
+    @assert isfinite(newton_tol) && newton_tol > 0.0 "ContinuationConfig.newton_tol must be finite and > 0"
+    @assert newton_max_iter >= 1 "ContinuationConfig.newton_max_iter must be >= 1"
+    @assert 0 <= detect_bifurcation <= 3 "ContinuationConfig.detect_bifurcation must be in 0:3"
+    @assert param_index >= 1 "ContinuationConfig.param_index must be >= 1"
+    @assert all(>=(1), linked_param_indices) "ContinuationConfig.linked_param_indices must be positive indices"
+    @assert isfinite(a) && a > 0.0 "ContinuationConfig.a must be finite and > 0"
+    @assert save_sol_every_step > 0 "ContinuationConfig.save_sol_every_step must be > 0"
+    @assert ode_jacobian_method in (:finite_difference, :variational) "ContinuationConfig.ode_jacobian_method must be :finite_difference or :variational"
+end
+
+"""
+    ReseedConfig
+
+Controls automatic re-seeding when a continuation direction terminates prematurely in the
+parameter interior (not at a boundary, and not at a fold PALC already traversed). The branch's
+trailing trajectory is extrapolated, a targeted periodic-skeleton search is run there, and a
+seed of the same period is used to resume continuation. Disabled by default so existing
+continuation behavior is unchanged unless explicitly opted in (the atlas turns it on).
+
+# Fields
+- `enabled`: Master switch (default false)
+- `max_attempts`: Maximum re-seed attempts per continuation direction
+- `trailing_k`: Number of trailing branch points used to extrapolate the trajectory
+- `box_half_width_scale`: Skeleton search-box half-width = scale × trailing-state spread
+- `box_half_width_min`: Floor for the search-box half-width so the box never degenerates
+- `min_progress_dp`: A resumed segment must advance the parameter by at least this …
+- `min_progress_points`: … and add at least this many points, else the attempt is abandoned
+- `circulus_vitiosus_frac`: Abort if a re-seed query lands within this fraction of (p_max−p_min) of the original seed
+- `n_skeleton_initial`: Initial conditions handed to the targeted skeleton search
+"""
+@with_kw struct ReseedConfig
+    enabled::Bool = false
+    max_attempts::Int = 3
+    trailing_k::Int = 5
+    box_half_width_scale::Float64 = 0.5
+    box_half_width_min::Float64 = 1e-3
+    min_progress_dp::Float64 = 1e-4
+    min_progress_points::Int = 3
+    circulus_vitiosus_frac::Float64 = 0.05
+    n_skeleton_initial::Int = 10
+    @assert max_attempts >= 0 "ReseedConfig.max_attempts must be >= 0"
+    @assert trailing_k >= 2 "ReseedConfig.trailing_k must be >= 2"
+    @assert isfinite(box_half_width_scale) && box_half_width_scale >= 0.0 "ReseedConfig.box_half_width_scale must be finite and >= 0"
+    @assert isfinite(box_half_width_min) && box_half_width_min > 0.0 "ReseedConfig.box_half_width_min must be finite and > 0"
+    @assert isfinite(min_progress_dp) && min_progress_dp >= 0.0 "ReseedConfig.min_progress_dp must be finite and >= 0"
+    @assert min_progress_points >= 1 "ReseedConfig.min_progress_points must be >= 1"
+    @assert isfinite(circulus_vitiosus_frac) && circulus_vitiosus_frac >= 0.0 "ReseedConfig.circulus_vitiosus_frac must be finite and >= 0"
+    @assert n_skeleton_initial >= 1 "ReseedConfig.n_skeleton_initial must be >= 1"
+end
+
+"""
+    BasinsConfig
+
+Configuration for basins of attraction computation.
+
+# Fields
+- `bif_param`: Fixed bifurcation parameter value
+- `max_period`: Maximum period to detect
+- `precision`: Tolerance for period detection
+- `iterations`: Total iterations per initial condition
+- `x_min`, `x_max`, `x_steps`: Grid for first state variable (initial condition)
+- `y_min`, `y_max`, `y_steps`: Grid for second state variable (initial condition)
+- `fixed_params`: Full parameter vector (bif_param overrides the relevant entry)
+- `param_index`: Which parameter slot holds the bifurcation parameter
+- `min_crossing_time`: Ignore section crossings before this time for continuous-time systems
+"""
+@with_kw struct BasinsConfig
+    bif_param::Float64
+    max_period::Int = 10
+    precision::Float64 = 1e-4
+    iterations::Int = 1000
+    x_min::Float64
+    x_max::Float64
+    x_steps::Int = 100
+    y_min::Float64
+    y_max::Float64
+    y_steps::Int = 100
+    fixed_params::Vector{Float64} = Float64[]
+    param_index::Int = 1
+    min_crossing_time::Float64 = 1e-6
+    # Which state dimensions the (x, y) grid axes vary, and the full-state fill
+    # for the non-gridded dimensions. Defaults reproduce the original behaviour
+    # (grid dims 1 and 2, all other dims start at 0). `ic_template`, when given,
+    # must have length `state dim`; its x_index / y_index entries are overwritten
+    # by the grid values.
+    x_index::Int = 1
+    y_index::Int = 2
+    ic_template::Vector{Float64} = Float64[]
+    @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BasinsConfig.min_crossing_time must be finite and >= 0"
+end
+
+"""
+    BifurcationMapConfig
+
+Configuration for 2D bifurcation map (two-parameter periodicity sweep).
+
+# Fields
+- `a_min`, `a_max`, `a_steps`: Grid for first bifurcation parameter
+- `b_min`, `b_max`, `b_steps`: Grid for second bifurcation parameter
+- `a_index`, `b_index`: Parameter vector indices for the two swept parameters
+- `a_linked_param_indices`: Additional parameter slots set to the first axis value
+- `b_linked_param_indices`: Additional parameter slots set to the second axis value
+- `max_period`: Maximum period to detect
+- `precision`: Tolerance for period detection
+- `iterations`: Total iterations per grid point
+- `base_params`: Base parameter vector (both swept params override their entries)
+- `divergence_cutoff`: Optional state-amplitude cutoff; `Inf` disables bailout
+- `reuse_neighbor_seeds`: Reuse each grid point's final state as a neighbouring point's initial state
+ - `neighbor_transient`: Optional reduced transient for neighbour-seeded cells after the first cell in a serpentine pass
+ - `neighbor_tile_size_a`, `neighbor_tile_size_b`: Optional tile dimensions for deterministic neighbour traversal; `0` keeps the legacy global sweep
+ - `multistability_initial_points`: Additional fixed initial conditions sampled per parameter cell for opt-in coexistence diagnostics
+ - `lyapunov_enabled`: Compute optional largest-Lyapunov diagnostics for each map cell
+ - `lyapunov_iterations`: Renormalized steps used for Lyapunov estimation; `0` selects an internal default
+ - `lyapunov_transient`: Extra post-classification transient before Lyapunov estimation; `nothing` uses `0`
+ - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation
+ - `lyapunov_neutral_tolerance`: Absolute exponent threshold for neutral/quasiperiodic candidates
+ - `min_crossing_time`: Ignore section crossings before this time for continuous-time maps and Lyapunov-field runs
+ - `adaptive_refinement_enabled`: Refine boundary/low-confidence 2D map cells into a sparse overlay
+ - `adaptive_refinement_max_depth`: Maximum recursive subdivision depth for adaptive refinement
+ - `adaptive_refinement_budget`: Maximum number of extra sparse samples; `0` selects a conservative automatic budget
+ - `adaptive_refinement_min_confidence`: Refine cells with any corner below this confidence; `0` disables this trigger
+ - `adaptive_refinement_confidence_delta`: Refine cells whose corner confidence range exceeds this value; `0` disables this trigger
+"""
+@with_kw struct BifurcationMapConfig
+    a_min::Float64
+    a_max::Float64
+    a_steps::Int = 100
+    b_min::Float64
+    b_max::Float64
+    b_steps::Int = 100
+    a_index::Int = 1
+    b_index::Int = 2
+    a_linked_param_indices::Vector{Int} = Int[]
+    b_linked_param_indices::Vector{Int} = Int[]
+    max_period::Int = 10
+    precision::Float64 = 1e-4
+    iterations::Int = 1000
+    base_params::Vector{Float64} = Float64[]
+    divergence_cutoff::Float64 = Inf
+    reuse_neighbor_seeds::Bool = false
+    neighbor_transient::Union{Nothing, Int} = nothing
+    neighbor_tile_size_a::Int = 0
+    neighbor_tile_size_b::Int = 0
+    multistability_initial_points::Vector{Vector{Float64}} = Vector{Float64}[]
+    lyapunov_enabled::Bool = false
+    lyapunov_iterations::Int = 0
+    lyapunov_transient::Union{Nothing, Int} = nothing
+    lyapunov_perturbation::Float64 = 1e-8
+    lyapunov_neutral_tolerance::Float64 = 1e-3
+    min_crossing_time::Float64 = 1e-6
+    adaptive_refinement_enabled::Bool = false
+    adaptive_refinement_max_depth::Int = 1
+    adaptive_refinement_budget::Int = 0
+    adaptive_refinement_min_confidence::Float64 = 0.0
+    adaptive_refinement_confidence_delta::Float64 = 0.0
+    @assert isnothing(neighbor_transient) || neighbor_transient >= 0 "BifurcationMapConfig.neighbor_transient must be nothing or >= 0"
+    @assert neighbor_tile_size_a >= 0 "BifurcationMapConfig.neighbor_tile_size_a must be >= 0"
+    @assert neighbor_tile_size_b >= 0 "BifurcationMapConfig.neighbor_tile_size_b must be >= 0"
+    @assert isempty(multistability_initial_points) || !reuse_neighbor_seeds "BifurcationMapConfig.multistability_initial_points requires fixed-seed traversal (reuse_neighbor_seeds=false)"
+    @assert all(!isempty, multistability_initial_points) "BifurcationMapConfig.multistability_initial_points cannot contain empty initial-condition vectors"
+    @assert lyapunov_iterations >= 0 "BifurcationMapConfig.lyapunov_iterations must be >= 0"
+    @assert isnothing(lyapunov_transient) || lyapunov_transient >= 0 "BifurcationMapConfig.lyapunov_transient must be nothing or >= 0"
+    @assert isfinite(lyapunov_perturbation) && lyapunov_perturbation > 0.0 "BifurcationMapConfig.lyapunov_perturbation must be finite and > 0"
+    @assert isfinite(lyapunov_neutral_tolerance) && lyapunov_neutral_tolerance >= 0.0 "BifurcationMapConfig.lyapunov_neutral_tolerance must be finite and >= 0"
+    @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BifurcationMapConfig.min_crossing_time must be finite and >= 0"
+    @assert adaptive_refinement_max_depth >= 0 "BifurcationMapConfig.adaptive_refinement_max_depth must be >= 0"
+    @assert adaptive_refinement_budget >= 0 "BifurcationMapConfig.adaptive_refinement_budget must be >= 0"
+    @assert isfinite(adaptive_refinement_min_confidence) && adaptive_refinement_min_confidence >= 0.0 && adaptive_refinement_min_confidence <= 1.0 "BifurcationMapConfig.adaptive_refinement_min_confidence must be finite and in [0, 1]"
+    @assert isfinite(adaptive_refinement_confidence_delta) && adaptive_refinement_confidence_delta >= 0.0 && adaptive_refinement_confidence_delta <= 1.0 "BifurcationMapConfig.adaptive_refinement_confidence_delta must be finite and in [0, 1]"
+    @assert !adaptive_refinement_enabled || !reuse_neighbor_seeds "BifurcationMapConfig.adaptive_refinement_enabled requires fixed-seed traversal (reuse_neighbor_seeds=false)"
+end
+
+"""
+    PhasePortraitConfig
+
+Configuration for continuous-time phase portrait generation.
+
+# Fields
+- `time_start`, `time_stop`: Integration interval
+- `tail_fraction`: Fraction of the trajectory retained for plotting after transient decay
+- `poincare_crossings`: Maximum number of Poincaré section crossings to retain
+- `min_crossing_time`: Ignore section crossings before this time
+- `max_saved_points`: Maximum number of trajectory samples retained from the solver (`0` keeps every saved step)
+- `maxiters`: Maximum ODE solver iterations
+"""
+@with_kw struct PhasePortraitConfig
+    time_start::Float64 = 0.0
+    time_stop::Float64 = 0.02
+    tail_fraction::Float64 = 0.25
+    poincare_crossings::Int = 50
+    min_crossing_time::Float64 = 1e-6
+    max_saved_points::Int = 0
+    maxiters::Int = 10_000_000
+end
+
+"""
+    PowerSpectrumConfig
+
+Configuration for one-sided FFT spectrum estimation from a uniformly sampled time tail.
+
+# Fields
+- `time_start`, `time_stop`: Integration interval
+- `dt`: Uniform sample interval
+- `tail_fraction`: Fraction of the saved signal retained for spectrum estimation
+- `window`: Spectral window (`:hann` or `:none`)
+- `state_index`: State coordinate to analyze
+- `maxiters`: Maximum ODE solver iterations
+"""
+@with_kw struct PowerSpectrumConfig
+    time_start::Float64 = 0.0
+    time_stop::Float64 = 100.0
+    dt::Float64 = 0.05
+    tail_fraction::Float64 = 0.6
+    window::Symbol = :hann
+    state_index::Int = 1
+    maxiters::Int = 10_000_000
+    @assert isfinite(time_start) && isfinite(time_stop) && time_stop > time_start "PowerSpectrumConfig requires finite time_start/time_stop with time_stop > time_start"
+    @assert isfinite(dt) && dt > 0.0 "PowerSpectrumConfig.dt must be finite and > 0"
+    @assert isfinite(tail_fraction) && 0.0 < tail_fraction <= 1.0 "PowerSpectrumConfig.tail_fraction must be in (0, 1]"
+    @assert window in (:hann, :none) "PowerSpectrumConfig.window must be :hann or :none"
+    @assert state_index >= 1 "PowerSpectrumConfig.state_index must be >= 1"
+    @assert maxiters >= 1 "PowerSpectrumConfig.maxiters must be >= 1"
+end
+
+"""
+    Codim2Config
+
+Configuration for codimension-2 bifurcation-curve assembly from a family of
+1D continuation slices.
+
+# Fields
+- `continuation`: Primary-axis continuation settings (`param_index` chooses the
+  primary swept parameter)
+- `second_min`, `second_max`, `second_steps`: Secondary-parameter grid
+- `second_param_index`: Which parameter slot holds the secondary parameter
+- `second_linked_param_indices`: Additional slots tied to the secondary value
+- `fixed_params`: Full base parameter vector when the system has more than two parameters
+- `bifurcation_kind`: Target bifurcation kind (`:pd`, `:fold`, `:ns`; `:hopf` is accepted as an alias for `:ns`)
+- `endpoint_margin`: Reject detected candidates within this distance of the primary continuation endpoints
+- `tracking_tolerance`: Maximum primary-axis jump allowed when stitching neighbouring slice candidates (`nothing` picks a conservative default from the primary range)
+- `tracking_mode`: How per-slice candidates are promoted to the returned curve (`:nearest` stitches a continuous family, `:minimum`/`:maximum` choose an extremal candidate independently on each slice)
+- `anchor_second`: Secondary-parameter value used to seed the stitched curve (`nothing` uses the midpoint of the secondary range)
+- `anchor_candidate_index`: Which sorted candidate to pick on the anchor slice when multiple are present
+- `primary_seed_values`: Optional per-slice primary-parameter seed values used before each continuation slice; when omitted every slice reuses `fixed_params[continuation.param_index]`
+- `primary_min_values`, `primary_max_values`: Optional per-slice primary continuation bounds; when omitted every slice reuses `continuation.p_min` / `continuation.p_max`
+- `diagnostics_max_points`: Maximum branch points sampled when the period-doubling fallback uses branch diagnostics
+- `fallback_to_stability_flips`: When `true`, period-doubling curves fall back to stable/unstable flip detection if BifurcationKit does not emit explicit `:pd` special points
+- `threaded`: Whether independent continuation slices may run across multiple Julia threads; defaults to `false` because the continuation backend should be treated as an explicit opt-in for concurrent slice execution
+"""
+@with_kw struct Codim2Config
+   continuation::ContinuationConfig
+   second_min::Float64
+   second_max::Float64
+    second_steps::Int = 40
+    second_param_index::Int = 2
+    second_linked_param_indices::Vector{Int} = Int[]
+    fixed_params::Vector{Float64} = Float64[]
+    bifurcation_kind::Symbol = :pd
+    endpoint_margin::Float64 = 0.0
+    tracking_tolerance::Union{Nothing, Float64} = nothing
+    tracking_mode::Symbol = :nearest
+    anchor_second::Union{Nothing, Float64} = nothing
+    anchor_candidate_index::Int = 1
+    primary_seed_values::Vector{Float64} = Float64[]
+    primary_min_values::Vector{Float64} = Float64[]
+    primary_max_values::Vector{Float64} = Float64[]
+    diagnostics_max_points::Int = 400
+    fallback_to_stability_flips::Bool = true
+    threaded::Bool = false
+    @assert isfinite(second_min) && isfinite(second_max) && second_max >= second_min "Codim2Config requires finite second_min/second_max with second_max >= second_min"
+    @assert second_steps >= 1 "Codim2Config.second_steps must be >= 1"
+    @assert second_param_index >= 1 "Codim2Config.second_param_index must be >= 1"
+    @assert continuation.param_index != second_param_index "Codim2Config requires different primary and secondary parameter indices"
+    @assert all(>=(1), second_linked_param_indices) "Codim2Config.second_linked_param_indices must be positive indices"
+    @assert bifurcation_kind in (:pd, :fold, :ns, :hopf) "Codim2Config.bifurcation_kind must be :pd, :fold, :ns, or :hopf"
+    @assert isfinite(endpoint_margin) && endpoint_margin >= 0.0 "Codim2Config.endpoint_margin must be finite and >= 0"
+    @assert isnothing(tracking_tolerance) || (isfinite(tracking_tolerance) && tracking_tolerance >= 0.0) "Codim2Config.tracking_tolerance must be nothing or a finite value >= 0"
+    @assert tracking_mode in (:nearest, :minimum, :maximum) "Codim2Config.tracking_mode must be :nearest, :minimum, or :maximum"
+    @assert isnothing(anchor_second) || isfinite(anchor_second) "Codim2Config.anchor_second must be nothing or finite"
+    @assert anchor_candidate_index >= 1 "Codim2Config.anchor_candidate_index must be >= 1"
+    @assert isempty(primary_seed_values) || all(isfinite, primary_seed_values) "Codim2Config.primary_seed_values must be empty or contain only finite values"
+    @assert isempty(primary_min_values) || all(isfinite, primary_min_values) "Codim2Config.primary_min_values must be empty or contain only finite values"
+    @assert isempty(primary_max_values) || all(isfinite, primary_max_values) "Codim2Config.primary_max_values must be empty or contain only finite values"
+    @assert isempty(primary_seed_values) || length(primary_seed_values) == second_steps + 1 "Codim2Config.primary_seed_values must be empty or have length second_steps + 1 ($(second_steps + 1))"
+    @assert isempty(primary_min_values) || length(primary_min_values) == second_steps + 1 "Codim2Config.primary_min_values must be empty or have length second_steps + 1 ($(second_steps + 1))"
+    @assert isempty(primary_max_values) || length(primary_max_values) == second_steps + 1 "Codim2Config.primary_max_values must be empty or have length second_steps + 1 ($(second_steps + 1))"
+    @assert diagnostics_max_points >= 0 "Codim2Config.diagnostics_max_points must be >= 0"
+end
+
+"""
+    AtlasConfig
+
+Configuration scaffold for the automatic continuation atlas workflow.
+
+# Fields
+- `max_period`: Maximum period to classify when `periods` is not supplied explicitly
+- `periods`: Explicit set of periods to target; defaults to `1:max_period`
+- `brute_force`: Optional brute-force sweep settings override
+- `continuation`: Optional continuation settings override
+- `recon_steps`: Number of reconnaissance samples across the parameter window
+- `recon_precision`: Period-classification tolerance used during reconnaissance
+- `adaptive_recon`: Whether to insert extra reconnaissance samples before continuation
+- `adaptive_recon_max_samples`: Maximum number of extra reconnaissance samples
+- `adaptive_recon_max_depth`: Maximum midpoint-refinement passes
+- `adaptive_recon_confidence_threshold`: Periodic samples below this confidence trigger local refinement
+- `adaptive_recon_closure_gradient_factor`: Normalized closure-error jump that triggers refinement
+- `window_min_support`: Minimum number of reconnaissance samples required to keep a candidate window
+- `window_merge_gap`: Maximum number of uncertain samples allowed between compatible windows before merging
+- `seed_points_per_window`: Number of brute-force-derived seed points to keep per candidate window
+- `seed_box_padding`: Fractional padding added around local orbit clouds when building search boxes
+- `skeleton_retry_budget`: Number of targeted skeleton retries per candidate window
+- `continuation_retry_budget`: Number of continuation retries per recovered seed
+- `max_refinement_depth`: Maximum recursive gap-refinement depth
+- `max_total_windows`: Global cap on tracked candidate windows
+- `max_total_branches`: Global cap on recovered branches
+- `coverage_threshold`: Fraction of a window that must be covered before it is considered recovered
+- `branch_switching`: Request limited bifurcation-aware follow-up probes from recorded special points
+- `branch_switching_max_special_points`: Maximum special points to probe per branch
+- `branch_switching_max_branches`: Maximum switched branches to accept per atlas window
+- `branch_switching_window_fraction`: Local continuation half-window as a fraction of the continuation range
+- `branch_switching_perturbation_scale`: State-space search half-width scale around special-point seeds
+- `branch_switching_max_steps`: Maximum continuation steps for each local switched probe
+- `branch_switching_max_seed_candidates`: Maximum perturbed seed hints around each special point
+- `reuse_neighbor_seeds`: Request recycling successful skeleton seeds into nearby recovery attempts
+- `neighbor_seed_max_entries`: Maximum cached seeds per period
+- `neighbor_seed_max_distance_fraction`: Maximum reuse distance as a fraction of the continuation parameter span
+- `neighbor_seed_max_points`: Maximum cached seed hints injected into one recovery attempt
+- `threaded`: Whether atlas substeps may use Julia threads
+- `cache_enabled`: Whether atlas intermediate/final artifacts may be cached
+- `time_budget_s`: Optional wall-clock budget in seconds
+- `reseed`: Targeted re-seed settings for continuation directions that die in the interior (enabled by default; a no-op when branches reach a boundary)
+"""
+@with_kw struct AtlasConfig
+    max_period::Int = 4
+    periods::Vector{Int} = Int[]
+    brute_force::Union{Nothing, BruteForceConfig} = nothing
+    continuation::Union{Nothing, ContinuationConfig} = nothing
+    recon_steps::Int = 80
+    recon_precision::Float64 = 1e-3
+    adaptive_recon::Bool = false
+    adaptive_recon_max_samples::Int = 24
+    adaptive_recon_max_depth::Int = 1
+    adaptive_recon_confidence_threshold::Float64 = 0.35
+    adaptive_recon_closure_gradient_factor::Float64 = 0.75
+    window_min_support::Int = 3
+    window_merge_gap::Int = 1
+    seed_points_per_window::Int = 4
+    seed_box_padding::Float64 = 0.15
+    skeleton_retry_budget::Int = 3
+    continuation_retry_budget::Int = 3
+    max_refinement_depth::Int = 2
+    max_total_windows::Int = 64
+    max_total_branches::Int = 128
+    coverage_threshold::Float64 = 0.75
+    branch_switching::Bool = false
+    branch_switching_max_special_points::Int = 4
+    branch_switching_max_branches::Int = 4
+    branch_switching_window_fraction::Float64 = 0.08
+    branch_switching_perturbation_scale::Float64 = 1e-3
+    branch_switching_max_steps::Int = 120
+    branch_switching_max_seed_candidates::Int = 6
+    auto_refine_sparse_branches::Bool = true
+    auto_refine_max_passes::Int = 1
+    reuse_neighbor_seeds::Bool = false
+    neighbor_seed_max_entries::Int = 64
+    neighbor_seed_max_distance_fraction::Float64 = 0.15
+    neighbor_seed_max_points::Int = 8
+    threaded::Bool = Threads.nthreads() > 1
+    cache_enabled::Bool = true
+    time_budget_s::Union{Nothing, Float64} = nothing
+    reseed::ReseedConfig = ReseedConfig(enabled=true)
+    @assert auto_refine_max_passes >= 0 "AtlasConfig.auto_refine_max_passes must be >= 0"
+end
+
+"""
+    RefinementConfig
+
+Configuration for refining a specific interval of an existing continuation branch
+with finer step sizes to capture missed details.
+
+# Fields
+- `from_param`: Start of the parameter interval to refine
+- `to_param`: End of the parameter interval to refine
+- `ds`: Step size for the refined region (smaller than original)
+- `dsmax`: Maximum step size for the refined region
+- `dsmin`: Minimum step size
+- `max_steps`: Maximum continuation steps for the refined region
+- `newton_tol`: Newton solver tolerance
+- `newton_max_iter`: Maximum Newton iterations
+- `detect_bifurcation`: Bifurcation detection level (0–3)
+- `ode_jacobian_method`: Continuous-ODE Poincaré-map derivative method (`:finite_difference` or `:variational`)
+"""
+@with_kw struct RefinementConfig
+    from_param::Float64
+    to_param::Float64
+    ds::Float64 = 0.001
+    dsmax::Float64 = 0.005
+    dsmin::Float64 = 1e-8
+    max_steps::Int = 2000
+    newton_tol::Float64 = 1e-10
+    newton_max_iter::Int = 25
+    detect_bifurcation::Int = 3
+    a::Float64 = 0.5
+    detect_fold::Bool = true
+    save_sol_every_step::Int = 1
+    ode_jacobian_method::Symbol = :finite_difference
+    @assert isfinite(from_param) && isfinite(to_param) "RefinementConfig requires finite from_param/to_param"
+    @assert from_param != to_param "RefinementConfig requires a non-empty parameter interval"
+    @assert isfinite(ds) && ds > 0.0 "RefinementConfig.ds must be finite and > 0"
+    @assert isfinite(dsmax) && dsmax > 0.0 "RefinementConfig.dsmax must be finite and > 0"
+    @assert isfinite(dsmin) && dsmin > 0.0 "RefinementConfig.dsmin must be finite and > 0"
+    @assert dsmax >= dsmin "RefinementConfig requires dsmax >= dsmin"
+    @assert max_steps >= 1 "RefinementConfig.max_steps must be >= 1"
+    @assert isfinite(newton_tol) && newton_tol > 0.0 "RefinementConfig.newton_tol must be finite and > 0"
+    @assert newton_max_iter >= 1 "RefinementConfig.newton_max_iter must be >= 1"
+    @assert 0 <= detect_bifurcation <= 3 "RefinementConfig.detect_bifurcation must be in 0:3"
+    @assert isfinite(a) && a > 0.0 "RefinementConfig.a must be finite and > 0"
+    @assert save_sol_every_step > 0 "RefinementConfig.save_sol_every_step must be > 0"
+    @assert ode_jacobian_method in (:finite_difference, :variational) "RefinementConfig.ode_jacobian_method must be :finite_difference or :variational"
+end
