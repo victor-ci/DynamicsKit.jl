@@ -344,7 +344,10 @@ field = lyapunov_field(map)
 plot_lyapunov_field(field; zero_contour=true)
 ```
 
-The workbench/API also expose richer diagnostics for status, closure confidence, Lyapunov estimates, multistability, adaptive refinement, and neighbor-seed traversal metadata.
+The sweep functions also return a diagnostics dict with richer information — status, closure
+confidence, Lyapunov estimates, multistability, adaptive refinement, and neighbor-seed traversal
+metadata (e.g. `bifurcation_map` via the lower-level `DynamicsKit._bifurcation_map`, which returns
+`(result, diagnostics)`).
 
 ## Phase portrait
 

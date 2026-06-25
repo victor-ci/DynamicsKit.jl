@@ -2,7 +2,7 @@
 
 Validation in DynamicsKit has two layers:
 
-- software correctness: type checks, tests, serialization, cache invariants, and UI bundle freshness;
+- software correctness: tests, serialization, cache invariants, and package-quality (Aqua) checks;
 - scientific reliability: diagnostics, cross-method comparisons, convergence checks, and benchmark reproducibility.
 
 ## Julia quality gates
@@ -26,47 +26,19 @@ julia --project=. -e 'using Pkg; Pkg.test(test_args=["continuation"])'
 julia --project=. -e 'using Pkg; Pkg.test(test_args=["skeleton"])'
 julia --project=. -e 'using Pkg; Pkg.test(test_args=["atlas"])'
 julia --project=. -e 'using Pkg; Pkg.test(test_args=["basins-map-refine"])'
-julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench"])'
-julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench-catalog"])'
-julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench-cache"])'
-julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench-preview"])'
-julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench-sessions"])'
-julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench-slow"])'
+julia --project=. -e 'using Pkg; Pkg.test(test_args=["public-api"])'
 ```
 
-`workbench-slow` is intentionally excluded from the default suite; run it when validating preset-level scientific examples or release candidates.
+Contract/boundary targets: `parameter-mapping`, `accessors-contract`, `kernels-contract`, `cache-hook`.
 
-Threaded workbench/atlas validation:
+Threaded sweep/atlas validation:
 
 ```sh
-JULIA_NUM_THREADS=4 julia --project=. -e 'using Pkg; Pkg.test(test_args=["workbench"])'
+JULIA_NUM_THREADS=4 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-The full suite includes package-quality checks through Aqua.jl.
-
-## Frontend quality gates
-
-```sh
-npm run check:ui
-npm run check:ui:tests
-npm run lint:ui
-npm run test:ui
-npm run build:ui
-```
-
-Combined gate:
-
-```sh
-npm run verify:ui
-```
-
-CI-style bundle freshness:
-
-```sh
-npm run verify:ui:ci
-```
-
-Run these after editing `src/ui/frontend/**/*.ts`. The server serves `src/ui/assets/app.js`, so the bundle must be rebuilt.
+The full suite includes package-quality checks through Aqua.jl, and runs in CI on every push to
+`main` and every pull request (see `.github/workflows/CI.yml`).
 
 ## Scientific validation matrix
 
@@ -110,7 +82,6 @@ Docs are Markdown-only and do not require Julia tests when they are the only cha
 
 - relative links point to existing files;
 - code snippets use current constructor/function names;
-- UI ids match the workbench catalog;
 - benchmark commands run from the repository root;
 - internal-only planning notes are not linked from public user docs.
 

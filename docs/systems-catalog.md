@@ -1,10 +1,12 @@
 # Built-in systems catalog
 
-The package exports built-in constructors for discrete maps and continuous ODE systems. The workbench exposes the same systems with documented parameters, defaults, analysis presets, and supported analysis modes.
+The package exports built-in constructors for discrete maps and continuous ODE systems. The
+`DynamicsKitWorkbench.jl` package exposes the same systems with documented parameters, defaults, and
+presets; the analyses listed below are library capabilities available to any caller.
 
 ## System table
 
-| Workbench id | Constructor | Kind | Parameters | UI analyses |
+| Key | Constructor | Kind | Parameters | Analyses |
 | --- | --- | --- | --- | --- |
 | `henon` | `henon_map()` | Discrete map | `a`, `b` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, basins, 2D map |
 | `buck` | `buck_converter()` | Discrete switching map | `Iref`, `Ein` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, basins, 2D map |
@@ -127,7 +129,10 @@ To add a system to the package:
 
 1. Add a constructor under `src/systems/`.
 2. Include and export it from `src/DynamicsKit.jl`.
-3. Add system tests.
-4. Add a workbench spec with `supportedAnalyses`, `constructorOptions`, `parameterDocs`, `analysisDefaults`, and optional presets.
+3. Add system tests in `test/test_systems.jl`.
+
+To also surface the system in the browser UI, add a catalog spec in the separate
+`DynamicsKitWorkbench.jl` package (`supportedAnalyses`, `constructorOptions`, `parameterDocs`,
+`analysisDefaults`, and optional presets) — that lives with the workbench, not here.
 
 Imported systems used only through the workbench do not need to be included/exported, but they must return a `DynamicalSystem` when loaded in a fresh module.

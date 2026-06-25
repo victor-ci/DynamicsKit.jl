@@ -6,7 +6,6 @@ The `examples/` directory contains executable Julia scripts. This guide shows sm
 
 | Script | Purpose |
 | --- | --- |
-| `examples/workbench.jl` | Launch the browser workbench |
 | `examples/henon_complete.jl` | End-to-end Henon map analysis |
 | `examples/vilnius_oscillator_reference_figures.jl` | Vilnius oscillator reference figures from Ipatovs et al. (2023) |
 | `examples/colpitts_oscillator_parameter_studies.jl` | Colpitts oscillator parameter sweeps, maps, phase portraits, and continuation overlays |
@@ -122,7 +121,8 @@ map = bifurcation_map(sys, BifurcationMapConfig(
 plot_bifurcation_map(map)
 ```
 
-For richer diagnostics, run the same study through the workbench 2D map mode, which surfaces multistability and Lyapunov summaries in the session payload.
+For richer diagnostics, enable `multistability_initial_points` and `lyapunov_enabled` on the
+`BifurcationMapConfig`; the returned diagnostics dict surfaces multistability and Lyapunov summaries.
 
 ## Lyapunov, codim-2, and ODE spectrum snippets
 
@@ -293,7 +293,7 @@ map = bifurcation_map(sys, BifurcationMapConfig(
 ))
 ```
 
-For interactive exploration, use the workbench `mdb-map-a-k-neighbor-preview` preset as a quick starting point and then compare with fixed-seed/multiseed runs.
+Compare fixed-seed runs against neighbor-seeded and multiseed runs to probe multistability.
 
 ## Literature anchors
 
@@ -308,27 +308,12 @@ Several examples are built around established dynamical-systems models:
 | Boost converter | W. C. Y. Chan, C. K. Tse, "Study of bifurcations in current-programmed DC/DC boost converters", *IEEE Trans. Circuits Syst. I* 44(12), 1129-1142 (1997). doi:10.1109/81.645151 |
 | Memristive diode bridge | Q. Xu, Q. Zhang, N. Wang, H. Wu, B. Bao, "An Improved Memristive Diode Bridge-Based Band Pass Filter Chaotic Circuit", *Mathematical Problems in Engineering*, Article ID 2461964 (2017). doi:10.1155/2017/2461964 |
 
-## Workbench preset workflow
+## Defining a system in your own file
 
-```sh
-julia --threads auto,2 --project=. examples/workbench.jl
-```
-
-In the UI:
-
-1. Select a system.
-2. Choose an analysis.
-3. Pick a preset if one is available.
-4. Inspect the applied form values before running.
-5. For atlas sessions, use plot/click/manual selection to preview refinement.
-6. Save the session when the result is meaningful.
-
-## Imported system skeleton
-
-An imported file can define a constructor without editing package source:
+You can define a system constructor in a standalone file without editing package source:
 
 ```julia
-using StaticArrays
+using DynamicsKit, StaticArrays
 
 function logistic_system()
     DiscreteMap(
@@ -338,6 +323,10 @@ function logistic_system()
         "Logistic map",
     )
 end
+
+sys = logistic_system()
+# ... then run brute_force_diagram / continuation_branch / bifurcation_map on `sys`.
 ```
 
-Import it through the workbench, choose `logistic_system` as the constructor, and run brute-force or continuation analyses.
+(The browser workbench, in the separate `DynamicsKitWorkbench.jl` package, can also import such a
+file and run analyses on it interactively.)

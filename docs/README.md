@@ -1,21 +1,22 @@
 # DynamicsKit documentation
 
-This directory is the public documentation catalog for DynamicsKit. The project has two main entry points:
+This directory is the public documentation catalog for **DynamicsKit.jl** — the Julia library for
+scripted bifurcation analysis: parameter sweeps, continuation, atlas discovery, plotting, saving,
+loading, and reproducible experiments.
 
-- a Julia package for scripted analysis, plotting, saving, loading, and reproducible experiments;
-- a local browser workbench for interactive atlas discovery, comparison, refinement, caching, and imported-system experiments.
+> The interactive browser workbench is a **separate package**, `DynamicsKitWorkbench.jl`, which
+> depends on this library. UI/HTTP/frontend instructions live in that repository, not here.
 
 ## Documentation map
 
 | Guide | Use it for |
 | --- | --- |
-| [`setup.md`](setup.md) | Installing Julia dependencies, optional frontend tooling, Docker, threading, tests, and artifact paths |
+| [`setup.md`](setup.md) | Installing Julia dependencies, threading, Docker, tests, and artifact paths |
 | [`julia-package.md`](julia-package.md) | Calling the library directly from Julia scripts and notebooks |
-| [`workbench.md`](workbench.md) | Running and using the local browser UI and HTTP API |
 | [`analysis-methods.md`](analysis-methods.md) | Choosing among brute force, continuation, atlas, skeleton, basins, phase portrait, 2D maps, and refinement |
 | [`scientific-interpretation.md`](scientific-interpretation.md) | Interpreting periods, status codes, multipliers, residuals, Lyapunov diagnostics, multistability, and switching events |
-| [`systems-catalog.md`](systems-catalog.md) | Built-in maps, ODEs, circuit models, parameters, and UI support |
-| [`examples.md`](examples.md) | Existing example scripts plus cookbook snippets for Henon, Ikeda, Rossler, Colpitts, converters, and memristive diode bridge studies |
+| [`systems-catalog.md`](systems-catalog.md) | Built-in maps, ODEs, circuit models, and parameters |
+| [`examples.md`](examples.md) | Example scripts plus cookbook snippets for Henon, Ikeda, Rossler, Colpitts, converters, and memristive diode bridge studies |
 | [`benchmarks.md`](benchmarks.md) | Benchmark commands, metrics, and reporting guidance for cache behavior, threading, reseeding, PALC tuning, and neighbor-seeded maps |
 | [`validation.md`](validation.md) | Regression targets, quality gates, and validation practices |
 
@@ -41,17 +42,6 @@ flowchart LR
     K --> M
     L --> M
 ```
-
-## Which interface should I use?
-
-| Goal | Best entry point |
-| --- | --- |
-| Reproducible batch runs, CI, or papers | Julia package |
-| Interactive exploration and manual refinement | Browser workbench |
-| Parameter presets and built-in systems | Browser workbench |
-| Custom research scripts | Julia package |
-| Imported one-off systems without editing `src/` | Browser workbench import flow |
-| Dense benchmark or validation sweeps | Julia package plus `bench/` scripts |
 
 ## Glossary
 
