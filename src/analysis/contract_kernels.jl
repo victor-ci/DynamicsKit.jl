@@ -43,9 +43,26 @@ const estimate_discrete_map_largest_lyapunov = _estimate_discrete_map_largest_ly
 """    estimate_continuous_poincare_largest_lyapunov(sys::ContinuousODE, params, initial_state, transient, steps, perturbation, divergence_cutoff; solver, reltol, abstol, …)"""
 const estimate_continuous_poincare_largest_lyapunov = _estimate_continuous_poincare_largest_lyapunov
 
-# Groups 5–8 (per-cell Lyapunov recorders, `bifurcation_map_kernel` /
-# `map_adaptive_refinement_diagnostics`, direct-Lyapunov-field validate/record, and
-# `atlas_hidden_period_sample_indices`) reverted to underscore-private under Contract D: the
-# workbench now drives caching through the public `bifurcation_map` / `lyapunov_field` /
-# `basins_of_attraction` sweeps (`cells=` hook), so it no longer reaches these kernels directly.
-# See docs/internal/contracts/contract-d-sweep-cache-hook.md.
+# The per-cell Lyapunov recorders, `map_adaptive_refinement_diagnostics`, and the
+# direct-Lyapunov-field validate/record helpers stay underscore-private: the workbench drives the
+# `lyapunov_field` / `basins_of_attraction` sweeps through their public `cells=` hook and does not
+# reach those kernels directly. See docs/internal/contracts/contract-d-sweep-cache-hook.md.
+
+# --- Group 6: 2D-map kernel ---
+# `bifurcation_map_kernel` is published (not folded into the public `bifurcation_map`) because the
+# public sweep deliberately discards diagnostics and has no `cells=` hook, while the cache layer
+# needs both. `lyapunov_field` / `basins_of_attraction` expose `cells=` directly, so only the map
+# kernel needs a separate tuple-returning entry point.
+"""
+    bifurcation_map_kernel(sys, config::BifurcationMapConfig; initial_point=nothing,
+                           cells=nothing[, solver, reltol, abstol]) -> (BifurcationMapResult, Dict)
+
+Per-cell 2D bifurcation-map kernel. Returns the result **and** the diagnostics dict that the public
+`bifurcation_map` discards, and accepts a pre-seeded `cells::MapCellGrid` so a cache layer can
+compute only the unknown cells in place.
+"""
+const bifurcation_map_kernel = _bifurcation_map
+
+# --- Group 8: atlas hidden-period sampling ---
+"""    atlas_hidden_period_sample_indices(...) — sample indices for atlas hidden-period recovery."""
+const atlas_hidden_period_sample_indices = _atlas_hidden_period_sample_indices

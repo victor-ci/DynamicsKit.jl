@@ -253,3 +253,20 @@ function _deserialize_atlas_result(data::AbstractDict{<:AbstractString, <:Any}; 
         _jsonish_dict(get(data, "diagnostics", Dict{String, Any}()))
     )
 end
+
+# --- Public serialization API ---
+# The JSON-plain wire format for the library's public result types, published as the single source of
+# truth (the workbench's session persistence builds on these rather than carrying its own copies).
+# The per-field sub-helpers above stay private — only these top-level entry points are public.
+"""    serialize_bruteforce_result(result::BruteForceResult) -> Dict — JSON-plain form."""
+const serialize_bruteforce_result = _serialize_bruteforce_result
+"""    deserialize_bruteforce_result(data::AbstractDict) -> BruteForceResult"""
+const deserialize_bruteforce_result = _deserialize_bruteforce_result
+"""    serialize_branch_result(result::BranchResult) -> Dict — columnar JSON-plain form (no BifurcationKit internals)."""
+const serialize_branch_result = _serialize_branch_result
+"""    deserialize_branch_result(data::AbstractDict) -> BranchResult"""
+const deserialize_branch_result = _deserialize_branch_result
+"""    serialize_atlas_result(result::AtlasResult) -> Dict — JSON-plain form."""
+const serialize_atlas_result = _serialize_atlas_result
+"""    deserialize_atlas_result(data::AbstractDict) -> AtlasResult"""
+const deserialize_atlas_result = _deserialize_atlas_result

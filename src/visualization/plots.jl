@@ -871,3 +871,24 @@ function plot_power_spectrum(result::PowerSpectrumResult;
         plot_title=something(title, "$(result.system_name) — Power Spectrum"),
         plot_kwargs...)
 end
+
+# --- Public trace-data helpers ---
+# The data-building helpers behind the Plots recipes, published so consumers (the workbench, custom
+# plotting) can assemble their own trace payloads. Their internal helpers (`_contiguous_runs`,
+# `_phase_state_sqdistance`, `_resolve_continuous_params`) stay private — only these call them.
+"""    branch_plot_traces(sys, br::BranchResult; orbital=1, params, linked_param_indices) — per-phase plot traces."""
+const branch_plot_traces = _branch_plot_traces
+"""    resolve_plot_params(sys, params::Vector{Float64}) -> Vector{Float64}"""
+const resolve_plot_params = _resolve_plot_params
+"""    branch_point_state(point, dim::Int) -> Vector{Float64}"""
+const branch_point_state = _branch_point_state
+"""    orbit_phase_alignment_shift(previous_orbit, orbit) -> Int — phase shift aligning an orbit to its predecessor."""
+const orbit_phase_alignment_shift = _orbit_phase_alignment_shift
+"""    phase_jump_break_indices(values_per_dim; ...) -> Set{Int} — indices where a phase trace should break."""
+const phase_jump_break_indices = _phase_jump_break_indices
+"""    trace_breaks(trace) -> Set{Int} — break indices carried on a trace (empty when absent)."""
+const trace_breaks = _trace_breaks
+"""    codim2_curve_label(result::Codim2CurveResult) -> String"""
+const codim2_curve_label = _codim2_curve_label
+"""    codim2_valid_runs(result::Codim2CurveResult) — the valid runs of a codim-2 curve."""
+const codim2_valid_runs = _codim2_valid_runs
