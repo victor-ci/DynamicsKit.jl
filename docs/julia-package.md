@@ -405,6 +405,41 @@ loaded = load_result("henon_bf.jld2")
 
 Supported result types include `BruteForceResult`, `LyapunovDiagramResult`, `BasinsResult`, `LyapunovFieldResult`, `BifurcationMapResult`, `PhasePortraitResult`, `PowerSpectrumResult`, `Codim2CurveResult`, `BranchResult`, and aggregate result objects.
 
+For a portable **JSON-plain** form (e.g. to embed a result in an HTTP payload or a non-JLD2 store)
+the result types also have dict serializers — `serialize_bruteforce_result` / `serialize_branch_result`
+/ `serialize_atlas_result` (and their `deserialize_*` inverses). Branch points are serialized
+columnar so no fragile `BifurcationKit` internals are persisted.
+
+## Integration API: kernels, effective settings, and diagnostics
+
+These are for callers that drive the analyses programmatically and need more than the headline result
+(the browser workbench is the primary consumer; scripted pipelines may want them too).
+
+- **`bifurcation_map_kernel(sys, config; initial_point=nothing, cells=nothing[, solver, reltol, abstol])`**
+  — like `bifurcation_map` but returns `(result, diagnostics::Dict)` and accepts a pre-seeded
+  `cells::MapCellGrid` so a cache layer can compute only the unknown cells. The public `bifurcation_map`
+  deliberately drops the diagnostics; `lyapunov_field` / `basins_of_attraction` already accept `cells=`
+  directly, so only the map sweep needs a separate kernel entry point.
+
+- **`map_effective_settings(config; na, nb, full_transient)`** — resolves a `BifurcationMapConfig` into
+  the derived settings a sweep actually runs with, in one call:
+  `(; seed_mode, lyapunov_enabled, lyapunov_iterations, lyapunov_transient, multistability_enabled,
+  transient_budget, neighbor_transient, tile_sizes, tile_count)`. `na`/`nb` (grid dimensions, default
+  the config's own) only affect `tile_sizes`/`tile_count`.
+
+- **Diagnostics producers** — the summary dicts the map kernel and atlas assemble, exposed so a consumer
+  can build the same payloads from raw data it already holds:
+  `map_lyapunov_diagnostics`, `map_neighbor_seed_diagnostics`, `poincare_crossing_diagnostics_summary`,
+  and `orbit_geometry_summary`. Each returns a JSON-plain `Dict`. (These are the library's own
+  diagnostics format — the same dicts appear in the kernel's returned `diagnostics`.)
+
+- **Result/branch accessors** — `branch_points(result)`, `trim_branch_to_period`,
+  `collect_distinct_period_branches`, `branch_stability`, `branches_for_skeleton_param`,
+  `is_duplicate_branch`, `poincare_projected`, `splice_refined_continuous_branches`; system accessors
+  `state_dim(sys)` and `switching_events(sys)`; and the trace-data helpers behind the Plots recipes
+  (`branch_plot_traces`, `resolve_plot_params`, `branch_point_state`, `orbit_phase_alignment_shift`,
+  `phase_jump_break_indices`, `trace_breaks`, `codim2_curve_label`, `codim2_valid_runs`).
+
 ## Adding a system in code
 
 Discrete map:
