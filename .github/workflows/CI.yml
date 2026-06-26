@@ -32,6 +32,14 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        with:
+          # `Pkg.test` defaults to `--check-bounds=yes`, which forces a full recompile of the whole
+          # dependency tree in a different config than buildpkg's cached `auto` build (~10 min of the
+          # ~16-min run). `check_bounds: auto` reuses the precompile buildpkg already cached this run;
+          # coverage is off (not collected). The bulk of CI time is now the tests, not precompilation.
+          # NOTE: the input is `check_bounds` (a julia-runtest input) — `julia_args` is NOT a valid input.
+          coverage: false
+          check_bounds: 'auto'
         env:
-          # Exercise the threaded sweep/atlas paths in CI (Manifest is resolved fresh; library policy).
+          # Exercise the threaded sweep/atlas paths in CI.
           JULIA_NUM_THREADS: '4'
