@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write   # let julia-actions/cache prune its own stale caches (avoids 403 + cache bloat)
 
 jobs:
   test:
