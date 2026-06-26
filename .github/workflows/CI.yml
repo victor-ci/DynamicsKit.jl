@@ -16,14 +16,24 @@ permissions:
 
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    # The full suite runs ~16 min sequentially on a 2-core runner, almost entirely in the tests
+    # themselves (buildpkg/precompile is cached to ~10s). Shard it into balanced target groups run as
+    # parallel jobs, so wall-clock is set by the slowest group rather than the whole suite. The groups
+    # together cover every file in test/runtests.jl's ALL_TEST_FILES.
+    name: Julia ${{ matrix.version }} / ${{ matrix.group.name }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         # Lower bound = the declared compat floor; "1" tracks the latest 1.x release.
         version: ['1.11', '1']
-        os: [ubuntu-latest]
+        group:
+          - name: core         # fast: quality (Aqua), systems, parameter mapping, the API contracts
+            targets: "quality systems parameter-mapping accessors-contract kernels-contract cache-hook public-api"
+          - name: sweeps        # threaded brute-force / basins / 2D-map / lyapunov / spectrum / codim2
+            targets: "brute-force lyapunov codim2 spectrum basins-map-refine"
+          - name: continuation  # BifurcationKit-heavy: continuation, skeleton, atlas
+            targets: "continuation skeleton atlas"
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -31,7 +41,9 @@ jobs:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
+      - name: Test (${{ matrix.group.name }})
+        run: julia --color=yes --project=. -e 'using Pkg; Pkg.test(test_args=split(get(ENV, "TEST_TARGETS", "")))'
         env:
-          # Exercise the threaded sweep/atlas paths in CI (Manifest is resolved fresh; library policy).
+          # Several sweep/atlas paths are threaded; exercise them in CI.
           JULIA_NUM_THREADS: '4'
+          TEST_TARGETS: ${{ matrix.group.targets }}
