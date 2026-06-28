@@ -18,6 +18,7 @@ concurrency:
 
 permissions:
   contents: write   # push the bump commit + tag and create the Release
+  actions: write    # CI.yml cache step requests this when reused as the release gate
 
 jobs:
   validate:
