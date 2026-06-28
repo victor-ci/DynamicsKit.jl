@@ -4,3 +4,6 @@
 # Library: do NOT commit Manifest.toml — consumers resolve against compat bounds.
 Manifest.toml
 var/
+
+# Dev scratch notes — local only
+/docs/dev/

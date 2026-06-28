@@ -157,6 +157,46 @@ function _resolve_plot_params(sys::DiscreteMap, params::Vector{Float64})
     error("Pass `params` when phase-expanding branches for $(sys.name), because the plotter needs the fixed parameter values as well.")
 end
 
+"""
+    _branch_stability_flags(sys, br, branch_points; params, linked_param_indices, solver, …) -> Vector{Bool}
+
+Recompute each branch point's stability with the map criterion |μ| ≤ 1, where μ are the
+multipliers of the period-`p` return map DΠ^p. BifurcationKit assesses stability of the
+continuation residual `F = Π^p(x) - x` with its equilibrium convention (Re(λ) < 0). For a
+map fixed point that convention is wrong: a period-doubling sends a multiplier μ → -1, so the
+residual eigenvalue λ = μ - 1 → -2 and never crosses the imaginary axis — the flip (and the
+unstable branch beyond it) is silently missed, while folds (μ → +1 ⟹ λ → 0) are caught. We
+therefore recompute stability from the multipliers directly so post-period-doubling segments
+render as unstable. Falls back to the stored `pt.stable` flag if a point's return fails.
+"""
+function _branch_stability_flags(sys::DynamicalSystem, br::BranchResult,
+                                 branch_points::AbstractVector;
+                                 params::Vector{Float64}=Float64[],
+                                 linked_param_indices::Vector{Int}=Int[],
+                                 solver=Tsit5(),
+                                 reltol::Float64=1e-8,
+                                 abstol::Float64=1e-8,
+                                 tmax::Union{Nothing, Float64}=nothing,
+                                 min_crossing_time::Float64=1e-6)
+    base_params = _resolve_plot_params(sys, params)
+    param_index = something(findfirst(==(br.param_name), sys.param_names), 1)
+    proj_dim = state_dim(sys)
+    period = max(br.period, 1)
+    flags = Vector{Bool}(undef, length(branch_points))
+    for (i, pt) in enumerate(branch_points)
+        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        state = _branch_point_state(pt, proj_dim)
+        flags[i] = try
+            first(_map_stability(sys, state, local_params, period;
+                solver=solver, reltol=reltol, abstol=abstol,
+                tmax=tmax, min_crossing_time=min_crossing_time))
+        catch
+            Bool(pt.stable)
+        end
+    end
+    return flags
+end
+
 """Return the sum of squared coordinate differences and finite-coordinate count for one orbit phase."""
 function _phase_state_sqdistance(a::AbstractVector{<:Real}, b::AbstractVector{<:Real})
     length(a) == length(b) || return Inf, 0
@@ -223,10 +263,13 @@ function _branch_plot_traces(sys::DiscreteMap, br::BranchResult;
                              orbital::Int=1,
                              params::Vector{Float64}=Float64[],
                              linked_param_indices::Vector{Int}=Int[],
+                             recompute_stability::Bool=true,
                              kwargs...)
     branch_points = collect(br.branch.branch)
     pars = Float64[pt.param for pt in branch_points]
-    stab = Bool[pt.stable for pt in branch_points]
+    stab = recompute_stability ?
+        _branch_stability_flags(sys, br, branch_points; params=params, linked_param_indices=linked_param_indices) :
+        Bool[pt.stable for pt in branch_points]
     period = max(br.period, 1)
     if period <= 1
         values = Float64[getproperty(pt, Symbol(:x, orbital)) for pt in branch_points]
@@ -276,12 +319,17 @@ function _branch_plot_traces(sys::ContinuousODE, br::BranchResult;
                              reltol::Float64=1e-8,
                              abstol::Float64=1e-8,
                              tmax::Union{Nothing, Float64}=nothing,
-                             min_crossing_time::Float64=1e-6)
+                             min_crossing_time::Float64=1e-6,
+                             recompute_stability::Bool=true)
     branch_points = collect(br.branch.branch)
     pars = Float64[pt.param for pt in branch_points]
-    stab = Bool[pt.stable for pt in branch_points]
     proj_dim = state_dim(sys)
     period = max(br.period, 1)
+    stab = recompute_stability ?
+        _branch_stability_flags(sys, br, branch_points; params=params,
+            linked_param_indices=linked_param_indices, solver=solver, reltol=reltol,
+            abstol=abstol, tmax=tmax, min_crossing_time=min_crossing_time) :
+        Bool[pt.stable for pt in branch_points]
     if period <= 1
         values = Float64[getproperty(pt, Symbol(:x, orbital)) for pt in branch_points]
         breaks = _phase_jump_break_indices([values])
@@ -444,6 +492,7 @@ function plot_branches(results::Vector{BranchResult};
                        abstol::Float64=1e-8,
                        tmax::Union{Nothing, Float64}=nothing,
                        min_crossing_time::Float64=1e-6,
+                       recompute_stability::Bool=true,
                        unstable_linestyle=:dash,
                        stable_linewidth::Float64=2.2,
                        unstable_linewidth::Float64=1.8,
@@ -467,7 +516,8 @@ function plot_branches(results::Vector{BranchResult};
                 reltol=reltol,
                 abstol=abstol,
                 tmax=tmax,
-                min_crossing_time=min_crossing_time)
+                min_crossing_time=min_crossing_time,
+                recompute_stability=recompute_stability)
 
         for trace in traces
             stable_label = stable_label_pending && _trace_has_stability(trace, true) ? "Stable" : ""
@@ -506,6 +556,7 @@ function plot_overlay(bf_result::BruteForceResult, branch_results::Vector{Branch
                       abstol::Float64=1e-8,
                       tmax::Union{Nothing, Float64}=nothing,
                       min_crossing_time::Float64=1e-6,
+                      recompute_stability::Bool=true,
                       cloud_markersize::Real=1.2,
                       cloud_markeralpha::Real=0.4,
                       cloud_color=:gray25,
@@ -539,7 +590,8 @@ function plot_overlay(bf_result::BruteForceResult, branch_results::Vector{Branch
                 reltol=reltol,
                 abstol=abstol,
                 tmax=tmax,
-                min_crossing_time=min_crossing_time)
+                min_crossing_time=min_crossing_time,
+                recompute_stability=recompute_stability)
 
         for trace in traces
             stable_label = stable_label_pending && _trace_has_stability(trace, true) ? "Stable" : ""
