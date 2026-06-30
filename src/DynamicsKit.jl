@@ -97,7 +97,7 @@ export bifurcation_map_kernel, atlas_hidden_period_sample_indices
 export trim_branch_to_period, collect_distinct_period_branches, branch_stability,
        branches_for_skeleton_param, is_duplicate_branch, poincare_projected
 export branch_points, splice_refined_continuous_branches
-export BranchFamilyAssignment, branch_family_assignments
+export BranchFamilyAssignment, BranchBasinAssignment, branch_family_assignments, branch_basin_assignments
 export map_effective_settings
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
 
