@@ -55,6 +55,7 @@ include("analysis/skeleton.jl")
 include("analysis/atlas.jl")
 include("analysis/contract_kernels.jl")      # Contract B: publish analysis kernels (after defs)
 include("analysis/contract_accessors.jl")   # Contract C: publish result/diagnostics accessors (after defs)
+include("analysis/branch_families.jl")      # conservative orbit-geometry family inference
 include("utils/result_serialization.jl")    # serialize library result types (atlas cache; after Atlas* types)
 
 # Visualization
@@ -96,6 +97,7 @@ export bifurcation_map_kernel, atlas_hidden_period_sample_indices
 export trim_branch_to_period, collect_distinct_period_branches, branch_stability,
        branches_for_skeleton_param, is_duplicate_branch, poincare_projected
 export branch_points, splice_refined_continuous_branches
+export BranchFamilyAssignment, branch_family_assignments
 export map_effective_settings
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
 
