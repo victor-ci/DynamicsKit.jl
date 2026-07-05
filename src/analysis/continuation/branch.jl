@@ -8,6 +8,9 @@ function _default_record(x, p; k...)
     NamedTuple{names}(Tuple(x))
 end
 
+"""Extract a fixed number of recorded state coordinates from a branch point."""
+_branch_point_state(point, dim::Int) = [Float64(getproperty(point, Symbol(:x, i))) for i in 1:dim]
+
 """Lightweight merged continuation result used for complete two-sided branches."""
 struct CombinedBranchResult
     branch::Vector{Any}
@@ -450,9 +453,12 @@ function continuation_branch(sys::ContinuousODE, config::ContinuationConfig, per
         sys, result, base_params, config.linked_param_indices;
         trim_to_minimal_period=trim_to_minimal_period,
         on_trim=on_trim,
+        fd_step=fd_step,
         solver=solver,
         reltol=reltol,
         abstol=abstol,
+        tmax=tmax,
+        ode_jacobian_method=config.ode_jacobian_method,
         min_crossing_time=min_crossing_time
     )
 end
@@ -590,4 +596,3 @@ function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, p
 
     return results
 end
-

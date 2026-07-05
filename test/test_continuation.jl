@@ -43,6 +43,25 @@
         @test minimum(pars) < 0.5
         @test maximum(pars) > 1.0
 
+        base_params = [a0]
+        param_index = something(findfirst(==(result.param_name), sys.param_names), config.param_index)
+        stored_stability = Bool[pt.stable for pt in branch.branch]
+        recomputed_stability = Bool[
+            first(branch_stability(
+                sys,
+                DynamicsKit._branch_point_state(pt, state_dim(sys)),
+                inject_param(base_params, param_index, Float64(pt.param), config.linked_param_indices),
+                result.period
+            ))
+            for pt in branch.branch
+        ]
+        @test stored_stability == recomputed_stability
+        @test any(!, stored_stability)
+
+        restored = DynamicsKit._deserialize_branch_result(DynamicsKit._serialize_branch_result(result))
+        restored_stability = Bool[pt.stable for pt in restored.branch.branch]
+        @test restored_stability == recomputed_stability
+
         # Check that bifurcation points were detected
         @test length(branch.specialpoint) > 0
     end

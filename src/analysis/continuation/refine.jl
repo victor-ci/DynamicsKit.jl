@@ -244,7 +244,10 @@ function _finalize_minimal_period_trim(sys::DynamicalSystem,
                                        trim_to_minimal_period::Bool=false,
                                        on_trim::Union{Nothing, Function}=nothing,
                                        kwargs...)
-    trim_to_minimal_period || return _canonicalize_branch_representatives(sys, branch, base_params, linked_param_indices)
+    if !trim_to_minimal_period
+        canonical = _canonicalize_branch_representatives(sys, branch, base_params, linked_param_indices)
+        return _branch_with_recomputed_stability(sys, canonical, base_params, linked_param_indices; kwargs...)
+    end
     diag_ref = Ref{Any}(nothing)
     trimmed = _trim_branch_to_period(
         sys,
@@ -259,7 +262,8 @@ function _finalize_minimal_period_trim(sys::DynamicalSystem,
         dropped = diag_ref[] isa AbstractDict ? get(diag_ref[], "droppedCount", length(_branch_points(branch))) : length(_branch_points(branch))
         error("Minimal-period trimming removed all $dropped points from the period-$(branch.period) branch of $(branch.system_name); the continued curve is a lower-period alias.")
     end
-    return _canonicalize_branch_representatives(sys, trimmed, base_params, linked_param_indices)
+    canonical = _canonicalize_branch_representatives(sys, trimmed, base_params, linked_param_indices)
+    return _branch_with_recomputed_stability(sys, canonical, base_params, linked_param_indices; kwargs...)
 end
 
 """
@@ -917,6 +921,20 @@ function auto_refine_branch(sys::ContinuousODE, original::BranchResult, base_con
         end
 
         refined = _splice_refined_branches(refined, refined_segments)
+        base_params = _resolve_continuous_params(sys, params)
+        refined = _branch_with_recomputed_stability(
+            sys,
+            refined,
+            base_params,
+            linked_param_indices;
+            fd_step=fd_step,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            tmax=tmax,
+            ode_jacobian_method=current_config.ode_jacobian_method,
+            min_crossing_time=min_crossing_time
+        )
         current_config = ContinuationConfig(
             p_min=current_config.p_min,
             p_max=current_config.p_max,
@@ -945,6 +963,12 @@ intervals with smaller continuation steps, and splice the refined points back in
 function auto_refine_branch(sys::DiscreteMap, original::BranchResult, base_config::ContinuationConfig;
                             params::Vector{Float64}=Float64[],
                             linked_param_indices::Vector{Int}=copy(base_config.linked_param_indices),
+                            fd_step::Float64=1e-6,
+                            solver=nothing,
+                            reltol::Float64=1e-8,
+                            abstol::Float64=1e-8,
+                            tmax::Union{Nothing, Float64}=nothing,
+                            min_crossing_time::Float64=1e-6,
                             max_passes::Int=1,
                             refine_factor::Float64=4.0,
                             gap_factor::Float64=2.5,
@@ -1002,6 +1026,19 @@ function auto_refine_branch(sys::DiscreteMap, original::BranchResult, base_confi
 
         refined = _splice_refined_branches(refined, refined_segments)
         refined = _canonicalize_branch_representatives(sys, refined, base, linked_param_indices)
+        refined = _branch_with_recomputed_stability(
+            sys,
+            refined,
+            base,
+            linked_param_indices;
+            fd_step=fd_step,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            tmax=tmax,
+            ode_jacobian_method=current_config.ode_jacobian_method,
+            min_crossing_time=min_crossing_time
+        )
         current_config = ContinuationConfig(
             p_min=current_config.p_min,
             p_max=current_config.p_max,
@@ -1150,8 +1187,15 @@ function refine_branch(sys::DiscreteMap, original::BranchResult, config::Refinem
     # Inject the start_param into params so _run_discrete_continuation seeds at start_param.
     local_params = _inject_param(params, param_index, start_param, linked_param_indices)
 
-    return _run_discrete_continuation(sys, local_config, period, x0, F, _default_record,
-                                      local_params, reseed, on_reseed)
+    branch = _run_discrete_continuation(sys, local_config, period, x0, F, _default_record,
+                                        local_params, reseed, on_reseed)
+    return _finalize_minimal_period_trim(
+        sys,
+        branch,
+        local_params,
+        linked_param_indices;
+        trim_to_minimal_period=false
+    )
 end
 
 """Newton solver for finding starting point during branch refinement."""

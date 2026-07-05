@@ -139,9 +139,6 @@ function _trace_has_stability(trace, stable::Bool)
     return any(i -> trace.stable[i] == stable && isfinite(trace.values[i]), eachindex(trace.values))
 end
 
-"""Extract the recorded state coordinates stored on a branch point."""
-_branch_point_state(point, dim::Int) = [Float64(getproperty(point, Symbol(:x, i))) for i in 1:dim]
-
 """Resolve plotting parameters so phase-expanded branch traces can reconstruct full orbits."""
 function _resolve_plot_params(sys::ContinuousODE, params::Vector{Float64})
     _resolve_continuous_params(sys, params)

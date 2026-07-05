@@ -617,6 +617,98 @@ function _map_stability(sys::DynamicalSystem,
     return _multipliers_are_stable(multipliers; tol=tol), multipliers
 end
 
+"""Return a recorded continuation point with a corrected `stable` field.
+
+Continuation branch records are stored as `NamedTuple`s by BifurcationKit and by
+the portable serializer. Keep this helper deliberately narrow so stability
+post-processing has one predictable representation instead of silently converting
+arbitrary property-bearing objects.
+"""
+_branch_point_with_stability(point::NamedTuple, stable::Bool) =
+    merge(point, (; stable))
+
+function _branch_point_with_stability(point, _stable::Bool)
+    throw(ArgumentError("Branch stability post-processing expects NamedTuple branch points, got $(typeof(point))."))
+end
+
+function _branch_points_with_recomputed_stability(sys::DynamicalSystem,
+                                                  branch::BranchResult,
+                                                  points::AbstractVector,
+                                                  base_params::AbstractVector,
+                                                  linked_param_indices::Vector{Int};
+                                                  require_state::Bool=true,
+                                                  kwargs...)
+    isempty(points) && return similar(points, 0)
+    param_index = findfirst(==(branch.param_name), sys.param_names)
+    isnothing(param_index) && error("Cannot recompute branch stability: branch parameter '$(branch.param_name)' is not present in system '$(sys.name)' parameters $(collect(sys.param_names)).")
+
+    base = collect(Float64, base_params)
+    projected_dim = state_dim(sys)
+    period = max(branch.period, 1)
+    return map(eachindex(points)) do idx
+        point = points[idx]
+        if !hasproperty(point, :param)
+            return point
+        end
+        has_state = all(i -> hasproperty(point, Symbol(:x, i)), 1:projected_dim)
+        if !has_state
+            require_state && error("Cannot recompute branch stability for $(branch.system_name) period-$(branch.period) point $idx: recorded state fields x1..x$projected_dim are incomplete.")
+            return point
+        end
+        local_params = _inject_param(base, param_index, Float64(point.param), linked_param_indices)
+        state = _branch_point_state(point, projected_dim)
+        try
+            stable, _ = _map_stability(sys, state, local_params, period; kwargs...)
+            return _branch_point_with_stability(point, stable)
+        catch err
+            error("Failed to recompute return-map stability for $(branch.system_name) period-$(branch.period) branch point $idx at $(branch.param_name)=$(point.param): $(_continuation_error_message(err))")
+        end
+    end
+end
+
+function _branch_with_recomputed_stability(sys::DynamicalSystem,
+                                           branch::BranchResult,
+                                           base_params::AbstractVector,
+                                           linked_param_indices::Vector{Int};
+                                           kwargs...)
+    points = _branch_points(branch)
+    updated_points = _branch_points_with_recomputed_stability(
+        sys,
+        branch,
+        points,
+        base_params,
+        linked_param_indices;
+        kwargs...
+    )
+    special_points = try
+        collect(branch.branch.specialpoint)
+    catch
+        Any[]
+    end
+    updated_specials = _branch_points_with_recomputed_stability(
+        sys,
+        branch,
+        special_points,
+        base_params,
+        linked_param_indices;
+        require_state=false,
+        kwargs...
+    )
+    if length(updated_points) == length(points) &&
+       all(updated_points[i] == points[i] for i in eachindex(points)) &&
+       length(updated_specials) == length(special_points) &&
+       all(updated_specials[i] == special_points[i] for i in eachindex(special_points))
+        return branch
+    end
+    return BranchResult(
+        CombinedBranchResult(Vector{Any}(updated_points), Vector{Any}(updated_specials)),
+        branch.period,
+        branch.system_name,
+        branch.param_name,
+        branch.timestamp
+    )
+end
+
 function _map_residual(sys::DiscreteMap,
                        state::AbstractVector,
                        params::AbstractVector,
@@ -695,4 +787,3 @@ end
 function _multiplier_spectrum_payload(values)
     [_multiplier_payload(value) for value in values]
 end
-
