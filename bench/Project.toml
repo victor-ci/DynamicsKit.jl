@@ -1,0 +1,11 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+DynamicsKit = "2afe95f4-12e3-475a-b169-cd848969dbfb"
+PkgBenchmark = "32113eaa-f34f-5b0d-bd6c-c81e245fc73d"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+# Benchmark the local working copy of the library. Manifest.toml is gitignored
+# here (library policy), so this declarative source lets a fresh checkout
+# instantiate bench/ without a committed manifest.
+[sources]
+DynamicsKit = {path = ".."}
