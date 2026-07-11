@@ -309,7 +309,9 @@ function _prepare_seed_points(seed_points::Union{Nothing, AbstractVector},
     for point in seed_points
         raw = collect(Float64, point)
         length(raw) == length(lo) || continue
-        clamped = clamp.(raw, lo, hi)
+        # Broadcasting clamp over static-array bounds yields a SizedVector;
+        # materialize a plain Vector so _push_unique_seed_point! dispatches.
+        clamped = Vector{Float64}(clamp.(raw, lo, hi))
         _push_unique_seed_point!(prepared, clamped, spacing) || continue
         length(prepared) >= max_points && break
     end

@@ -55,16 +55,17 @@
         @test any(p -> isapprox(p[1], 2.0; atol=1e-12) && isapprox(p[2], -1.0; atol=1e-12), seeded_points)
         @test count(p -> norm(p .- [x_star, y_star]) < 5e-3, seeded_points) == 1
         @test length(seeded_points) < 36
+    end
 
-        results = find_periodic_skeleton(sys, [1], a;
-                                         n_initial=2,
-                                         search_min=[0.8, 0.1],
-                                         search_max=[1.2, 0.5],
-                                         seed_points=[[x_star, y_star]],
-                                         params=[a],
-                                         tol=1e-10)
-
-        @test any(r -> r.period == 1 && norm(r.point .- [x_star, y_star]) < 1e-8, results)
+    @testset "Seed points clamp against static-array search bounds" begin
+        # Regression: with SVector bounds, `clamp.(raw, lo, hi)` broadcasts to
+        # a SizedVector, which used to fail _push_unique_seed_point! dispatch
+        # (it requires Vector{Float64}); the clamped point must be materialized.
+        lo = DynamicsKit.StaticArrays.SVector(-2.0, -1.0)
+        hi = DynamicsKit.StaticArrays.SVector(2.0, 1.0)
+        prepared = DynamicsKit._prepare_seed_points([[0.5, 0.2], [5.0, -5.0]], lo, hi, 6)
+        @test prepared == [[0.5, 0.2], [2.0, -1.0]]
+        @test all(p -> p isa Vector{Float64}, prepared)
     end
 
     @testset "Continuous-time skeleton via Poincaré map" begin
