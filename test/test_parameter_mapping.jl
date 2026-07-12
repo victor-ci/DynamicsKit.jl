@@ -1,7 +1,6 @@
-# Contract A — parameter mapping. Freezes the public param-vector mapping API consumed by the
-# workbench. See docs/internal/contracts/contract-a-parameter-mapping.md.
+# Freezes the public param-vector mapping API.
 
-@testset "Contract A — parameter mapping" begin
+@testset "parameter mapping API" begin
     @testset "inject_param non-mutating + linked" begin
         base = [1.0, 2.0, 3.0, 4.0]
         out = inject_param(base, 2, 9.0, [4])

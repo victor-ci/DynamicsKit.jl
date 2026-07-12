@@ -1,32 +1,17 @@
 """
-Contract C — Result & diagnostics accessors. Stable public API consumed by the workbench for
-config-derived ("effective") settings, the diagnostics payload schema, per-cell storage/recorders,
-result extraction, small utilities, and continuation branch post-processing. See
-`docs/internal/contracts/contract-c-result-accessors.md`.
+Public result & diagnostics accessors: config-derived ("effective") settings, diagnostics
+producers, result extraction, and continuation branch post-processing.
 
-Mechanism note: unlike Contract A (which relocated a self-contained family), these definitions stay
-in their home files (`brute_force.jl`, `continuation.jl`) because they are tightly coupled to
-sibling internals there. Here we only *publish* them as `const <public> = <_internal>` bindings (with docstrings); the
-matching `export` statements live in `src/DynamicsKit.jl` ("Exports — result & diagnostics
-accessors (Contract C)" block). The underscore names remain the in-place definitions and keep
-working for internal callers. The file decomposition phase will relocate and canonicalize. Included
-AFTER brute_force/continuation so the underscore functions already exist.
-
-Group 1 (DROP) from the inventory — `_map_lyapunov_enabled`, `_map_multistability_enabled`,
-`_map_lyapunov_transient` — are intentionally NOT published: they are trivial reads of public
-config fields and are deleted when the workbench migrates to reading the fields directly.
+The definitions stay in their home files (`brute_force.jl`, `continuation.jl`) because they are
+tightly coupled to sibling internals there; this file only publishes them as
+`const <public> = <_internal>` bindings with docstrings. The matching `export` statements live in
+`src/DynamicsKit.jl`, and this file is included after the home files so the underscore names exist.
+Transitive helpers (`_map_orbit_window`, `_crossing_diag_*`, `_finite_matrix_extrema`,
+`_matrix_label_counts`, `_map_seed_semantics_label`, `_map_tile_count`) stay private — only the
+published functions call them.
 """
 
-# Groups 2–5 (effective-settings, diagnostics producers, per-cell storage allocators/recorders,
-# result extraction + small utilities) were reverted to underscore-private under Contract D for the
-# same-module workbench. The DynamicsKitWorkbench extraction makes the workbench a *separate*
-# package, so the config-derived effective settings and diagnostics producers it drives are
-# re-published below. Their transitive helpers (`_map_orbit_window`, `_crossing_diag_*`,
-# `_finite_matrix_extrema`, `_matrix_label_counts`, `_map_seed_semantics_label`, `_map_tile_count`)
-# stay private — only the published functions call them.
-# See docs/internal/contracts/contract-d-sweep-cache-hook.md.
-
-# --- Group 2: 2D-map effective settings (config-derived) ---
+# --- 2D-map effective settings (config-derived) ---
 """
     map_effective_settings(config::BifurcationMapConfig;
                            na=config.a_steps + 1, nb=config.b_steps + 1,
@@ -35,8 +20,7 @@ config fields and are deleted when the workbench migrates to reading the fields 
 The derived settings a 2D-map sweep actually runs with, resolved from a `BifurcationMapConfig` in one
 call. Returns `(; seed_mode, lyapunov_enabled, lyapunov_iterations, lyapunov_transient,
 multistability_enabled, transient_budget, neighbor_transient, tile_sizes, tile_count)`. `na`/`nb` (the
-grid dimensions) only affect `tile_sizes`/`tile_count`; they default to the config's own grid. This
-replaces the former scatter of individual `_map_*` accessors with a single cohesive entry point.
+grid dimensions) only affect `tile_sizes`/`tile_count`; they default to the config's own grid.
 """
 function map_effective_settings(config::BifurcationMapConfig;
                                 na::Integer = config.a_steps + 1,
@@ -56,7 +40,7 @@ function map_effective_settings(config::BifurcationMapConfig;
     )
 end
 
-# --- Group 3: 2D-map / Poincaré diagnostics producers ---
+# --- 2D-map / Poincaré diagnostics producers ---
 """    map_lyapunov_diagnostics(...) -> Dict — Lyapunov-field summary for the diagnostics payload."""
 const map_lyapunov_diagnostics = _map_lyapunov_diagnostics
 """    map_neighbor_seed_diagnostics(...) -> Dict — neighbor-seed acceleration summary."""
@@ -66,11 +50,11 @@ const poincare_crossing_diagnostics_summary = _poincare_crossing_diagnostics_sum
 """    orbit_geometry_summary(...) -> Dict — orbit-geometry summary for the diagnostics payload."""
 const orbit_geometry_summary = _orbit_geometry_summary
 
-# --- Group 5: result extraction ---
+# --- result extraction ---
 """    branch_points(result::BranchResult) -> Vector — the recorded continuation branch points."""
 const branch_points = _branch_points
 
-# --- Group 6: continuation branch post-processing ---
+# --- continuation branch post-processing ---
 """    trim_branch_to_period(sys, branch::BranchResult, base_params, linked_param_indices; …) -> BranchResult"""
 const trim_branch_to_period = _trim_branch_to_period
 """    collect_distinct_period_branches(candidate_sets, max_branches_per_period, param_tol, state_tol) -> Vector{BranchResult}"""

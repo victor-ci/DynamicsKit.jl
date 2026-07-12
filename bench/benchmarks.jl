@@ -3,9 +3,8 @@
 #
 # This lives in the isolated `bench/` environment (bench/Project.toml), which
 # path-links this working copy of DynamicsKit and adds BenchmarkTools +
-# PkgBenchmark. Those tools are deliberately kept OUT of the package's own
-# [deps] so the committed Manifest and the Aqua quality pass stay clean — the
-# existing hand-rolled `@elapsed` benchmarks made the same choice.
+# PkgBenchmark — kept out of the package's own [deps] so the dependency set and
+# the Aqua quality pass stay clean.
 #
 # Run the raw suite directly (fastest inner loop):
 #   julia --project=bench bench/benchmarks.jl
@@ -14,9 +13,8 @@
 # PkgBenchmark-default benchmark/):
 #   julia --project=bench -e 'using PkgBenchmark; r = benchmarkpkg("DynamicsKit"; script="bench/benchmarks.jl"); export_markdown("bench/result.md", r)'
 #
-# Compare the working copy against a git ref (regression tracking across a
-# DynamicsKit release bump — the reason this exists):
-#   julia --project=bench -e 'using PkgBenchmark; judge("DynamicsKit", "v0.1.3"; script="bench/benchmarks.jl") |> export_markdown'
+# Compare the working copy against a git ref for regression tracking:
+#   julia --project=bench -e 'using PkgBenchmark; judge("DynamicsKit", "v0.1.5"; script="bench/benchmarks.jl") |> export_markdown'
 #
 # All cases use the Hénon map: discrete, cheap, deterministic — fast enough for
 # repeated sampling while still exercising the brute-force, continuation, and

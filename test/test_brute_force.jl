@@ -156,8 +156,8 @@
         @test DynamicsKit._detect_period(period2_window, 4, 1e-8) == 2
 
         # Amplitude-scaled tolerance: a large-amplitude orbit with the same relative
-        # closure error is still detected. Pre-fix this returned 0 for precision = 1e-4
-        # because the absolute closure error was ~1e-4 * 1e6 ≈ 100.
+        # closure error is still detected (an absolute-tolerance comparison would
+        # reject it: the absolute closure error here is ~1e-4 * 1e6 ≈ 100).
         big_amp = 1e6
         period3_big = [
             SVector(big_amp),
@@ -196,7 +196,7 @@
     @testset "Basins detect period exactly equal to max_period" begin
         # Period-4 rotation: f(x) = SVector(mod(x[1] + 0.25, 1.0), 0.0). Every IC
         # cycles through 4 distinct values in x[1]. With max_period = 4 this must
-        # be detected (previously the orbit window was 1 too short).
+        # be detected — the orbit window has to cover a full period plus closure.
         rot4 = DiscreteMap(
             (x, p) -> SVector(mod(x[1] + 0.25, 1.0), 0.0),
             2,

@@ -96,8 +96,6 @@ function _detect_period(orbit, max_period, precision)
     return _detect_period_diagnostics(orbit, max_period, precision).period
 end
 
-# `_build_basins_params` moved to analysis/parameter_mapping.jl (Contract A); available here via alias.
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2D Bifurcation Map (Two-Parameter Periodicity Sweep)
 # ═══════════════════════════════════════════════════════════════════════════════

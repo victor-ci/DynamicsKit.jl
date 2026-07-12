@@ -124,10 +124,8 @@ function _poincare_event_corrected_jacobian(sys::ContinuousODE,
 end
 
 """Build an augmented RHS for state plus state-transition matrix integration."""
-# PERF (deferred, post-migration): this RHS recomputes the state Jacobian via ForwardDiff every
-# step and allocates each call (`Matrix(Φ)`, `A * …`, `vec(dΦ)`). A future perf pass should pass a
-# preallocated Jacobian + use in-place `mul!` on reshaped views. Left as-is during the repo-split
-# tidy (behavior-sensitive; warrants benchmarks first). See repository-split-plan-v2 deferred notes.
+# Recomputes the state Jacobian via ForwardDiff every step and allocates each call; acceptable at
+# current problem sizes.
 function _variational_rhs(sys::ContinuousODE)
     n = sys.dim
     return function(dz, z, p, t)

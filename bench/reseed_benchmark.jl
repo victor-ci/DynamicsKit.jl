@@ -8,11 +8,9 @@
 # Two systems are exercised:
 #   - Radial (Hopf normal form) oscillator: fast, deterministic, isolates each mechanism.
 #   - Colpitts (exponential) oscillator over V1 ∈ [4.0, 5.0]: a real, stiff Poincaré-map system
-#     (the V1-window atlas case the project actually runs) — shows the cost/benefit on hardware
-#     that matters, where each return-map evaluation is a full stiff ODE integration.
+#     where each return-map evaluation is a full stiff ODE integration.
 #
-# Plain `@elapsed` (min-of-N) is used deliberately — no BenchmarkTools dependency, so the
-# package test suite and its Aqua quality pass are untouched.
+# Plain `@elapsed` (min-of-N) is used deliberately — no BenchmarkTools dependency.
 #
 # Run from the project root (threads help the bidirectional + atlas paths):
 #   julia --threads auto --project=. bench/reseed_benchmark.jl

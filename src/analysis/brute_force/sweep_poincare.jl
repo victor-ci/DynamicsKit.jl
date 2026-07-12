@@ -16,10 +16,7 @@ function brute_force_diagram(sys::DiscreteMap, config::BruteForceConfig;
     x0 = isnothing(initial_point) ? zeros(SVector{sys.dim, Float64}) : SVector{sys.dim}(initial_point)
 
     # Collect per-thread results, then compact in a single pass directly into
-    # preallocated outputs. The previous version called `reduce(vcat, ...)`
-    # twice and then iterated the flattened vector again to copy each SVector
-    # into the result Matrix — three full passes over the result data for
-    # what is fundamentally one fill.
+    # preallocated outputs.
     all_points = Vector{Vector{SVector{sys.dim, Float64}}}(undef, length(param_values))
 
     Threads.@threads for i in eachindex(param_values)
@@ -75,8 +72,7 @@ function brute_force_diagram(sys::ContinuousODE, config::BruteForceConfig;
     map_dim = length(proj)
     n_keep = max(config.iterations - config.transient, 0)
 
-    # See note on the discrete-map sibling above — single-pass fill into
-    # preallocated outputs replaces the double `reduce(vcat, ...)` + copy.
+    # As in the discrete-map sibling above: single-pass fill into preallocated outputs.
     all_points = Vector{Vector{Vector{Float64}}}(undef, length(param_values))
 
     Threads.@threads for i in eachindex(param_values)
@@ -447,9 +443,6 @@ function _orbit_geometry_summary(points::AbstractVector)
     center = vec(sum(matrix; dims=1)) ./ size(matrix, 1)
     return (center=center, span=maxima .- minima, minima=minima, maxima=maxima)
 end
-
-# `_build_params` moved to analysis/parameter_mapping.jl (Contract A); available here via alias.
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Basins of Attraction

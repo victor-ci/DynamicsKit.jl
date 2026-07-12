@@ -1,11 +1,9 @@
-# Contract C — result & diagnostics accessors.
-# Superseded by Contract D (docs/internal/contracts/contract-d-sweep-cache-hook.md): the effective
-# settings, diagnostics producers, per-cell storage and small utilities reverted to underscore-private
-# once the workbench began driving caching through the public sweeps (`cells=` hook). The behavioural
-# invariants below still matter for those internals, so they are tested against the private names; only
-# the continuation branch post-processing helpers (Group 6) remain part of the public surface.
+# Result & diagnostics accessors. The effective settings, diagnostics producers, per-cell storage
+# and small utilities are underscore-private (consumers drive caching through the public sweeps'
+# `cells=` hook), so their behavioural invariants are tested against the private names; the
+# continuation branch post-processing helpers are part of the public surface.
 
-@testset "Contract C — result & diagnostics accessors (internals + surviving public helpers)" begin
+@testset "result & diagnostics accessors (internals + public helpers)" begin
     @testset "classification diagnostics schema lock" begin   # frozen wire keys (internal producer)
         sc = fill(1, 2, 2); ce = fill(0.0, 2, 2); cp = fill(1, 2, 2)
         op = fill(3, 2, 2); cc = fill(1.0, 2, 2)

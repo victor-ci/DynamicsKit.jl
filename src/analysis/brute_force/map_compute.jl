@@ -147,10 +147,6 @@ function _process_continuous_map_tile!(periodicity::AbstractMatrix{Int},
     return (resets=reset_count, invalid_resets=invalid_reset_count)
 end
 
-# The 2-D map parameter-vector family (`_map_required_param_len`, `_map_param_template`,
-# `_map_a_write_indices`, `_map_b_write_indices`, `_inject_map_params!`, `_map_params_from_template`,
-# `_map_params_from_buffer!`) moved to analysis/parameter_mapping.jl (Contract A); available via aliases.
-
 _state_exceeds_cutoff(state, cutoff::Float64) = _map_state_status(state, cutoff) != :ok
 
 function _closure_period(base, candidate, period::Int, precision::Float64, base_norm::Float64)
@@ -781,7 +777,7 @@ end
 """
     MapCellGrid(na, nb; lyapunov=false)
 
-In/out per-cell state for a 2-D bifurcation-map sweep (Contract D cache hook). Allocate it,
+In/out per-cell state for a 2-D bifurcation-map sweep (sweep cache hook). Allocate it,
 optionally pre-seed cells and mark them in `known`, pass to `bifurcation_map(...; cells=grid)`; the
 sweep computes the not-`known` cells in place and you read the grid back (e.g. to store a cache
 entry). The `known` mask is only consulted in the `:fixed` seed mode (the cacheable path).
@@ -872,7 +868,7 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
             for idx in chunks[chunk_idx]
                 i = ((idx - 1) % na) + 1
                 j = ((idx - 1) ÷ na) + 1
-                (cells !== nothing && cells.known[i, j]) && continue   # Contract D: skip pre-seeded (cached) cells
+                (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded (cached) cells
                 p = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
                 detection = if multistability_enabled
                     seed_results = [
@@ -1083,7 +1079,7 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
             for idx in chunks[chunk_idx]
                 i = ((idx - 1) % na) + 1
                 j = ((idx - 1) ÷ na) + 1
-                (cells !== nothing && cells.known[i, j]) && continue   # Contract D: skip pre-seeded (cached) cells
+                (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded (cached) cells
                 p = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
                 result = if multistability_enabled
                     seed_results = [
@@ -1317,5 +1313,3 @@ function bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
     )
     return result
 end
-
-# `_build_map_params` moved to analysis/parameter_mapping.jl (Contract A); available here via alias.

@@ -58,9 +58,9 @@
     end
 
     @testset "Seed points clamp against static-array search bounds" begin
-        # Regression: with SVector bounds, `clamp.(raw, lo, hi)` broadcasts to
-        # a SizedVector, which used to fail _push_unique_seed_point! dispatch
-        # (it requires Vector{Float64}); the clamped point must be materialized.
+        # With SVector bounds, `clamp.(raw, lo, hi)` broadcasts to a SizedVector;
+        # `_push_unique_seed_point!` requires Vector{Float64}, so the clamped
+        # point must be materialized before dispatch.
         lo = DynamicsKit.StaticArrays.SVector(-2.0, -1.0)
         hi = DynamicsKit.StaticArrays.SVector(2.0, 1.0)
         prepared = DynamicsKit._prepare_seed_points([[0.5, 0.2], [5.0, -5.0]], lo, hi, 6)

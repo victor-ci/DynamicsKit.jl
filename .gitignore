@@ -7,3 +7,7 @@ var/
 
 # Dev scratch notes — local only
 /docs/dev/
+
+# PkgBenchmark artifacts
+/benchmark/
+/bench/result.md

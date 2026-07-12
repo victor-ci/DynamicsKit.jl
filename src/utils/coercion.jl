@@ -1,7 +1,6 @@
 """
 Value coercion + JSON-plain helpers shared across the library (analysis caches, result
-serialization) and the workbench. Relocated here from `ui/workbench.jl` (Contract D / repository
-split) because `analysis/` already depends on them — keeping the library self-contained.
+serialization) and external consumers.
 """
 
 _plain(value::Nothing) = nothing

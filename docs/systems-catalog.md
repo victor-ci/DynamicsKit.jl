@@ -63,11 +63,11 @@ Typical uses:
 - `(Iref, Sc)` stabilization maps;
 - switching-event diagnostics.
 
-Basins are not exposed in the UI for this model because the default workflow focuses on the monostable cascade.
+Basin analysis is rarely useful for this model; the default workflow focuses on the monostable cascade.
 
 ## Vilnius oscillator
 
-Continuous ODE oscillator with a Poincare-section workflow. The workbench exposes phase portrait, brute-force, continuation, atlas, skeleton, power-spectrum, codim-2, and 2D map analyses.
+Continuous ODE oscillator with a Poincare-section workflow. Supports phase portrait, brute-force, continuation, atlas, skeleton, power-spectrum, codim-2, and 2D map analyses.
 
 Typical uses:
 
@@ -87,7 +87,7 @@ Three variants are exposed:
 | Exponential | `colpitts_exponential_oscillator` | Exponential transistor current law |
 | Dynamic beta | `colpitts_dynamic_beta_oscillator` | Exponential model with current-dependent gain |
 
-Common parameter studies sweep beta, voltage, or capacitance values. The workbench presets include document-reproduction phase portraits and atlas/continuation windows.
+Common parameter studies sweep beta, voltage, or capacitance values. The example scripts include document-reproduction phase portraits and atlas/continuation windows.
 
 ## Ikeda map
 
@@ -125,14 +125,15 @@ Typical uses:
 
 ## Adding a built-in system
 
-To add a system to the package:
+Analyzing your own system does not require modifying the package — construct a `DiscreteMap` or
+`ContinuousODE` directly and pass it to any analysis; see "Adding a system in code" in
+[`julia-package.md`](julia-package.md).
+
+To contribute a new built-in system to the package:
 
 1. Add a constructor under `src/systems/`.
 2. Include and export it from `src/DynamicsKit.jl`.
 3. Add system tests in `test/test_systems.jl`.
 
-To also surface the system in the browser UI, add a catalog spec in the separate
-`DynamicsKitWorkbench.jl` package (`supportedAnalyses`, `constructorOptions`, `parameterDocs`,
-`analysisDefaults`, and optional presets) — that lives with the workbench, not here.
-
-Imported systems used only through the workbench do not need to be included/exported, but they must return a `DynamicalSystem` when loaded in a fresh module.
+To also surface the system in the browser workbench, add a catalog spec in the separate
+`DynamicsKitWorkbench.jl` package — that lives with the workbench, not here.

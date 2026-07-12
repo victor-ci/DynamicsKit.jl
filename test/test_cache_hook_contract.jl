@@ -1,8 +1,7 @@
-# Contract D — sweep cache hook. Freezes the in/out cell-grid behaviour for the public sweeps:
+# Freezes the in/out cell-grid behaviour for the public sweeps:
 # fresh cells == no-cells result; partial pre-seed (round-trip) == full recompute.
-# See docs/internal/contracts/contract-d-sweep-cache-hook.md.
 
-@testset "Contract D — sweep cache hook" begin
+@testset "sweep cache hook" begin
     sys = henon_map()
     BE = DynamicsKit
 

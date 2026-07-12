@@ -59,7 +59,7 @@ Metrics printed:
 
 | Metric | Meaning |
 | --- | --- |
-| `runtime_ms` | End-to-end workbench analysis runtime |
+| `runtime_ms` | End-to-end analysis runtime |
 | `reused` | Reused samples/cells |
 | `computed` | Newly computed samples/cells |
 | `requested` | Total requested samples/cells |
@@ -216,20 +216,6 @@ Analyses less likely to scale:
 | Single continuation branch | Pseudo-arclength path is sequential |
 | Very small grids | Compilation and overhead dominate |
 | Stiff ODE maps | Solver cost and adaptivity may dominate |
-
-## Workbench cache and benchmark knobs
-
-Workbench payloads support cache controls such as:
-
-| Key | Meaning |
-| --- | --- |
-| `fileCache` | Enables/disables whole-session result cache |
-| `bruteForceGridCache` | Enables/disables brute-force sample cache |
-| `basinsGridCache` | Enables/disables basins grid cache |
-| `mapGridCache` | Enables/disables 2D map grid cache |
-| `cacheSalt` | Optional salt to intentionally separate benchmark runs |
-
-Use `cacheSalt` when you want independent benchmark families without clearing all local artifacts.
 
 ## Reporting benchmark results
 

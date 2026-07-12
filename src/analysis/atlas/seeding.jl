@@ -206,11 +206,11 @@ function _atlas_continuation_retry_configs(cont_config::ContinuationConfig,
     local_p_max = cont_config.p_max
     configs = ContinuationConfig[]
 
-    # Global span over which continuation now traces (since we no longer clamp to the
+    # Global span over which continuation traces (branches are not clamped to the
     # window). The window-relative scaling below adapts step size for narrow windows
     # but is *floored* at the user's nominal ds/dsmax so single-sample windows don't
-    # collapse the step into PALC's `dsmin` regime, which was producing thousands of
-    # tiny-step segments inside narrow stable windows like P7's.
+    # collapse the step into PALC's `dsmin` regime and produce thousands of tiny-step
+    # segments.
     global_span = max(local_p_max - local_p_min, abs(cont_config.ds))
     for retry_idx in 1:budget
         scale = 2.0 ^ (retry_idx - 1)
@@ -228,11 +228,10 @@ function _atlas_continuation_retry_configs(cont_config::ContinuationConfig,
         steps_to_cross = ceil(Int, 30 * global_span / dsmax_mag)
         local_max_steps = clamp(steps_to_cross, 50, cont_config.max_steps)
         # Keep `dsmin` at the user's setting so PALC's adapter has full freedom to
-        # follow unstable continuations through sub-bifurcations. Over-counting
-        # from PALC's tiny-step regime is handled downstream by `_trim_branch_to_period`
-        # (drops lower-period stretches) and the workbench's `max_trace_points` payload
-        # decimation, rather than by squeezing PALC's adapter — which dropped P16/P12/P14
-        # unstable extensions in earlier tuning attempts.
+        # follow unstable continuations through sub-bifurcations; squeezing the
+        # adapter instead drops high-period unstable extensions. Over-counting from
+        # PALC's tiny-step regime is handled downstream by `_trim_branch_to_period`
+        # (drops lower-period stretches).
         local_dsmin = cont_config.dsmin
         push!(configs, ContinuationConfig(
             p_min=local_p_min,

@@ -188,7 +188,7 @@ end
 """
     LyapunovCellGrid(na, nb)
 
-In/out per-cell state for a direct `lyapunov_field` sweep (Contract D cache hook): exponent / status /
+In/out per-cell state for a direct `lyapunov_field` sweep (sweep cache hook): exponent / status /
 sample arrays + a `known` mask. Pre-seed cached cells, pass via `lyapunov_field(...; cells=grid)`;
 the sweep fills the not-`known` cells in place and you read the grid back (e.g. to store a cache entry).
 """
@@ -234,7 +234,7 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
         for idx in chunks[chunk_idx]
             i = ((idx - 1) % length(a_vals)) + 1
             j = ((idx - 1) ÷ length(a_vals)) + 1
-            (cells !== nothing && cells.known[i, j]) && continue   # Contract D: skip pre-seeded cells
+            (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
             params = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             estimate = _estimate_discrete_map_largest_lyapunov(
                 sys,
@@ -289,7 +289,7 @@ function lyapunov_field(sys::ContinuousODE, config::BifurcationMapConfig;
         for idx in chunks[chunk_idx]
             i = ((idx - 1) % length(a_vals)) + 1
             j = ((idx - 1) ÷ length(a_vals)) + 1
-            (cells !== nothing && cells.known[i, j]) && continue   # Contract D: skip pre-seeded cells
+            (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
             params = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             estimate = _estimate_continuous_poincare_largest_lyapunov(
                 sys,
