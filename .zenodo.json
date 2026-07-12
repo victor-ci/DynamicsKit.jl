@@ -1,0 +1,30 @@
+{
+  "title": "DynamicsKit.jl: Bifurcation analysis of dynamical systems in Julia",
+  "description": "A Julia library for bifurcation analysis of dynamical systems — discrete maps and continuous-time ODEs with Poincaré sections. Provides threaded brute-force parameter sweeps (1-D diagrams, basins of attraction, and 2-D parameter maps with period/status/Lyapunov diagnostics) and pseudo-arclength continuation wrapping BifurcationKit.jl, including a higher-level atlas that maps periodic branches automatically.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "mit",
+  "creators": [
+    {
+      "name": "Iheanacho, Victor Chukwuma",
+      "affiliation": "Riga Technical University",
+      "orcid": "0009-0003-3839-5052"
+    }
+  ],
+  "keywords": [
+    "bifurcation analysis",
+    "dynamical systems",
+    "numerical continuation",
+    "Lyapunov exponent",
+    "Poincaré map",
+    "chaos",
+    "Julia"
+  ],
+  "related_identifiers": [
+    {
+      "relation": "isSupplementTo",
+      "identifier": "https://github.com/victor-ci/DynamicsKit.jl",
+      "scheme": "url"
+    }
+  ]
+}
