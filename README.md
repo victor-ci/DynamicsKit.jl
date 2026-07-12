@@ -52,6 +52,6 @@ CI runs the suite on every push to `main` and every pull request.
 The interactive browser **workbench** lives in the separate `DynamicsKitWorkbench.jl` package, which
 depends on this library. This library never depends on the workbench.
 
-## License / authorship
+## License
 
-© Victor Iheanacho.
+[MIT](LICENSE) © Victor Iheanacho.
