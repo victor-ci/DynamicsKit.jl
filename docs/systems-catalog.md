@@ -125,7 +125,11 @@ Typical uses:
 
 ## Adding a built-in system
 
-To add a system to the package:
+Analyzing your own system does not require modifying the package — construct a `DiscreteMap` or
+`ContinuousODE` directly and pass it to any analysis; see "Adding a system in code" in
+[`julia-package.md`](julia-package.md).
+
+To contribute a new built-in system to the package:
 
 1. Add a constructor under `src/systems/`.
 2. Include and export it from `src/DynamicsKit.jl`.
