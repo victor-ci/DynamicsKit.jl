@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "DynamicsKit.jl"
+abstract: >-
+  A Julia library for bifurcation analysis of dynamical systems — discrete maps
+  and continuous-time ODEs with Poincaré sections. Provides threaded brute-force
+  parameter sweeps (1-D diagrams, basins of attraction, and 2-D parameter maps
+  with period/status/Lyapunov diagnostics) and pseudo-arclength continuation
+  wrapping BifurcationKit.jl, including a higher-level atlas that maps periodic
+  branches automatically.
+type: software
+authors:
+  - family-names: Iheanacho
+    given-names: Victor Chukwuma
+    affiliation: "Riga Technical University"
+    orcid: "https://orcid.org/0009-0003-3839-5052"
+license: MIT
+repository-code: "https://github.com/victor-ci/DynamicsKit.jl"
+url: "https://github.com/victor-ci/DynamicsKit.jl"
+keywords:
+  - bifurcation analysis
+  - dynamical systems
+  - numerical continuation
+  - Lyapunov exponent
+  - Poincaré map
+  - chaos
+  - Julia
+# version and date-released are taken from each tagged GitHub release by Zenodo;
+# a DOI is minted per release once the repository is enabled in Zenodo.
