@@ -11,7 +11,7 @@ loading, and reproducible experiments.
 
 | Guide | Use it for |
 | --- | --- |
-| [`setup.md`](setup.md) | Installing Julia dependencies, threading, Docker, tests, and artifact paths |
+| [`setup.md`](setup.md) | Installing Julia dependencies, threading, and running tests |
 | [`julia-package.md`](julia-package.md) | Calling the library directly from Julia scripts and notebooks |
 | [`analysis-methods.md`](analysis-methods.md) | Choosing among brute force, continuation, atlas, skeleton, basins, phase portrait, 2D maps, and refinement |
 | [`scientific-interpretation.md`](scientific-interpretation.md) | Interpreting periods, status codes, multipliers, residuals, Lyapunov diagnostics, multistability, and switching events |

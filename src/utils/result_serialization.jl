@@ -1,9 +1,8 @@
 """
 Serialization of library result types to/from portable JSON-plain dicts (columnar branch points
 avoid serializing fragile BifurcationKit internals). Used by the atlas library cache
-(`continuation_atlas(...; cache_file=...)`) and by the workbench's session persistence. Relocated
-here from `ui/workbench.jl` (repository split) so the library's own caching is self-contained.
-Workbench-only serializers (sessions, snapshots, branch entries, other result types) stay in the workbench.
+(`continuation_atlas(...; cache_file=...)`) and by external persistence layers such as the
+workbench's session store.
 """
 
 _serialize_timestamp(dt::DateTime) = Dates.format(dt, dateformat"yyyy-mm-ddTHH:MM:SS.s")
@@ -87,13 +86,12 @@ function _serialize_bruteforce_result(result::BruteForceResult)
     )
 end
 
-# Reconstruct an (n × dim) point matrix from a serialized payload. The session
-# serializer stores `Array(result.points)` (a Matrix, possibly 0×dim), so the
-# matrix branch preserves the true dimension even for an empty cloud (0×1, 0×2,
-# 0×3, …) — including the empty-cloud case (`transient >= iterations` records
-# zero points) that previously hit `reduce(hcat, [])` and threw. The vector
-# branch handles JSON-style rows; when those are empty the dimension is genuinely
-# unknown, so we return a 0×0 matrix rather than fabricating a 2-D shape.
+# Reconstruct an (n × dim) point matrix from a serialized payload. The serializer
+# stores `Array(result.points)` (a Matrix, possibly 0×dim), so the matrix branch
+# preserves the true dimension even for an empty cloud (0×1, 0×2, …; reachable via
+# `transient >= iterations`, which records zero points). The vector branch handles
+# JSON-style rows; when those are empty the dimension is genuinely unknown, so we
+# return a 0×0 matrix rather than fabricating a 2-D shape.
 function _deserialize_point_matrix(raw)
     raw isa AbstractMatrix && return Float64.(raw)
     rows = [Float64[_as_float(v) for v in row] for row in raw]
@@ -255,9 +253,8 @@ function _deserialize_atlas_result(data::AbstractDict{<:AbstractString, <:Any}; 
 end
 
 # --- Public serialization API ---
-# The JSON-plain wire format for the library's public result types, published as the single source of
-# truth (the workbench's session persistence builds on these rather than carrying its own copies).
-# The per-field sub-helpers above stay private — only these top-level entry points are public.
+# The JSON-plain wire format for the library's public result types; external persistence layers
+# build on these. The per-field sub-helpers above stay private — only these entry points are public.
 """    serialize_bruteforce_result(result::BruteForceResult) -> Dict — JSON-plain form."""
 const serialize_bruteforce_result = _serialize_bruteforce_result
 """    deserialize_bruteforce_result(data::AbstractDict) -> BruteForceResult"""

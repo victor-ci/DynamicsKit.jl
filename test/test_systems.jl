@@ -269,7 +269,7 @@
         @test sys.default_params == [0.005, 6.02e-6, 0.05]
 
         # ODE evaluation matches the paper's dimensionless equations (eq. 11),
-        # including that the overflow-safe ln(cosh) refactor equals ln(c·cosh).
+        # including that the overflow-safe ln(cosh) form equals ln(c·cosh).
         du = zeros(3)
         u = [0.5, -0.3, 0.4]
         p = [0.028, 6.02e-6, 0.05]

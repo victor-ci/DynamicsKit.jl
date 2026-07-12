@@ -147,10 +147,9 @@ end
 
 """
 Compact signature used to compare candidate branches without repeatedly rescanning
-branch points. Samples the first state coordinate at quartile positions (25 %,
-50 %, 75 %) along the branch, not the midpoint alone. Two morphologically distinct
-branches that happen to cross at the midpoint would previously have been silently
-deduplicated; the multi-point signature distinguishes them.
+branch points. Samples the first state coordinate at quartile positions (25 %, 50 %,
+75 %) along the branch rather than the midpoint alone, so two morphologically
+distinct branches that happen to cross at the midpoint are not conflated.
 
 `sample_states` is empty for an empty branch.
 """

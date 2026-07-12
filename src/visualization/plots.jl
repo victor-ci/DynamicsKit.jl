@@ -13,15 +13,9 @@ const _ORBIT_PHASE_ALIGNMENT_TOL = 1e-12
 const _PHASE_JUMP_MULTIPLIER = 8.0
 const _PHASE_JUMP_RANGE_FRACTION = 0.05
 const _PHASE_JUMP_MIN_STEPS = 4
-# No hard cap on phase-jump breaks any more. An earlier revision capped at 64 to
-# protect the renderer from trace-count explosions, but that dropped legitimate
-# alignment-shift breaks in `phase_states[phase]` for branches that genuinely
-# need many splits — leading to a single Plotly trace containing data from
-# multiple orbit phase positions ("zig-zag" lines connecting points across the
-# period-N orbit). Trace-count is now bounded at the frontend by coalescing
-# segments per (layer, branchId, phase, stability) into a single Plotly trace
-# with NaN gaps, so the upstream detector can be as aggressive as the data
-# requires without blowing up rendering cost.
+# Phase-jump breaks are uncapped: the detector reports every legitimate
+# alignment-shift break, and rendering cost is bounded downstream by consumers
+# coalescing segments into single traces with NaN gaps.
 const _PHASE_JUMP_MAX_BREAKS = typemax(Int)
 
 """Return contiguous index runs so stability changes do not create spurious line jumps."""
@@ -113,12 +107,9 @@ function _phase_jump_break_indices(values_per_dim::AbstractVector{<:AbstractVect
         end
     end
 
-    # Hard cap on the number of breaks. Production default is effectively no
-    # cap (the constant is `typemax(Int)`), but the parameter is injectable
-    # so tests can force pruning and assert it behaves correctly. The cap was
-    # historically used to bound Plotly trace count; that responsibility has
-    # since moved to the frontend coalesce, so the upstream detector is now
-    # free to report every legitimate alignment-shift break.
+    # Hard cap on the number of breaks. The default is effectively no cap
+    # (`typemax(Int)`); the parameter is injectable so tests can force pruning
+    # and assert it behaves correctly.
     if length(candidates) > max_breaks
         partialsort!(candidates, max_breaks; by=last, rev=true)
         resize!(candidates, max_breaks)

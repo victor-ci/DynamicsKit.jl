@@ -1,10 +1,7 @@
 """
-Parameter mapping (Contract A). Maps swept parameter values into full parameter vectors for the
-analysis kernels. This is the stable public API consumed by the workbench; see
-`docs/internal/contracts/contract-a-parameter-mapping.md`.
-
-Signatures are faithful to the original internals; the underscore names (`_inject_param`,
-`_build_params`, …) remain as backward-compatible aliases for existing internal call sites.
+Parameter mapping: maps swept parameter values into the full parameter vectors the analysis
+kernels consume. Stable public API; the underscore names (`_inject_param`, `_build_params`, …)
+remain as aliases for internal call sites.
 """
 
 """

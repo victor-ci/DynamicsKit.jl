@@ -43,8 +43,8 @@ include("utils/io.jl")
 include("utils/coercion.jl")               # value coercion + JSON-plain helpers (analysis caches use these)
 
 # Analysis
-include("analysis/parameter_mapping.jl")   # Contract A: shared param-vector mapping (before sweeps)
-include("analysis/solvers.jl")             # public ODE solver selection (workbench + scripted analysis)
+include("analysis/parameter_mapping.jl")   # shared param-vector mapping (before sweeps)
+include("analysis/solvers.jl")             # public ODE solver selection
 include("analysis/brute_force.jl")
 include("analysis/lyapunov.jl")
 include("analysis/spectrum.jl")
@@ -53,8 +53,8 @@ include("analysis/continuation.jl")
 include("analysis/codim2.jl")
 include("analysis/skeleton.jl")
 include("analysis/atlas.jl")
-include("analysis/contract_kernels.jl")      # Contract B: publish analysis kernels (after defs)
-include("analysis/contract_accessors.jl")   # Contract C: publish result/diagnostics accessors (after defs)
+include("analysis/contract_kernels.jl")     # publish analysis kernels (after defs)
+include("analysis/contract_accessors.jl")   # publish result/diagnostics accessors (after defs)
 include("analysis/branch_families.jl")      # conservative orbit-geometry family inference
 include("utils/result_serialization.jl")    # serialize library result types (atlas cache; after Atlas* types)
 
@@ -73,27 +73,27 @@ export henon_map, vilnius_oscillator, buck_converter, buck_voltage_mode, boost_c
 export colpitts_simple_oscillator, colpitts_exponential_oscillator, colpitts_dynamic_beta_oscillator
 export ikeda_map, rossler_oscillator, memristive_diode_bridge
 
-# Exports — parameter mapping (Contract A)
+# Exports — parameter mapping
 export inject_param, build_sweep_params, build_basins_params, basins_ic_template
 export map_param_template, map_a_write_indices, map_b_write_indices
 export map_params_from_template, map_params_from_buffer!, build_map_params
 
-# Exports — sweep cache hook (Contract D): in/out per-cell grids
+# Exports — sweep cache hook: in/out per-cell grids
 export MapCellGrid, LyapunovCellGrid, BasinsCellGrid
 
-# Exports — analysis kernels (Contract B). The orbit-sampling, period-detection and
-# Lyapunov-estimation kernels are public for scripted analysis (paper-artifacts). The 2D-map kernel
-# (`bifurcation_map_kernel`) returns `(result, diagnostics)` and takes a `cells=` hook, which the
-# workbench cache layer needs and the public `bifurcation_map` does not expose. The per-cell
-# Lyapunov recorders / direct-field validate-and-record stay private (driven via the `cells=` hook).
+# Exports — analysis kernels. The orbit-sampling, period-detection and Lyapunov-estimation
+# kernels are public for scripted analysis. The 2D-map kernel (`bifurcation_map_kernel`) returns
+# `(result, diagnostics)` and takes a `cells=` hook, which external cache layers need and the
+# public `bifurcation_map` does not expose. The per-cell Lyapunov recorders / direct-field
+# validate-and-record stay private (driven via the `cells=` hook).
 export resolve_initial_state, sample_discrete_orbit, sample_continuous_poincare_orbit, collect_poincare_points
 export detect_period, detect_discrete_map_period, detect_continuous_poincare_period
 export estimate_discrete_map_largest_lyapunov, estimate_continuous_poincare_largest_lyapunov
 export bifurcation_map_kernel, atlas_hidden_period_sample_indices
 
-# Exports — result & diagnostics accessors (Contract C). The continuation branch post-processing
-# helpers plus the 2D-map effective-settings, diagnostics producers and branch-point extraction the
-# workbench drives. (Per-cell storage/recorders stay private — assembled inside the public sweeps.)
+# Exports — result & diagnostics accessors: continuation branch post-processing helpers plus the
+# 2D-map effective-settings, diagnostics producers and branch-point extraction. (Per-cell
+# storage/recorders stay private — assembled inside the public sweeps.)
 export trim_branch_to_period, collect_distinct_period_branches, branch_stability,
        branches_for_skeleton_param, is_duplicate_branch, poincare_projected
 export branch_points, splice_refined_continuous_branches
@@ -101,8 +101,7 @@ export BranchFamilyAssignment, BranchBasinAssignment, branch_family_assignments,
 export map_effective_settings
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
 
-# Exports — scripted-analysis helpers (consumed by reproducibility scripts; library-public so
-# paper-artifacts depends only on the library, never the workbench).
+# Exports — scripted-analysis helpers (consumed by reproducibility scripts).
 export select_ode_solver, collect_trajectory_seed_points
 
 # Exports — analysis
@@ -121,8 +120,8 @@ export BruteForceConfig, LyapunovConfig, ContinuationConfig, BasinsConfig, Bifur
 # Exports — I/O
 export save_result, load_result
 
-# Exports — JSON-plain result serialization (wire format for public result types; consumed by the
-# workbench's session persistence). Per-field sub-helpers stay private.
+# Exports — JSON-plain result serialization (wire format for public result types).
+# Per-field sub-helpers stay private.
 export serialize_bruteforce_result, deserialize_bruteforce_result
 export serialize_branch_result, deserialize_branch_result
 export serialize_atlas_result, deserialize_atlas_result

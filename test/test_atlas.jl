@@ -915,9 +915,9 @@
 
     @testset "Phase 2: atlas global fallback bounds derive from reconnaissance cloud" begin
         # Synthetic samples whose support points live in [10, 20] in state[1].
-        # The pre-fix hardcoded [-3, 3] fallback would have produced a useless
-        # search box for a system whose attractor lives well outside that range.
-        # The new global fallback should produce bounds that contain the cloud.
+        # A hardcoded fallback box (e.g. [-3, 3]) would be useless for a system
+        # whose attractor lives well outside that range, so the global fallback
+        # must derive bounds that contain the reconnaissance cloud.
         samples = DynamicsKit.AtlasReconSample[]
         # Deterministic cloud spanning state[1] ∈ [10, 15] so the fallback
         # bounds assertion is RNG-independent.
@@ -940,9 +940,9 @@
         # Should NOT default to [-3, 3]; should bracket the cloud's state[1] range.
         @test fb_min[1] < 10.0
         @test fb_max[1] > 15.0
-        @test fb_min[1] > -3.0   # i.e. derived from the cloud, not the legacy fallback
+        @test fb_min[1] > -3.0   # i.e. derived from the cloud, not the static fallback
 
-        # True last resort: no samples at all → legacy [-3, 3] retained as the
+        # True last resort: no samples at all → the static [-3, 3] box is the
         # documented last-resort behaviour.
         last_resort_min, last_resort_max = DynamicsKit._atlas_global_fallback_bounds(
             DynamicsKit.AtlasReconSample[], 2, 0.15
@@ -964,8 +964,8 @@
         @test 0.0 <= agg(fill(0.9, 100)) <= 1.0
 
         # Small-support correction: a single sample at 0.9 confidence ranks BELOW
-        # a window with many samples averaging 0.7. Before this fix, the singleton
-        # window dominated even when the multi-sample window was the stronger signal.
+        # a window with many samples averaging 0.7 — a raw mean would let the
+        # singleton window dominate the stronger multi-sample signal.
         single_strong = agg([0.9])
         many_medium = agg(fill(0.7, 20))
         @test single_strong < many_medium

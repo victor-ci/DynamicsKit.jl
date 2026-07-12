@@ -926,10 +926,10 @@ end
     @testset "Refinement seed: coverage-aware gap selection" begin
         # Build a synthetic branch with deliberately uneven coverage inside the
         # refine window. Points cluster densely in [0.10, 0.30] and there is a
-        # big empty gap from 0.30 to 0.90. The legacy "closest to midpoint" rule
+        # big empty gap from 0.30 to 0.90. A plain "closest to midpoint" rule
         # would pick a seed at ~0.50 (the midpoint of [0.0, 1.0]) — but the only
         # candidates in-window cluster around 0.10–0.30 and at 0.95, so the
-        # legacy rule lands at 0.30. The coverage-aware rule should instead
+        # midpoint rule lands at 0.30. The coverage-aware rule should instead
         # target the centre of the big gap (~0.60) and pick the candidate
         # closest to that, which is 0.95 — the under-covered side.
         dense_cluster = [0.10, 0.15, 0.20, 0.25, 0.30]
@@ -950,7 +950,7 @@ end
         @test seed_param > 0.5
 
         # Single-point fallback: when only one branch point lies in the window,
-        # there is no gap structure, and the legacy heuristic applies. Verify
+        # there is no gap structure, and the midpoint heuristic applies. Verify
         # it returns that single in-window point.
         sparse_points = Any[(param=0.05, x1=1.0), (param=0.40, x1=2.0), (param=0.99, x1=3.0)]
         sparse_branch = BranchResult(

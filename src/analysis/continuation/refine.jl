@@ -593,7 +593,7 @@ function _refinement_seed_index(branch::BranchResult, from_param::Float64, to_pa
         return sorted_window[local_idx]
     end
 
-    # Zero or one point in the window: no useful gap signal. Use the legacy
+    # Zero or one point in the window: no useful gap signal. Fall back to the
     # midpoint heuristic over the in-window points (or the whole branch as a
     # last resort).
     mid = (lo + hi) / 2
@@ -1120,15 +1120,14 @@ function refine_branch(sys::DiscreteMap, original::BranchResult, config::Refinem
         Array(sv) .- x
     end
     # Seed Newton with the FULL recorded fixed-point state of the nearest branch
-    # point — not just x1. The old code zeroed every other coordinate (and the
-    # fallback scaled them by x1), which for a 2-D map like the boost converter
-    # started Newton from (V, 0) / (V, ±0.3·V) — far from the true I* ≈ O(1) — so
-    # the start-of-interval Newton routinely failed even well inside the branch.
+    # point — not just x1: for multi-dimensional maps the remaining coordinates
+    # can be O(1), and zeroing them starts Newton far enough from the true fixed
+    # point that it fails even well inside the branch.
     hint_state = _branch_point_state(branch_points[hint_idx])
     x1_hint = isempty(hint_state) ? all_x1[hint_idx] : hint_state[1]
     x0_guess = zeros(dim)
     if isempty(hint_state)
-        # No recorded state coordinates: fall back to the legacy x1-only seed.
+        # No recorded state coordinates: fall back to an x1-only seed.
         x0_guess[1] = x1_hint
     else
         @inbounds for d in 1:min(length(hint_state), dim)
@@ -1153,7 +1152,7 @@ function refine_branch(sys::DiscreteMap, original::BranchResult, config::Refinem
         error("Could not find fixed point at start of refinement interval (param=$start_param)")
     end
 
-    # Build the F function for fixed-point continuation (same as original)
+    # F for fixed-point continuation
     if period == 1
         F = (x, p) -> begin
             pv = _inject_param(params, param_index, p.p, linked_param_indices)

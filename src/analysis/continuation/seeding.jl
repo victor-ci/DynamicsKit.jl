@@ -507,5 +507,3 @@ function _branches_for_skeleton_param(sys::ContinuousODE, config::ContinuationCo
     ).branches
 end
 
-# `_inject_param` moved to analysis/parameter_mapping.jl (Contract A); available here via alias.
-

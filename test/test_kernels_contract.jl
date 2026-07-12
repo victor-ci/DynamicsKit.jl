@@ -1,7 +1,6 @@
-# Contract B — analysis kernels. Freezes the public per-cell computation surface the workbench's
-# grid-cache engine drives. See docs/internal/contracts/contract-b-analysis-kernels.md.
+# Freezes the public per-cell analysis-kernel surface that external cache layers drive.
 
-@testset "Contract B — analysis kernels" begin
+@testset "analysis kernels API" begin
     sys = henon_map()                       # DiscreteMap, dim 2
     p_chaos = [1.4, 0.3]                     # classic Hénon chaotic parameters
     x0 = SVector(0.0, 0.0)
@@ -31,9 +30,8 @@
     end
 
     @testset "internal map kernel exposes the diagnostics tuple" begin
-        # `_bifurcation_map` returns (result, diagnostics); the public `bifurcation_map` discards the
-        # diagnostics. Under Contract D the workbench reaches this tuple via the `cells=` hook rather
-        # than a public `bifurcation_map_kernel` alias (reverted to private).
+        # `_bifurcation_map` returns (result, diagnostics); the public `bifurcation_map` discards
+        # the diagnostics. Cache layers get the tuple via `bifurcation_map_kernel` or the `cells=` hook.
         cfg = BifurcationMapConfig(; a_min=1.0, a_max=1.4, a_steps=3, b_min=0.3, b_max=0.3,
                                    b_steps=1, a_index=1, b_index=2, base_params=[1.4, 0.3])
         rk = DynamicsKit._bifurcation_map(sys, cfg)

@@ -1,7 +1,7 @@
 """
     BasinsCellGrid(nx, ny)
 
-In/out per-cell state for a basins sweep (Contract D cache hook): a `periodicity` matrix over the
+In/out per-cell state for a basins sweep (sweep cache hook): a `periodicity` matrix over the
 (x, y) IC grid + a `known` mask. Pre-seed cached cells, pass via `basins_of_attraction(...; cells=grid)`;
 the sweep fills the not-`known` cells in place and you read the grid back.
 """
@@ -49,7 +49,7 @@ function basins_of_attraction(sys::DiscreteMap, config::BasinsConfig;
 
     Threads.@threads for i in 1:nx
         for j in 1:ny
-            (cells !== nothing && cells.known[i, j]) && continue   # Contract D: skip pre-seeded cells
+            (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
             # Initial condition: place x,y on the chosen grid dims over the template.
             x0 = setindex(base_ic, x_vals[i], config.x_index)
             x0 = setindex(x0, y_vals[j], config.y_index)
@@ -86,8 +86,6 @@ function basins_of_attraction(sys::DiscreteMap, config::BasinsConfig;
     )
 end
 
-# `_basins_ic_template` moved to analysis/parameter_mapping.jl (Contract A); available here via alias.
-
 """
     basins_of_attraction(sys::ContinuousODE, config::BasinsConfig; solver, reltol, abstol) -> BasinsResult
 
@@ -120,7 +118,7 @@ function basins_of_attraction(sys::ContinuousODE, config::BasinsConfig;
 
     Threads.@threads for i in 1:nx
         for j in 1:ny
-            (cells !== nothing && cells.known[i, j]) && continue   # Contract D: skip pre-seeded cells
+            (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
             u0 = copy(base_ic)
             u0[config.x_index] = x_vals[i]
             u0[config.y_index] = y_vals[j]

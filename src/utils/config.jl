@@ -226,7 +226,7 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
 - `divergence_cutoff`: Optional state-amplitude cutoff; `Inf` disables bailout
 - `reuse_neighbor_seeds`: Reuse each grid point's final state as a neighbouring point's initial state
  - `neighbor_transient`: Optional reduced transient for neighbour-seeded cells after the first cell in a serpentine pass
- - `neighbor_tile_size_a`, `neighbor_tile_size_b`: Optional tile dimensions for deterministic neighbour traversal; `0` keeps the legacy global sweep
+ - `neighbor_tile_size_a`, `neighbor_tile_size_b`: Optional tile dimensions for deterministic neighbour traversal; `0` keeps the global (non-tiled) sweep
  - `multistability_initial_points`: Additional fixed initial conditions sampled per parameter cell for opt-in coexistence diagnostics
  - `lyapunov_enabled`: Compute optional largest-Lyapunov diagnostics for each map cell
  - `lyapunov_iterations`: Renormalized steps used for Lyapunov estimation; `0` selects an internal default

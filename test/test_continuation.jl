@@ -200,7 +200,7 @@
             max_steps=200, newton_tol=1e-10, detect_bifurcation=0
         )
         # Dense interior (gap 0.001) ending in a single sparse tail step of 0.038 = 0.76*dsmax —
-        # the ramped tail PALC leaves behind. It sits below the legacy 0.9*dsmax floor.
+        # the ramped tail PALC leaves behind. A fixed 0.9*dsmax gap floor would miss it.
         pars = [0.0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.044]
         pts = Any[(param=p, x1=p, stable=true) for p in pars]
         branch = BranchResult(DynamicsKit.CombinedBranchResult(pts, Any[]), 1, sys.name, :a, DynamicsKit.Dates.now())
@@ -218,8 +218,8 @@
             max_steps=200, newton_tol=1e-10, detect_bifurcation=0
         )
         # Dense onset cluster (gap 0.002) then a sparse tail: small median gap, large max gap.
-        # Legacy short-branch detection re-swept the whole branch (extending past its support);
-        # the median-gap gate now confines refinement to the sparse tail.
+        # The median-gap gate confines refinement to the sparse tail instead of re-sweeping
+        # the whole branch past its support.
         pars = vcat(collect(0.0:0.002:0.05), [0.09])
         pts = Any[(param=p, x1=p, stable=true) for p in pars]
         branch = BranchResult(DynamicsKit.CombinedBranchResult(pts, Any[]), 1, sys.name, :a, DynamicsKit.Dates.now())
@@ -228,7 +228,7 @@
         ungated = DynamicsKit._discrete_branch_refinement_intervals(branch, config; short_branch_min_median_gap_factor=0.0)
         @test !isempty(gated)
         @test !isempty(ungated)
-        # The legacy (ungated) re-sweep reaches further below the branch's parameter support.
+        # The ungated re-sweep reaches further below the branch's parameter support.
         @test minimum(lo for (lo, _) in ungated) < minimum(lo for (lo, _) in gated)
         @test minimum(lo for (lo, _) in gated) > 0.0
     end
@@ -283,9 +283,8 @@
     @testset "Trim/splice helpers accept concretely-typed branch-point vectors" begin
         # A branch wrapping a raw single-direction BifurcationKit ContResult yields a
         # concretely-typed Vector{NamedTuple} from `_branch_points` (not a Vector{Any}).
-        # The trim and splice helpers must accept it rather than MethodError against a
-        # `::Vector{Any}` signature, which previously crashed minimal-period trimming
-        # and refined-branch splicing on single-direction period≥2 branches.
+        # The trim and splice helpers must accept it — a `::Vector{Any}` signature would
+        # MethodError on single-direction period≥2 branches.
         concrete_points = [(param=0.1, x1=0.5), (param=0.2, x1=0.6), (param=0.4, x1=0.7)]
         @test !(concrete_points isa Vector{Any})
 
@@ -294,8 +293,8 @@
         @test intervals[1]["paramMin"] == 0.1
         @test intervals[1]["paramMax"] == 0.2
 
-        # First arg concretely typed exercises _branch_state_scale / run-score /
-        # orient helpers that were also `::Vector{Any}`.
+        # First arg concretely typed also exercises the _branch_state_scale /
+        # run-score / orient helpers.
         spliced = DynamicsKit._splice_refined_segment_points(
             concrete_points,
             [(param=0.25, x1=0.65)]
@@ -1023,9 +1022,9 @@
         J = DynamicsKit._fd_jacobian(F, x, 1e-6)
         expected = [2 * x[1] 0.0; 0.0 2 * x[2]]
         # Relative accuracy: forward-difference has O(h) truncation error, so
-        # ~1e-3 relative is the right ceiling. Pre-fix the (2,2) entry was
-        # wildly off because delta = 1e-6 was a meaningless perturbation on
-        # x = 1e5 — catastrophic cancellation in (F(x+h) - F(x)).
+        # ~1e-3 relative is the right ceiling. The step must scale with x: a
+        # fixed delta = 1e-6 is a meaningless perturbation on x = 1e5 —
+        # catastrophic cancellation in (F(x+h) - F(x)).
         @test isapprox(J[1, 1], expected[1, 1]; rtol=1e-3)
         @test isapprox(J[2, 2], expected[2, 2]; rtol=1e-3)
         @test isapprox(J[1, 2], 0.0; atol=1e-3)

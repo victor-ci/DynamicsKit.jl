@@ -1,8 +1,6 @@
-# Public-API promotions for the repository split (Stage 4 prep). Freezes the two scripted-analysis
-# helpers paper-artifacts depends on, so they resolve through the LIBRARY's public surface (never the
-# workbench). See docs/internal/repository-split-plan-v2.md.
+# Freezes the scripted-analysis helpers on the library's public surface.
 
-@testset "Public-API promotions (scripted-analysis helpers)" begin
+@testset "Public scripted-analysis helpers" begin
     @testset "select_ode_solver — key → solver mapping" begin
         @test select_ode_solver("tsit5") isa DynamicsKit.Tsit5
         @test select_ode_solver("rosenbrock23") isa DynamicsKit.Rosenbrock23
@@ -11,7 +9,6 @@
         # Strict: unknown keys throw rather than silently falling back.
         @test_throws ArgumentError select_ode_solver("rk4")
         @test_throws ArgumentError select_ode_solver("")
-        # Exported from the library (not reached through the workbench).
         @test :select_ode_solver in names(DynamicsKit)
     end
 
