@@ -584,6 +584,28 @@ struct OrbitBranchResult
 end
 
 """
+    MapSpecialPoint
+
+A period-doubling (`:pd`, multiplier crossing −1) or fold (`:fold`, multiplier crossing
++1) special point located on a continued map / Poincaré return-map branch, using
+map-aware test functions rather than BifurcationKit's equilibrium-convention detection
+(which misses map period-doublings). `critical_multiplier` is the multiplier nearest the
+bifurcation value; `test_value` is the map test function `∏(μᵢ ∓ 1)` at the located point
+(≈ 0); `converged` reports whether the critical multiplier reached the bifurcation value
+within tolerance during refinement.
+"""
+struct MapSpecialPoint
+    kind::Symbol
+    param::Float64
+    state::Vector{Float64}
+    multipliers::Vector{ComplexF64}
+    critical_multiplier::ComplexF64
+    test_value::Float64
+    period::Int
+    converged::Bool
+end
+
+"""
     BifurcationResult
 
 Aggregated result containing brute-force and/or branch data.
