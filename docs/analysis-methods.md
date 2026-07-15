@@ -14,6 +14,7 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | What happens across two parameters? | 2D bifurcation map |
 | Where does a continuation bifurcation boundary bend across two parameters? | Codimension-2 curve |
 | How does the largest Lyapunov exponent vary along one parameter? | Lyapunov diagram |
+| What is the full Lyapunov spectrum at one operating point? | Lyapunov spectrum |
 | What frequencies dominate an ODE regime? | Power spectrum |
 | What does the ODE trajectory look like in time/state space? | Phase portrait |
 | A branch/window needs more local detail. | Atlas preview/apply refinement or direct branch refinement |
@@ -243,6 +244,46 @@ Configuration:
 | `min_crossing_time` | Continuous-time only: reject very early / duplicate Poincare crossings |
 
 The result keeps one exponent per sampled parameter value plus estimator statuses and derived labels (`periodic`, `quasiperiodic_neutral_candidate`, `chaotic_candidate`, or `unresolved`).
+
+## Lyapunov spectrum
+
+Function:
+
+```julia
+lyapunov_spectrum(sys, LyapunovSpectrumConfig(...); kwargs...)
+```
+
+The full Lyapunov spectrum at a single operating point via the Benettin/QR
+(tangent-space) method. Where `lyapunov_diagram` sweeps a parameter and reports only
+the largest exponent from two diverging trajectories, `lyapunov_spectrum` evolves an
+orthonormal tangent frame at one parameter set and recovers the whole ordered
+spectrum. Discrete maps propagate the frame with the map's automatic-differentiation
+Jacobian and reorthonormalize (QR) each iteration; continuous flows integrate the
+first variational equation `dQ/dt = J(u(t)) Q` alongside the state and reorthonormalize
+every `renorm_dt` of flow time. Each exponent is the time-averaged log of its QR
+stretching factor. Stiff and auto-switching solvers are supported (the variational
+right-hand side is element-type generic), and flow time is continuous across
+reorthonormalization windows, so nonautonomous systems see the true `t`.
+
+Configuration:
+
+| Field | Meaning |
+| --- | --- |
+| `k` | Number of exponents from the top of the spectrum (`0` = full state dimension) |
+| `transient` | Reorthonormalization intervals discarded so the frame aligns before accumulation |
+| `steps` | Reorthonormalization intervals accumulated into the estimate |
+| `renorm_dt` | Flow-only integration time between QR reorthonormalizations (ignored for maps) |
+| `divergence_cutoff` | Optional bailout for escaping trajectories |
+
+`LyapunovSpectrumResult` carries the `exponents` (largest to smallest), a `convergence`
+matrix of the running finite-time estimates (one row per accumulated interval, one
+column per exponent), the `estimation_status`, and `total_time` (iteration count for
+maps, elapsed flow time for ODEs). Two invariants make the output easy to validate: the
+exponents sum to the mean log volume-change rate — `log|det J|` for maps, and the
+long-time average of the flow's divergence (the time-averaged trace of `J(u(t))` along
+the trajectory) for flows — and a bounded, non-equilibrium flow always has one
+numerically zero exponent along the trajectory direction. `plot_lyapunov_spectrum(result)`
+shows the convergence of each exponent against the accumulation horizon.
 
 ## Basins of attraction
 
