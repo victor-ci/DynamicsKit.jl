@@ -123,6 +123,18 @@ Always consider residuals and solver warnings together with multiplier spectra.
 
 If a scientifically important segment only appears through the `:stability_flip` fallback, validate it against the multiplier spectra and, when possible, a nearby Lyapunov field or brute-force map. The stitched curve is meant to summarize a branch family, not to replace the underlying slice evidence.
 
+A stability flip is not automatically a period doubling: a multiplier can leave
+the unit circle through +1 (fold), −1 (flip), or as a complex pair
+(Neimark–Sacker), and the flip fallback cannot distinguish them. The
+`:defining_system` engine resolves this ambiguity — it verifies the seed
+candidate against the actual multiplier gap to the requested defining value and
+records per-sample multipliers on the returned `Codim2ContinuationResult`, so
+every point of the locus carries its own evidence that the defining condition
+holds. Defining-system curves are solved to Newton tolerance and may fold back
+in either parameter; a fold of the locus itself
+(`curve_fold_secondary_values`) is an organising-point candidate (for example a
+cusp) worth inspecting rather than an artifact.
+
 ## Special points
 
 Continuation can record special points such as folds, period doublings, branch points, and Hopf/Neimark-Sacker-like markers depending on system type and BifurcationKit detection level.

@@ -734,6 +734,8 @@ function plot_codim2(results::Vector{Codim2CurveResult};
                      labels::Union{Nothing, AbstractVector{<:AbstractString}}=nothing,
                      kwargs...)
     isempty(results) && throw(ArgumentError("plot_codim2 requires at least one curve result."))
+    isnothing(labels) || length(labels) == length(results) || throw(ArgumentError(
+        "plot_codim2 received $(length(labels)) labels for $(length(results)) curves."))
     first_result = first(results)
     p = if isnothing(base)
         plot(;
@@ -764,6 +766,77 @@ function plot_codim2(results::Vector{Codim2CurveResult};
             xscale=xscale,
             yscale=yscale,
             kwargs...)
+    else
+        deepcopy(base)
+    end
+
+    for (idx, result) in enumerate(results)
+        color = linecolors[mod1(idx, length(linecolors))]
+        linestyle = linestyles[mod1(idx, length(linestyles))]
+        label = isnothing(labels) ? _codim2_curve_label(result) : labels[idx]
+        for run in _codim2_valid_runs(result)
+            plot!(p,
+                result.primary_values[run] .* xscale,
+                result.secondary_values[run] .* yscale;
+                color=color,
+                linestyle=linestyle,
+                linewidth=linewidth,
+                label=label)
+            label = ""
+        end
+    end
+    return p
+end
+
+"""Ordered samples of a defining-system codim-2 curve form a single run."""
+_codim2_valid_runs(result::Codim2ContinuationResult) =
+    isempty(result.primary_values) ? UnitRange{Int}[] : [1:length(result.primary_values)]
+
+function _codim2_curve_label(result::Codim2ContinuationResult)
+    kind = uppercase(String(result.bifurcation_kind))
+    return "$kind (period $(result.period), continued)"
+end
+
+function plot_codim2(result::Codim2ContinuationResult; kwargs...)
+    return plot_codim2([result]; kwargs...)
+end
+
+function plot_codim2(results::Vector{Codim2ContinuationResult};
+                     base::Union{Nothing, LyapunovFieldResult, BifurcationMapResult, Plots.Plot}=nothing,
+                     figsize=(760,620),
+                     xlabel::Union{Nothing, String}=nothing,
+                     ylabel::Union{Nothing, String}=nothing,
+                     title::Union{Nothing, String}=nothing,
+                     xscale::Float64=1.0,
+                     yscale::Float64=1.0,
+                     linewidth::Float64=2.4,
+                     linecolors=[:black, :black, :darkorange3, :purple4],
+                     linestyles=[:solid, :dash, :dot, :dashdot],
+                     labels::Union{Nothing, AbstractVector{<:AbstractString}}=nothing,
+                     kwargs...)
+    isempty(results) && throw(ArgumentError("plot_codim2 requires at least one curve result."))
+    isnothing(labels) || length(labels) == length(results) || throw(ArgumentError(
+        "plot_codim2 received $(length(labels)) labels for $(length(results)) curves."))
+    first_result = first(results)
+    p = if isnothing(base)
+        plot(;
+            xlabel=something(xlabel, string(first_result.param_names[1])),
+            ylabel=something(ylabel, string(first_result.param_names[2])),
+            title=something(title, "$(first_result.system_name) — Codimension-2 Curve"),
+            size=figsize,
+            dpi=160,
+            grid=true,
+            framestyle=:box,
+            kwargs...
+        )
+    elseif base isa LyapunovFieldResult
+        plot_lyapunov_field(base;
+            figsize=figsize, xlabel=xlabel, ylabel=ylabel, title=title,
+            xscale=xscale, yscale=yscale, kwargs...)
+    elseif base isa BifurcationMapResult
+        plot_bifurcation_map(base;
+            figsize=figsize, xlabel=xlabel, ylabel=ylabel, title=title,
+            xscale=xscale, yscale=yscale, kwargs...)
     else
         deepcopy(base)
     end

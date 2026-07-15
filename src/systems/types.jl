@@ -490,6 +490,40 @@ struct Codim2CurveResult
 end
 
 """
+    Codim2ContinuationResult
+
+Codimension-2 bifurcation curve obtained by continuing a minimally augmented
+defining system (fixed point + bifurcation condition) in the secondary
+parameter. Samples are ordered along the continuation arc, so the curve may
+fold back in either parameter. `states` and `defining_vectors` hold one column
+per sample (the fixed point and the defining eigenvector; for `:ns` curves the
+defining vector is complex and `defining_vectors`/`defining_vectors_imag`
+carry its real/imaginary parts while `phase_angles` holds the multiplier angle
+θ with μ = e^{iθ}; for `:pd`/`:fold` curves `defining_vectors_imag` is empty
+and `phase_angles` is NaN). Diagnostics vectors are empty/NaN when
+`Codim2Config.curve_diagnostics` was `false`.
+"""
+struct Codim2ContinuationResult
+    primary_values::Vector{Float64}
+    secondary_values::Vector{Float64}
+    states::Matrix{Float64}
+    defining_vectors::Matrix{Float64}
+    defining_vectors_imag::Matrix{Float64}
+    phase_angles::Vector{Float64}
+    fixed_point_residuals::Vector{Float64}
+    multipliers::Vector{Vector{ComplexF64}}
+    curve_fold_secondary_values::Vector{Float64}
+    seed_primary::Float64
+    seed_secondary::Float64
+    bifurcation_kind::Symbol
+    period::Int
+    system_name::String
+    param_names::Tuple{Symbol, Symbol}
+    engine::Symbol
+    timestamp::DateTime
+end
+
+"""
     BranchResult
 
 Result of a continuation branch computation.

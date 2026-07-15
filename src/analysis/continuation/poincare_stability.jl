@@ -73,14 +73,17 @@ function _ode_state_jacobian(sys::ContinuousODE,
                              state::AbstractVector,
                              params::AbstractVector,
                              t::Real)
-    u0 = collect(Float64, state)
-    p0 = collect(Float64, params)
+    # Must stay generic over element types: the variational RHS is itself
+    # differentiated by stiff solvers (Rosenbrock W-methods dualize the state
+    # and time), so coercing to Float64 here rejects those Dual numbers.
+    T = promote_type(eltype(state), eltype(params), typeof(t))
+    u0 = collect(T, state)
     rhs = u -> begin
-        du = similar(u)
-        sys.f(du, u, p0, t)
-        collect(du)
+        du = similar(u, promote_type(eltype(u), T))
+        sys.f(du, u, params, t)
+        du
     end
-    return Matrix{Float64}(ForwardDiff.jacobian(rhs, u0))
+    return ForwardDiff.jacobian(rhs, u0)
 end
 
 """Evaluate an in-place continuous-time RHS as a Float64 vector."""

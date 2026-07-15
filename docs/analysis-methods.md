@@ -88,7 +88,10 @@ codim2_curve(sys, config; kwargs...)
 codim2_curve(sys, config, period; kwargs...)
 ```
 
-`codim2_curve` currently uses a slice-tracking engine: for each secondary-parameter value it runs a 1D continuation branch along the primary parameter, collects matching bifurcation candidates, and stitches the nearest-neighbour candidate chain into one tracked curve.
+`codim2_curve` offers two engines, selected by `Codim2Config.engine`:
+
+- `:slice_tracking` (default): for each secondary-parameter value it runs a 1D continuation branch along the primary parameter, collects matching bifurcation candidates, and stitches the nearest-neighbour candidate chain into one tracked curve. Returns `Codim2CurveResult`.
+- `:defining_system`: locates one point of the locus on an anchor slice, then continues the minimally augmented defining system — fixed point of the (iterated or return) map plus the eigenvector condition `(DF^N + I)v = 0` (`:pd`) or `(DF^N - I)v = 0` (`:fold`) — in the secondary parameter with pseudo-arclength continuation. Returns `Codim2ContinuationResult` whose samples follow the curve arc (including folds of the locus in either parameter), with each point solved to Newton tolerance instead of half the slice sampling distance. Supports `:pd`, `:fold`, and `:ns` (two-vector bordered system with the multiplier angle as an extra unknown). If a returned curve stops short of the requested secondary range, move `anchor_second` — a seed next to another solution sheet can stall one trace direction.
 
 Configuration highlights:
 
@@ -104,14 +107,17 @@ Configuration highlights:
 | `anchor_second`, `anchor_candidate_index` | How the stitched curve is seeded on the secondary grid |
 | `diagnostics_max_points` | Sample cap for the period-doubling fallback |
 | `fallback_to_stability_flips` | Allow PD detection from stable/unstable flips when special points are absent |
-| `threaded` | Explicit opt-in for concurrent slice continuations; defaults to `false` |
+| `threaded` | Opt-in multithreading: concurrent slices (slice tracking) or threaded FD-Jacobian columns + curve diagnostics (defining system); defaults to `false` |
+| `engine` | `:slice_tracking` (default) or `:defining_system` |
+| `curve_continuation` | Optional `ContinuationConfig` for the defining-system curve leg (its bounds/step fields apply to the **secondary** parameter); `nothing` derives settings from the secondary grid |
+| `curve_diagnostics` | Record per-sample fixed-point residuals and return-map multipliers on defining-system curves (default `true`) |
 
-Interpret the output in two layers:
+Interpret the slice-tracking output in two layers:
 
 - `raw_candidates` is the full per-slice candidate inventory;
 - `primary_values` + `valid_mask` is the stitched principal curve.
 
-The current fallback for `:pd` uses branch-stability flips when BifurcationKit does not emit explicit period-doubling special points on a slice, so `candidate_sources` and `slice_statuses` matter when assessing trustworthiness.
+The slice-tracking fallback for `:pd` uses branch-stability flips when BifurcationKit does not emit explicit period-doubling special points on a slice, so `candidate_sources` and `slice_statuses` matter when assessing trustworthiness. The defining-system engine instead verifies its seed against the actual multiplier gap (a flip that is really a fold/Neimark-Sacker crossing is rejected) and records per-sample multipliers so every returned point can be checked against the defining condition.
 
 ## Reseeding
 
