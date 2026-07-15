@@ -8,6 +8,7 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | --- | --- |
 | What attractor do I observe from this initial condition as one parameter changes? | Brute-force diagram |
 | Where are periodic solution branches, including unstable branches? | Continuation |
+| Where is a whole periodic orbit and its period along a branch? | Collocation periodic-orbit continuation |
 | I do not know where the periodic windows are. | Automatic continuation atlas |
 | Which periodic orbits exist at one parameter value? | Periodic skeleton |
 | Which attractor is reached from each initial condition? | Basins of attraction |
@@ -79,6 +80,47 @@ Important optional keywords:
 | `solver`, `reltol`, `abstol` | ODE integration controls |
 
 Continuation can trace unstable periodic orbits. It should be interpreted together with residual, multiplier, and special-point diagnostics.
+
+## Collocation periodic-orbit continuation
+
+Function:
+
+```julia
+continuation_orbit_collocation(sys::ContinuousODE, config::CollocationConfig; period, params, initial_point, kwargs...)
+```
+
+An alternative to the default Poincaré return-map shooting for continuous-time systems.
+Rather than continuing a fixed point of the return map, the whole time-parameterized
+orbit and its period are continued as a boundary-value problem via orthogonal
+collocation (BifurcationKit). Shooting stays the library default; collocation is offered
+for orbits where the return-map formulation is poorly conditioned and for cross-checking
+the shooting branches. A seed orbit is located near the base parameter by settling onto
+the attractor and reading one cycle off a section crossing. Autonomous flows only: the
+vector field is evaluated with `t` frozen at 0.
+
+`CollocationConfig` wraps a `ContinuationConfig` (for `param_index`, `p_min`/`p_max`,
+step controls, `newton_tol`, `a`, `linked_param_indices`) plus:
+
+| Field | Meaning |
+| --- | --- |
+| `ntst` | Collocation mesh intervals |
+| `m` | Polynomial degree per interval |
+| `mesh_adapt` | Enable BifurcationKit mesh adaptation |
+| `newton_max_iter` | Orbit-corrector Newton budget (collocation's first correction is heavier than shooting's) |
+| `settle_time` | Flow time to settle onto the attractor before seeding |
+| `seed_span_factor` | Cycles integrated for the collocation initial guess |
+| `optimal_period` | Refine the seed period around the estimate |
+| `bothside` | Continue in both parameter directions from the seed |
+
+`OrbitBranchResult` carries the periodic-orbit `ContResult` and the collocation problem.
+Accessors decode it: `orbit_branch_parameters`, `orbit_branch_periods`,
+`orbit_branch_amplitude(result; state_index)`, and `orbit_branch_orbit(result, i)` (time
+grid + `dim × L` state samples of the `i`-th orbit). Stability is reported through the
+return-map monodromy (the nontrivial Floquet multipliers) via
+`orbit_branch_multipliers(result, sys, i; ...)` and `orbit_branch_stability(result, sys, i; ...)`,
+computed with the same variational machinery as the shooting branches — BifurcationKit's
+collocation-Floquet eigenvalues are not used because their largest-magnitude entries are
+dominated by spurious discretization modes.
 
 ## Codimension-2 curves
 

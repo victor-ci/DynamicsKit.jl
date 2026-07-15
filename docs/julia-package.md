@@ -141,6 +141,49 @@ p2 = continuation_branch(
 
 `trim_to_minimal_period=true` removes lower-period aliases from period-N continuation output.
 
+## Collocation periodic-orbit continuation
+
+For continuous-time systems, `continuation_orbit_collocation` continues the whole
+time-parameterized orbit and its period as a boundary-value problem (orthogonal
+collocation), instead of a fixed point of the Poincaré return map. Return-map shooting
+(`continuation_branch`) stays the default; collocation is an alternative for
+ill-conditioned return-map problems and for cross-validating the shooting branches.
+
+```julia
+res = continuation_orbit_collocation(
+    vilnius_oscillator(),
+    CollocationConfig(
+        continuation = ContinuationConfig(p_min=0.15, p_max=0.45, ds=0.01, dsmax=0.02,
+                                          param_index=1),
+        ntst = 40, m = 4,
+    );
+    period = 1,
+    params = [0.25, 30.0, 0.2],
+    initial_point = [0.0, 0.1, 0.0],
+)
+
+mu = orbit_branch_parameters(res)
+T  = orbit_branch_periods(res)                 # flow period of each orbit
+A  = orbit_branch_amplitude(res; state_index=1)
+t, states = orbit_branch_orbit(res, 1)         # decode one orbit (dim × L)
+stable, multipliers = orbit_branch_stability(res, vilnius_oscillator(), 1)
+```
+
+The collocation continuation ignores the return-map-specific `ContinuationConfig` fields
+(`detect_bifurcation`, `ode_jacobian_method`, `save_sol_every_step`, `detect_fold`); its
+Jacobian comes from BifurcationKit's collocation discretization. `ode_jacobian_method`
+only affects the *stability* accessors — `orbit_branch_multipliers`/`orbit_branch_stability`
+take it as a keyword (default `:variational`) for the return-map monodromy.
+`OrbitBranchResult` stores the periodic-orbit `ContResult` and the collocation problem.
+Stability comes from the return-map monodromy (the nontrivial Floquet multipliers) via
+the same variational machinery as the shooting branches, not BifurcationKit's
+collocation-Floquet eigenvalues (whose largest-magnitude entries are spurious
+discretization modes). On the analytic radial oscillator the recovered period, amplitude,
+and multiplier match the closed-form limit cycle and the shooting return-map multiplier;
+on the stiff memristive diode bridge the collocation branch — which return-map shooting's
+automatic seeder does not converge on — agrees with an independent shooting Newton solve
+to ~1e-4 in both the fixed point and the multipliers.
+
 ## Branch diagnostics
 
 Use diagnostics to inspect numerical trustworthiness and stability:

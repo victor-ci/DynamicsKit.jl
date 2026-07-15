@@ -51,6 +51,7 @@ include("analysis/lyapunov_spectrum.jl")
 include("analysis/spectrum.jl")
 include("analysis/phase_portrait.jl")
 include("analysis/continuation.jl")
+include("analysis/collocation.jl")
 include("analysis/codim2.jl")
 include("analysis/skeleton.jl")
 include("analysis/atlas.jl")
@@ -64,7 +65,7 @@ include("visualization/plots.jl")
 
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
-export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult
+export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -107,6 +108,8 @@ export select_ode_solver, collect_trajectory_seed_points
 
 # Exports — analysis
 export brute_force_diagram, continuation_branch, continuation_branches, continuation_branch_diagnostics, continuation_atlas, atlas_branches, find_periodic_skeleton
+export continuation_orbit_collocation
+export orbit_branch_parameters, orbit_branch_periods, orbit_branch_orbit, orbit_branch_amplitude, orbit_branch_multipliers, orbit_branch_stability
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
@@ -117,7 +120,7 @@ export CombinedBranchResult
 export Codim2ContinuationResult
 
 # Exports — config
-export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
+export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
 
 # Exports — I/O
 export save_result, load_result
