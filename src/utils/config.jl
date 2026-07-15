@@ -74,6 +74,40 @@ Configuration for a 1D largest-Lyapunov-Exponent parameter sweep.
 end
 
 """
+    LyapunovSpectrumConfig
+
+Configuration for a full Lyapunov-spectrum estimate at a single operating point via
+the Benettin/QR (tangent-space) method. Distinct from `LyapunovConfig`, which sweeps
+one parameter and estimates only the largest exponent with the two-trajectory method.
+
+The same fields drive both the discrete-map and continuous-flow estimators, but a few
+carry a method-specific unit:
+
+# Fields
+- `k`: Number of exponents to track from the top of the spectrum. `0` selects the full
+  state dimension. Must satisfy `1 <= k <= dim`.
+- `transient`: Reorthonormalization intervals discarded before accumulation, letting the
+  tangent frame align with the leading covariant directions. For discrete maps one
+  interval is one map iteration; for flows it is one `renorm_dt` window.
+- `steps`: Reorthonormalization intervals accumulated into the estimate.
+- `renorm_dt`: Flow-only integration time between successive QR reorthonormalizations.
+  Ignored for discrete maps (one iteration per interval).
+- `divergence_cutoff`: Optional state-amplitude bailout; `Inf` disables it.
+"""
+@with_kw struct LyapunovSpectrumConfig
+    k::Int = 0
+    transient::Int = 200
+    steps::Int = 2000
+    renorm_dt::Float64 = 0.5
+    divergence_cutoff::Float64 = Inf
+    @assert k >= 0 "LyapunovSpectrumConfig.k must be >= 0 (0 selects the full state dimension)"
+    @assert transient >= 0 "LyapunovSpectrumConfig.transient must be >= 0"
+    @assert steps >= 1 "LyapunovSpectrumConfig.steps must be >= 1"
+    @assert isfinite(renorm_dt) && renorm_dt > 0.0 "LyapunovSpectrumConfig.renorm_dt must be finite and > 0"
+    @assert isfinite(divergence_cutoff) || divergence_cutoff == Inf "LyapunovSpectrumConfig.divergence_cutoff must be finite or Inf"
+end
+
+"""
     ContinuationConfig
 
 Configuration for branch continuation via BifurcationKit.
