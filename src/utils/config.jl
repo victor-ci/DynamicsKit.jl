@@ -162,6 +162,51 @@ Configuration for branch continuation via BifurcationKit.
 end
 
 """
+    CollocationConfig
+
+Configuration for full-orbit periodic-orbit continuation by orthogonal collocation, as
+an alternative to the default Poincaré return-map shooting. The whole time-parameterized
+orbit and its period are continued as a boundary-value problem (a mesh of `ntst`
+intervals with degree-`m` polynomials plus a phase condition), rather than a fixed point
+of the return map.
+
+# Fields
+- `continuation`: Primary-axis continuation settings (`param_index`, `p_min`/`p_max`,
+  `ds`/`dsmax`/`dsmin`, `max_steps`, `newton_tol`, `a`, `linked_param_indices`). The
+  return-map-specific fields (`detect_bifurcation`, `ode_jacobian_method`,
+  `save_sol_every_step`, `detect_fold`) are not used by the collocation path.
+- `ntst`: Number of mesh intervals for the collocation discretization.
+- `m`: Polynomial degree per interval (Gauss collocation points).
+- `mesh_adapt`: Enable BifurcationKit mesh adaptation during continuation.
+- `newton_max_iter`: Newton budget for the orbit corrector. Collocation's first
+  correction is heavier than the return-map solve, so this defaults higher than
+  `ContinuationConfig.newton_max_iter`.
+- `settle_time`: Flow time integrated from the seed to settle onto the attractor before
+  the orbit seed is extracted.
+- `seed_span_factor`: The seed orbit is integrated over `seed_span_factor` periods to
+  give the collocation initial guess a full cycle with margin.
+- `optimal_period`: Let BifurcationKit refine the seed period around the estimate.
+- `bothside`: Continue in both parameter directions from the seed (as the shooting
+  branches do), so a mid-window seed covers the whole `[p_min, p_max]` range.
+"""
+@with_kw struct CollocationConfig
+    continuation::ContinuationConfig
+    ntst::Int = 40
+    m::Int = 4
+    mesh_adapt::Bool = false
+    newton_max_iter::Int = 30
+    settle_time::Float64 = 200.0
+    seed_span_factor::Float64 = 1.3
+    optimal_period::Bool = true
+    bothside::Bool = true
+    @assert ntst >= 5 "CollocationConfig.ntst must be >= 5"
+    @assert 2 <= m <= 7 "CollocationConfig.m must be in 2:7"
+    @assert newton_max_iter >= 1 "CollocationConfig.newton_max_iter must be >= 1"
+    @assert isfinite(settle_time) && settle_time >= 0.0 "CollocationConfig.settle_time must be finite and >= 0"
+    @assert isfinite(seed_span_factor) && seed_span_factor > 1.0 "CollocationConfig.seed_span_factor must be finite and > 1"
+end
+
+"""
     ReseedConfig
 
 Controls automatic re-seeding when a continuation direction terminates prematurely in the

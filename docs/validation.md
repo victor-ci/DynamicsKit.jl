@@ -59,6 +59,7 @@ The full suite includes package-quality checks through Aqua.jl, and runs in CI o
 | Multistability maps | Confirm coexistence flags and basin fractions on multiseed examples |
 | Lyapunov maps | Confirm positive/neutral/unresolved classifications on known regions |
 | Lyapunov spectrum | Benettin/QR spectra recover analytic maps/ODEs, the Hénon volume invariant, and the Rössler `(+, 0, −)` signature |
+| Collocation orbit continuation | Analytic radial-oscillator period/amplitude/multiplier; agreement with return-map shooting on the Vilnius and stiff MDB period-1 branches |
 | Codim-2 curve tracking | Confirm stitched curves follow the expected slice candidates and preserve source/provenance metadata |
 | Adaptive 2D refinement | Confirm sparse refinement appears near period/status/confidence boundaries |
 | Cache fingerprinting | Confirm implementation/schema/input changes invalidate stale artifacts |

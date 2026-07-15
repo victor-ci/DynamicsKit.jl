@@ -560,6 +560,30 @@ struct BranchResult
 end
 
 """
+    OrbitBranchResult
+
+Result of a full-orbit periodic-orbit continuation by collocation. Unlike `BranchResult`
+(a continued fixed point of the Poincaré return map), this carries the whole continued
+family of time-parameterized orbits: `branch` is the BifurcationKit periodic-orbit
+`ContResult` and `coll` the collocation problem needed to decode each stored orbit and
+its period. `period` is the requested topological period (number of section returns per
+cycle). `base_params`, `param_index`, and `linked_param_indices` record the
+parameter-injection mapping so orbit stability can be evaluated at any branch point.
+"""
+struct OrbitBranchResult
+    branch::Any                       # BifurcationKit periodic-orbit ContResult
+    coll::Any                         # BifurcationKit Collocation problem
+    period::Int
+    base_params::Vector{Float64}
+    param_index::Int
+    linked_param_indices::Vector{Int}
+    system_name::String
+    param_name::Symbol
+    method::Symbol
+    timestamp::DateTime
+end
+
+"""
     BifurcationResult
 
 Aggregated result containing brute-force and/or branch data.
