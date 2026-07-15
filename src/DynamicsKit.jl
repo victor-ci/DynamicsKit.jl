@@ -113,6 +113,7 @@ export switching_event_diagnostics
 # Exports — atlas + combined-branch results
 export AtlasResult, AtlasWindow, AtlasGap, AtlasReconSample, AtlasBranchRecord
 export CombinedBranchResult
+export Codim2ContinuationResult
 
 # Exports — config
 export BruteForceConfig, LyapunovConfig, ContinuationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
@@ -125,6 +126,7 @@ export save_result, load_result
 export serialize_bruteforce_result, deserialize_bruteforce_result
 export serialize_branch_result, deserialize_branch_result
 export serialize_atlas_result, deserialize_atlas_result
+export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
 
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum

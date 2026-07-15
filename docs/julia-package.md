@@ -180,7 +180,33 @@ curve = codim2_curve(affine, Codim2Config(
 plot_codim2(curve)
 ```
 
-`Codim2CurveResult` stores the stitched curve (`primary_values` / `secondary_values`), a `valid_mask`, all per-slice `raw_candidates`, per-slice provenance (`candidate_sources`, `slice_statuses`, `slice_messages`), and the engine metadata (`engine`, `tracking_anchor`, `tracking_tolerance`). The current engine is `:slice_tracking`, so the API stays stable even if the internal tracing engine changes later. `Codim2Config.threaded` now defaults to `false`; enable it explicitly only when you are comfortable running multiple continuation slices concurrently on your Julia build / dependency stack.
+`Codim2CurveResult` stores the stitched curve (`primary_values` / `secondary_values`), a `valid_mask`, all per-slice `raw_candidates`, per-slice provenance (`candidate_sources`, `slice_statuses`, `slice_messages`), and the engine metadata (`engine`, `tracking_anchor`, `tracking_tolerance`). `Codim2Config.threaded` now defaults to `false`; enable it explicitly only when you are comfortable running multiple continuation slices concurrently on your Julia build / dependency stack.
+
+### Defining-system engine
+
+Setting `engine=:defining_system` on `Codim2Config` continues the bifurcation
+condition itself instead of stitching slices: the fixed-point equation of the
+period-`N` map is augmented with the eigenvector condition for the defining
+multiplier (`:pd` → −1, `:fold` → +1) and the augmented system is continued in
+the secondary parameter with pseudo-arclength continuation. One anchor slice
+seeds the curve; every candidate is verified against the actual return-map
+multiplier before seeding, and per-sample diagnostics (`fixed_point_residuals`,
+`multipliers`) let each returned point be checked against the defining
+condition. Points are solved to Newton tolerance (slice tracking is limited to
+half the branch sampling distance), and the curve can follow folds of the locus
+itself (`curve_fold_secondary_values`). Returns `Codim2ContinuationResult`
+(arc-ordered `primary_values`/`secondary_values`, per-sample `states` and
+`defining_vectors` columns, seed metadata); `plot_codim2` and
+`save_result`/`load_result` accept it, and
+`serialize_codim2_continuation_result`/`deserialize_codim2_continuation_result`
+provide the JSON-plain wire form. `:ns` curves carry the complex defining
+vector in `defining_vectors`/`defining_vectors_imag` and the multiplier angle
+in `phase_angles`. The optional
+`curve_continuation` config controls the secondary-parameter leg (bounds,
+step sizes, Newton settings); its `param_index`/`linked_param_indices` are
+ignored — the leg always continues the secondary parameter
+(`second_param_index`). `nothing` derives conservative settings from the
+secondary grid.
 
 ## Periodic skeleton search
 

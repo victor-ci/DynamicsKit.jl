@@ -252,6 +252,77 @@ function _deserialize_atlas_result(data::AbstractDict{<:AbstractString, <:Any}; 
     )
 end
 
+const _CODIM2_CONTINUATION_FORMAT = "codim2-continuation-v1"
+
+function _serialize_codim2_continuation_result(result::Codim2ContinuationResult)
+    return Dict{String, Any}(
+        "format" => _CODIM2_CONTINUATION_FORMAT,
+        "primaryValues" => copy(result.primary_values),
+        "secondaryValues" => copy(result.secondary_values),
+        "states" => [collect(Float64, view(result.states, :, j)) for j in 1:size(result.states, 2)],
+        "definingVectors" => [collect(Float64, view(result.defining_vectors, :, j)) for j in 1:size(result.defining_vectors, 2)],
+        "definingVectorsImag" => [collect(Float64, view(result.defining_vectors_imag, :, j)) for j in 1:size(result.defining_vectors_imag, 2)],
+        "phaseAngles" => copy(result.phase_angles),
+        "fixedPointResiduals" => copy(result.fixed_point_residuals),
+        "multipliers" => [[Float64[real(mu), imag(mu)] for mu in sample] for sample in result.multipliers],
+        "curveFoldSecondaryValues" => copy(result.curve_fold_secondary_values),
+        "seedPrimary" => result.seed_primary,
+        "seedSecondary" => result.seed_secondary,
+        "bifurcationKind" => String(result.bifurcation_kind),
+        "period" => result.period,
+        "systemName" => result.system_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "engine" => String(result.engine),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _codim2_columns_to_matrix(columns)
+    cols = [collect(Float64, col) for col in columns]
+    n = length(cols)
+    dim = isempty(cols) ? 0 : length(cols[1])
+    out = Matrix{Float64}(undef, dim, n)
+    for (j, col) in enumerate(cols)
+        length(col) == dim || error("Serialized codim-2 state columns must all share one dimension.")
+        out[:, j] = col
+    end
+    return out
+end
+
+function _codim2_multiplier_from_pair(pair)
+    (pair isa AbstractVector && length(pair) == 2 && all(v -> v isa Real, pair)) || error(
+        "Serialized codim-2 multipliers must be [re, im] pairs of reals; got $(repr(pair)).")
+    return complex(Float64(pair[1]), Float64(pair[2]))
+end
+
+function _deserialize_codim2_continuation_result(data::AbstractDict)
+    format = _as_string(get(data, "format", ""), "")
+    format == _CODIM2_CONTINUATION_FORMAT || error(
+        "Unsupported codim-2 continuation serialization format '$format'.")
+    param_names = collect(get(data, "paramNames", Any[]))
+    length(param_names) == 2 || error("Serialized codim-2 continuation result needs exactly two paramNames.")
+    return Codim2ContinuationResult(
+        collect(Float64, get(data, "primaryValues", Float64[])),
+        collect(Float64, get(data, "secondaryValues", Float64[])),
+        _codim2_columns_to_matrix(get(data, "states", Any[])),
+        _codim2_columns_to_matrix(get(data, "definingVectors", Any[])),
+        _codim2_columns_to_matrix(get(data, "definingVectorsImag", Any[])),
+        collect(Float64, get(data, "phaseAngles", Float64[])),
+        collect(Float64, get(data, "fixedPointResiduals", Float64[])),
+        [[_codim2_multiplier_from_pair(pair) for pair in sample]
+         for sample in collect(get(data, "multipliers", Any[]))],
+        collect(Float64, get(data, "curveFoldSecondaryValues", Float64[])),
+        Float64(get(data, "seedPrimary", NaN)),
+        Float64(get(data, "seedSecondary", NaN)),
+        Symbol(_as_string(get(data, "bifurcationKind", "pd"), "pd")),
+        Int(get(data, "period", 1)),
+        _as_string(get(data, "systemName", ""), ""),
+        (Symbol(String(param_names[1])), Symbol(String(param_names[2]))),
+        Symbol(_as_string(get(data, "engine", "defining_system"), "defining_system")),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now())))
+    )
+end
+
 # --- Public serialization API ---
 # The JSON-plain wire format for the library's public result types; external persistence layers
 # build on these. The per-field sub-helpers above stay private — only these entry points are public.
@@ -267,3 +338,7 @@ const deserialize_branch_result = _deserialize_branch_result
 const serialize_atlas_result = _serialize_atlas_result
 """    deserialize_atlas_result(data::AbstractDict) -> AtlasResult"""
 const deserialize_atlas_result = _deserialize_atlas_result
+"""    serialize_codim2_continuation_result(result::Codim2ContinuationResult) -> Dict — JSON-plain form (multipliers stored as [re, im] pairs)."""
+const serialize_codim2_continuation_result = _serialize_codim2_continuation_result
+"""    deserialize_codim2_continuation_result(data::AbstractDict) -> Codim2ContinuationResult"""
+const deserialize_codim2_continuation_result = _deserialize_codim2_continuation_result

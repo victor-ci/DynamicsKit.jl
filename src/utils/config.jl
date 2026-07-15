@@ -344,8 +344,12 @@ end
 """
     Codim2Config
 
-Configuration for codimension-2 bifurcation-curve assembly from a family of
-1D continuation slices.
+Configuration for codimension-2 bifurcation-curve computation. Two engines are
+available: `:slice_tracking` assembles the curve from a family of independent
+1D continuation slices, while `:defining_system` continues the bifurcation
+condition itself in the secondary parameter via a minimally augmented defining
+system (period-doubling: `(DF^N + I)v = 0`; fold: `(DF^N - I)v = 0`) and
+returns a `Codim2ContinuationResult`.
 
 # Fields
 - `continuation`: Primary-axis continuation settings (`param_index` chooses the
@@ -364,7 +368,10 @@ Configuration for codimension-2 bifurcation-curve assembly from a family of
 - `primary_min_values`, `primary_max_values`: Optional per-slice primary continuation bounds; when omitted every slice reuses `continuation.p_min` / `continuation.p_max`
 - `diagnostics_max_points`: Maximum branch points sampled when the period-doubling fallback uses branch diagnostics
 - `fallback_to_stability_flips`: When `true`, period-doubling curves fall back to stable/unstable flip detection if BifurcationKit does not emit explicit `:pd` special points
-- `threaded`: Whether independent continuation slices may run across multiple Julia threads; defaults to `false` because the continuation backend should be treated as an explicit opt-in for concurrent slice execution
+- `threaded`: Opt-in multithreading (default `false`). Slice tracking runs independent continuation slices across threads; the defining-system engine threads the finite-difference augmented-Jacobian columns (ODE systems) and the per-sample curve diagnostics — the continuation walk itself is inherently sequential
+- `engine`: `:slice_tracking` (default) or `:defining_system`; the defining-system engine supports `bifurcation_kind` `:pd`, `:fold`, and `:ns` (`:hopf` alias included)
+- `curve_continuation`: Optional `ContinuationConfig` governing the defining-system curve leg; its `p_min`/`p_max`/`ds`/step/Newton fields apply to the **secondary** parameter (`nothing` derives conservative settings from `second_min`/`second_max`/`second_steps` and the primary Newton settings). Its `param_index`/`linked_param_indices`/`detect_bifurcation`/`ode_jacobian_method` fields are **ignored**: the leg always continues the secondary parameter (`second_param_index` + `second_linked_param_indices`) through a synthetic augmented problem
+- `curve_diagnostics`: When `true` (default), the defining-system engine records per-point fixed-point residual norms and return-map multipliers on the returned curve
 """
 @with_kw struct Codim2Config
    continuation::ContinuationConfig
@@ -386,6 +393,10 @@ Configuration for codimension-2 bifurcation-curve assembly from a family of
     diagnostics_max_points::Int = 400
     fallback_to_stability_flips::Bool = true
     threaded::Bool = false
+    engine::Symbol = :slice_tracking
+    curve_continuation::Union{Nothing, ContinuationConfig} = nothing
+    curve_diagnostics::Bool = true
+    @assert engine in (:slice_tracking, :defining_system) "Codim2Config.engine must be :slice_tracking or :defining_system"
     @assert isfinite(second_min) && isfinite(second_max) && second_max >= second_min "Codim2Config requires finite second_min/second_max with second_max >= second_min"
     @assert second_steps >= 1 "Codim2Config.second_steps must be >= 1"
     @assert second_param_index >= 1 "Codim2Config.second_param_index must be >= 1"
