@@ -206,6 +206,21 @@ diag["stabilityFlags"]
 
 For ODE branches, `ContinuationConfig(ode_jacobian_method=:variational, ...)` requests variational-equation monodromy where available; `:finite_difference` remains the fallback.
 
+## Map special points (period-doubling / fold)
+
+`map_special_points(sys, branch, base_params)` locates period-doubling (`:pd`) and fold (`:fold`) points on a continued map / Poincaré return-map branch. BifurcationKit's residual-convention detector misses map period-doublings (multiplier `μ = λ + 1`, so `μ → −1` never crosses the imaginary axis); this routine detects sign changes of the map test functions `∏(μᵢ − 1)` (fold) and `∏(μᵢ + 1)` (flip) along the branch and refines each by arclength bisection with a fixed-point re-solve.
+
+```julia
+branch = continuation_branch(boost_converter(), ContinuationConfig(p_min=1.2, p_max=1.95, ds=0.005, param_index=1), 1;
+                             initial_point=[17.4, 1.11], params=[1.5, 10.0, 20.0, 0.0])
+sp = map_special_points(boost_converter(), branch, [1.5, 10.0, 20.0, 0.0]; detect=[:pd])
+sp[1].kind             # :pd
+sp[1].param            # subharmonic period-doubling (μ = -1), missed by branch.branch.specialpoint
+sp[1].critical_multiplier
+```
+
+Each `MapSpecialPoint` carries `kind`, `param`, `state`, `multipliers`, `critical_multiplier`, `test_value`, `period`, and `converged`. Complex-conjugate pairs contribute a non-negative factor to each test function, so Neimark–Sacker crossings are not reported as PD/fold. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match their closed-form values.
+
 ## Codimension-2 bifurcation curves
 
 `codim2_curve` assembles a traced curve in a two-parameter plane by sweeping a secondary parameter and running a 1D continuation slice along the primary parameter at each secondary value.
