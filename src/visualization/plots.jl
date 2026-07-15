@@ -465,6 +465,48 @@ function plot_lyapunov_diagram(result::LyapunovDiagramResult;
 end
 
 """
+    plot_lyapunov_spectrum(result::LyapunovSpectrumResult; figsize=(850,500), kwargs...)
+
+Plot the convergence of the finite-time Lyapunov exponents toward the reported
+spectrum. Each line is one exponent's running estimate against the accumulation
+horizon (iterations for maps, flow time for ODEs).
+"""
+function plot_lyapunov_spectrum(result::LyapunovSpectrumResult;
+                                figsize=(850,500),
+                                xlabel::Union{Nothing, String}=nothing,
+                                ylabel::Union{Nothing, String}=nothing,
+                                title::Union{Nothing, String}=nothing,
+                                zero_line::Bool=true,
+                                kwargs...)
+    n = size(result.convergence, 1)
+    k = size(result.convergence, 2)
+    n > 0 || throw(ArgumentError(
+        "plot_lyapunov_spectrum received a result with no accumulated intervals " *
+        "(estimation_status = :$(result.estimation_status)); nothing to plot."))
+    horizon_unit = result.kind == :continuous_flow ? result.total_time / max(n, 1) : 1.0
+    horizon = collect(1:n) .* horizon_unit
+    default_x = result.kind == :continuous_flow ? "Flow time" : "Iterations"
+    p = plot(;
+        xlabel=something(xlabel, default_x),
+        ylabel=something(ylabel, "Finite-time Lyapunov exponent"),
+        title=something(title, "$(result.system_name) — Lyapunov Spectrum"),
+        size=figsize,
+        dpi=160,
+        grid=true,
+        framestyle=:box,
+        kwargs...)
+    for i in 1:k
+        plot!(p, horizon, result.convergence[:, i];
+            linewidth=1.8,
+            label="λ$(i) → $(round(result.exponents[i]; digits=4))")
+    end
+    if zero_line
+        hline!(p, [0.0]; color=:black, linestyle=:dash, linewidth=1.0, alpha=0.7, label="0")
+    end
+    return p
+end
+
+"""
     plot_branches(results::Vector{BranchResult}; orbital=1, figsize=(800,500), kwargs...)
 
 Plot continuation branches. Blue = stable, red = unstable.

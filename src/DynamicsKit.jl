@@ -47,6 +47,7 @@ include("analysis/parameter_mapping.jl")   # shared param-vector mapping (before
 include("analysis/solvers.jl")             # public ODE solver selection
 include("analysis/brute_force.jl")
 include("analysis/lyapunov.jl")
+include("analysis/lyapunov_spectrum.jl")
 include("analysis/spectrum.jl")
 include("analysis/phase_portrait.jl")
 include("analysis/continuation.jl")
@@ -63,7 +64,7 @@ include("visualization/plots.jl")
 
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
-export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult
+export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -107,7 +108,7 @@ export select_ode_solver, collect_trajectory_seed_points
 # Exports — analysis
 export brute_force_diagram, continuation_branch, continuation_branches, continuation_branch_diagnostics, continuation_atlas, atlas_branches, find_periodic_skeleton
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
-export lyapunov_diagram, lyapunov_field, power_spectrum, codim2_curve
+export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
 
 # Exports — atlas + combined-branch results
@@ -116,7 +117,7 @@ export CombinedBranchResult
 export Codim2ContinuationResult
 
 # Exports — config
-export BruteForceConfig, LyapunovConfig, ContinuationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
+export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
 
 # Exports — I/O
 export save_result, load_result
@@ -129,7 +130,7 @@ export serialize_atlas_result, deserialize_atlas_result
 export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
 
 # Exports — visualization
-export plot_brute_force, plot_lyapunov_diagram, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum
+export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum
 export plot_overlay_heatmap, plot_panel_grid, plot_seed_pair_composite
 
 # Exports — trace-data helpers (data behind the Plots recipes; consumed by the workbench UI layer)

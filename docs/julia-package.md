@@ -61,6 +61,23 @@ plot_lyapunov_diagram(lyap)
 
 `LyapunovDiagramResult` stores the sampled parameter grid, exponent vector, per-sample classification labels, estimator-status labels, and sample counts.
 
+## Lyapunov spectrum
+
+For the full spectrum at one operating point (not a sweep), `lyapunov_spectrum(sys, LyapunovSpectrumConfig(...))` evolves an orthonormal tangent frame with the Benettin/QR method: discrete maps use the map's AD Jacobian per iteration, continuous flows integrate the first variational equation `dQ/dt = J(u) Q` and reorthonormalize every `renorm_dt` of flow time.
+
+```julia
+spectrum = lyapunov_spectrum(rossler_oscillator(), LyapunovSpectrumConfig(
+    transient=200,
+    steps=2000,
+    renorm_dt=0.5,
+); params=[0.2, 0.2, 5.7])
+
+spectrum.exponents        # ordered largest → smallest, e.g. (+, 0, −) for chaotic Rössler
+plot_lyapunov_spectrum(spectrum)
+```
+
+`LyapunovSpectrumResult` carries the ordered `exponents`, a `convergence` matrix of the running finite-time estimates (one row per accumulated interval, one column per exponent), the `estimation_status`, and `total_time`. Set `k` to track only the leading exponents. Two built-in sanity checks: the exponents sum to the mean log volume-change rate — `log|det J|` for maps, and the long-time average of the flow's divergence (the time-averaged trace of `J(u(t))` along the trajectory) for ODEs — and a bounded non-equilibrium flow always shows one numerically zero exponent.
+
 ## Lyapunov field
 
 For a direct 2D exponent sweep, call `lyapunov_field(sys, config)` with the same parameter-plane axes you would use for a 2D map. This path skips period classification entirely and computes the Lyapunov field directly from the fixed initial condition at each cell. For continuous systems, `BifurcationMapConfig.min_crossing_time` controls the minimum accepted separation between Poincare crossings and therefore participates in both the run semantics and cache identity.
@@ -429,7 +446,7 @@ save_result("henon_bf.jld2", bf)
 loaded = load_result("henon_bf.jld2")
 ```
 
-Supported result types include `BruteForceResult`, `LyapunovDiagramResult`, `BasinsResult`, `LyapunovFieldResult`, `BifurcationMapResult`, `PhasePortraitResult`, `PowerSpectrumResult`, `Codim2CurveResult`, `BranchResult`, and aggregate result objects.
+Supported result types include `BruteForceResult`, `LyapunovDiagramResult`, `LyapunovSpectrumResult`, `BasinsResult`, `LyapunovFieldResult`, `BifurcationMapResult`, `PhasePortraitResult`, `PowerSpectrumResult`, `Codim2CurveResult`, `BranchResult`, and aggregate result objects.
 
 For a portable **JSON-plain** form (e.g. to embed a result in an HTTP payload or a non-JLD2 store)
 the result types also have dict serializers — `serialize_bruteforce_result` / `serialize_branch_result`

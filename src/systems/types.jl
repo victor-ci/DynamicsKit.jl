@@ -388,6 +388,29 @@ function BasinsResult(x_grid::Vector{Float64},
 end
 
 """
+    LyapunovSpectrumResult
+
+Full Lyapunov spectrum at a single operating point, from the Benettin/QR
+(tangent-space) method. `exponents` are ordered from largest to smallest;
+`convergence` stores the running finite-time estimate after each accumulated
+reorthonormalization interval (size `sample_count` × `length(exponents)`), so the
+approach to the reported values can be inspected. `total_time` is the accumulation
+horizon: iteration count for discrete maps, elapsed time for continuous flows.
+`kind` is `:discrete_map` or `:continuous_flow`.
+"""
+struct LyapunovSpectrumResult
+    exponents::Vector{Float64}
+    convergence::Matrix{Float64}
+    estimation_status::Symbol
+    sample_count::Int
+    total_time::Float64
+    kind::Symbol
+    params::Vector{Float64}
+    system_name::String
+    timestamp::DateTime
+end
+
+"""
     LyapunovFieldResult
 
 Largest-Lyapunov-Exponent field over a 2D parameter sweep.
