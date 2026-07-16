@@ -1,7 +1,7 @@
 # DynamicsKit.jl
 
 [![CI](https://github.com/victor-ci/DynamicsKit.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/victor-ci/DynamicsKit.jl/actions/workflows/CI.yml)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21327845.svg)](https://doi.org/10.5281/zenodo.21327845)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21327845-blue.svg)](https://doi.org/10.5281/zenodo.21327845)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A Julia library for bifurcation analysis of dynamical systems — discrete maps and continuous-time
