@@ -15,8 +15,13 @@ authors:
     affiliation: "Riga Technical University"
     orcid: "https://orcid.org/0009-0003-3839-5052"
 license: MIT
+doi: 10.5281/zenodo.21327845
 repository-code: "https://github.com/victor-ci/DynamicsKit.jl"
 url: "https://github.com/victor-ci/DynamicsKit.jl"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21327845
+    description: "Concept DOI resolving to the latest archived release (all versions)"
 keywords:
   - bifurcation analysis
   - dynamical systems
@@ -25,5 +30,6 @@ keywords:
   - Poincaré map
   - chaos
   - Julia
-# version and date-released are taken from each tagged GitHub release by Zenodo;
-# a DOI is minted per release once the repository is enabled in Zenodo.
+# The `doi` above is the Zenodo concept DOI (all versions); Zenodo also mints a
+# per-release version DOI for each tagged GitHub release, from which it takes the
+# version and date-released.
