@@ -1,6 +1,6 @@
 name = "DynamicsKit"
 uuid = "2afe95f4-12e3-475a-b169-cd848969dbfb"
-version = "0.1.6"
+version = "0.2.0"
 authors = ["Victor Iheanacho <victor.iheanacho@outlook.com>"]
 
 [deps]

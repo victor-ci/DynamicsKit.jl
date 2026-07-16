@@ -1,24 +1,31 @@
 name: Register
 
-# Manually triggered from the Actions tab. Validates the requested version, runs the full test
-# suite as a gate, bumps Project.toml, pushes the bump to main, and comments
-# `@JuliaRegistrator register` on that commit.
+# Manually triggered from the Actions tab. Validates the requested version against Project.toml and
+# the tag history, runs the full test suite as a gate, then comments `@JuliaRegistrator register` on
+# the current default-branch commit.
 #
-# From there the release is fully automated and this workflow is done: JuliaRegistrator opens the
-# General-registry PR, AutoMerge lands it, and TagBot.yml then creates the vX.Y.Z git tag + GitHub
-# Release (which in turn triggers the Zenodo archive). This workflow deliberately does NOT create the
-# tag or the GitHub Release itself — TagBot owns those, and pre-creating the tag would collide with it.
+# This workflow does NOT push to the default branch. The `main` branch is protected by a ruleset that
+# requires all changes to go through a pull request, so the version bump must be merged first (see
+# below). Registration itself is only a commit comment, which needs no push and does not touch the
+# protected branch.
+#
+# Release procedure:
+#   1. Open a PR that bumps `version` in Project.toml to X.Y.Z and merge it into main.
+#   2. Run this workflow with the same X.Y.Z. It confirms main is at that version, gates on tests,
+#      and comments `@JuliaRegistrator register` on main's HEAD.
+#   3. From there it is automated: JuliaRegistrator opens the General-registry PR, AutoMerge lands it,
+#      and TagBot.yml creates the vX.Y.Z tag + GitHub Release (which triggers the Zenodo archive).
+#      This workflow deliberately does not create the tag or Release — TagBot owns those.
 #
 # Prerequisite: a repository secret REGISTRATOR_TOKEN holding a PAT (classic: `repo` scope; or a
 # fine-grained PAT for this repo with Contents: read & write) belonging to a user with push access
 # (Victor). JuliaRegistrator only honors a trigger comment from an authorized repo user; the default
-# GITHUB_TOKEN comments as github-actions[bot], which Registrator will not accept. The PAT also
-# authors the bump commit/push so it is attributable to a real user.
+# GITHUB_TOKEN comments as github-actions[bot], which Registrator will not accept.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "New version, strict SemVer X.Y.Z (e.g. 0.2.0; a leading 'v' is accepted)"
+        description: "Version to register, strict SemVer X.Y.Z (must already be merged into Project.toml on main; a leading 'v' is accepted)"
         required: true
         type: string
       release_notes:
@@ -32,7 +39,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write   # push the bump commit
+  contents: read    # checkout only; the trigger comment is posted with the PAT, not GITHUB_TOKEN
   actions: write    # CI.yml cache step requests this when reused as the release gate
 
 jobs:
@@ -76,19 +83,19 @@ jobs:
             fi
           fi
 
-          # 4. Project.toml must not already be ahead of the requested version.
+          # 4. Project.toml on this (default) branch must already be AT the requested version.
+          # This workflow does not push, so the bump PR must be merged before registering.
           proj="$(grep -E '^version *= *"' Project.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
-          if [[ -n "$proj" && "$proj" != "$ver" ]]; then
-            highestp="$(printf '%s\n%s\n' "$proj" "$ver" | sort -V | tail -n1)"
-            if [[ "$highestp" != "$ver" ]]; then
-              echo "::error::Project.toml version ($proj) is newer than requested ($ver)."
-              exit 1
-            fi
+          if [[ "$proj" != "$ver" ]]; then
+            echo "::error::Project.toml is at '$proj' but you requested $ver."
+            echo "::error::Bump Project.toml to $ver via a pull request and merge it before running Register"
+            echo "::error::(this workflow does not push to the protected default branch)."
+            exit 1
           fi
 
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=$tag"     >> "$GITHUB_OUTPUT"
-          echo "Validated $tag (latest release: ${latest:-none}, Project.toml: ${proj:-none})."
+          echo "Validated $tag (latest release: ${latest:-none}, Project.toml: $proj)."
 
   test:
     name: Test gate
@@ -96,7 +103,7 @@ jobs:
     uses: ./.github/workflows/CI.yml
 
   register:
-    name: Bump & trigger registration
+    name: Trigger registration
     needs: [validate, test]
     runs-on: ubuntu-latest
     env:
@@ -109,43 +116,14 @@ jobs:
           HAS_TOKEN: ${{ secrets.REGISTRATOR_TOKEN != '' }}
         run: |
           if [[ "$HAS_TOKEN" != "true" ]]; then
-            echo "::error::REGISTRATOR_TOKEN secret is not set. Add a PAT with push access so the"
-            echo "::error::@JuliaRegistrator comment is authored by an authorized user."
+            echo "::error::REGISTRATOR_TOKEN secret is not set. Add a PAT belonging to a repo user so"
+            echo "::error::the @JuliaRegistrator comment is authored by an authorized user."
             exit 1
           fi
 
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          # Persist the PAT so the push (and thus the bump commit's author context) is a real user,
-          # which is what JuliaRegistrator requires to honor the trigger comment.
-          token: ${{ secrets.REGISTRATOR_TOKEN }}
 
-      - name: Configure git identity
-        run: |
-          git config user.name "Victor Iheanacho"
-          git config user.email "victor.iheanacho@outlook.com"
-
-      - name: Bump Project.toml version
-        run: |
-          set -euo pipefail
-          perl -i -pe 's/^version\s*=\s*"[^"]*"/version = "$ENV{VERSION}"/' Project.toml
-          grep -E '^version = ' Project.toml
-
-      - name: Commit and push version bump (if changed)
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- Project.toml; then
-            echo "Project.toml already at $VERSION; registering current HEAD."
-          else
-            git add Project.toml
-            # [skip ci]: the test gate above already validated this tree; the bump only touches the
-            # version string, so a second CI run on the bump commit would be redundant.
-            git commit -m "Release $TAG [skip ci]"
-            git push origin HEAD:main
-          fi
-
-      - name: Comment @JuliaRegistrator on the release commit
+      - name: Comment @JuliaRegistrator on main's HEAD
         env:
           GH_TOKEN: ${{ secrets.REGISTRATOR_TOKEN }}
         run: |
