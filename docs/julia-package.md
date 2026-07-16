@@ -206,6 +206,42 @@ diag["stabilityFlags"]
 
 For ODE branches, `ContinuationConfig(ode_jacobian_method=:variational, ...)` requests variational-equation monodromy where available; `:finite_difference` remains the fallback.
 
+## Branch classification (families and basins)
+
+Two conservative, geometry-based classifiers label continuation branches from their sampled Poincaré-orbit geometry. Both return one record per input branch, in the same order as `branches`.
+
+`branch_family_assignments(sys, branches; kwargs...) -> Vector{BranchFamilyAssignment}` groups branches that trace the same attractor family. Branches are only compared when they share the same minimal period (`same_period_only=true`), so a period-doubled child is never silently merged with its parent unless a caller opts in. Tuning knobs: `sample_count`, `min_overlap_fraction`, `distance_tolerance`, the parameter context (`params`, `linked_param_indices`), and the ODE orbit-sampling controls (`solver`, `reltol`, `abstol`, `tmax`, `min_crossing_time`).
+
+```julia
+branches = [
+    continuation_branch(henon_map(), ContinuationConfig(p_min=0.0, p_max=1.4);
+                        initial_point=[0.63, 0.19], params=[1.0, 0.3]),
+    continuation_branch(henon_map(), ContinuationConfig(p_min=0.0, p_max=1.4), 2;
+                        initial_point=[0.5, 0.1], params=[1.0, 0.3]),
+]
+
+fams = branch_family_assignments(henon_map(), branches; params=[1.0, 0.3])
+fams[1].family_id        # e.g. "family-1"
+fams[1].confidence
+```
+
+Each `BranchFamilyAssignment` carries `branch_index`, `family_index`, `family_id`, `family_label`, `confidence`, and a `diagnostics` dict (`period`, `paramMin`, `paramMax`, `sampleCount`, ...).
+
+`branch_basin_assignments(sys, branches, brute_force; kwargs...) -> Vector{BranchBasinAssignment}` classifies each branch as `observed` or `unobserved` against the attractor cloud reached by a supplied `BruteForceResult` — i.e. whether the branch's sampled orbits appear in what that brute-force seed actually visited. It does **not** enumerate every basin of the system.
+
+```julia
+bf  = brute_force_diagram(henon_map(),
+                          BruteForceConfig(param_min=0.0, param_max=1.4, param_steps=400))
+bas = branch_basin_assignments(henon_map(), branches, bf; params=[1.0, 0.3])
+bas[1].observed          # true if this branch matches the seed's observed attractor
+```
+
+Each `BranchBasinAssignment` carries `branch_index`, `basin_index`, `basin_id` (`"observed"`/`"unobserved"`), `basin_label`, `observed::Bool`, `confidence`, and a `diagnostics` dict (`medianDistance`, `matchedSampleCount`, `paramTolerance`, ...).
+
+## Switching-event diagnostics
+
+`switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.
+
 ## Map special points (period-doubling / fold)
 
 `map_special_points(sys, branch, base_params)` locates period-doubling (`:pd`) and fold (`:fold`) points on a continued map / Poincaré return-map branch. BifurcationKit's residual-convention detector misses map period-doublings (multiplier `μ = λ + 1`, so `μ → −1` never crosses the imaginary axis); this routine detects sign changes of the map test functions `∏(μᵢ − 1)` (fold) and `∏(μᵢ + 1)` (flip) along the branch and refines each by arclength bisection with a fixed-point re-solve.
