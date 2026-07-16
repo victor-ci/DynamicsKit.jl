@@ -1,12 +1,18 @@
 # DynamicsKit.jl
 
+[![CI](https://github.com/victor-ci/DynamicsKit.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/victor-ci/DynamicsKit.jl/actions/workflows/CI.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Julia library for bifurcation analysis of dynamical systems — discrete maps and continuous-time
 ODEs with Poincaré sections. Two complementary workflows:
 
-- **Brute-force parameter sweeps** (threaded) for discrete maps and ODEs: 1-D diagrams, basins of
-  attraction, and 2-D parameter maps with period/status/Lyapunov diagnostics.
+- **Brute-force parameter sweeps** (threaded) for discrete maps and ODEs: 1-D bifurcation diagrams,
+  basins of attraction, and 2-D parameter maps with period/status/Lyapunov diagnostics — plus
+  largest-Lyapunov and full Lyapunov-spectrum sweeps, phase portraits, and power spectra.
 - **Pseudo-arclength continuation** wrapping [`BifurcationKit.jl`](https://github.com/bifurcationkit/BifurcationKit.jl)
-  (`PALC()`), including a higher-level **atlas** that combines reconnaissance sweeps with targeted
+  (`PALC()`): periodic-branch continuation by return-map shooting or orthogonal collocation,
+  map-aware period-doubling/fold detection, adaptive branch refinement, and codimension-2 curve
+  tracing — including a higher-level **atlas** that combines reconnaissance sweeps with targeted
   skeleton seeding to map periodic branches automatically.
 
 ```julia
@@ -20,7 +26,13 @@ branch  = continuation_branch(sys, ContinuationConfig(p_min=0.0, p_max=1.4))
 
 ## Install
 
-Not registered yet — add by URL/path:
+Registered in the Julia General registry:
+
+```julia
+using Pkg; Pkg.add("DynamicsKit")
+```
+
+Or track the development version directly from the repository:
 
 ```julia
 using Pkg; Pkg.add(url="https://github.com/victor-ci/DynamicsKit.jl")
@@ -38,6 +50,8 @@ See [`docs/`](docs/README.md):
 - [`docs/scientific-interpretation.md`](docs/scientific-interpretation.md) — periods, status codes, multipliers, Lyapunov, multistability
 - [`docs/systems-catalog.md`](docs/systems-catalog.md) — built-in systems and parameters
 - [`docs/examples.md`](docs/examples.md) — example scripts and cookbook snippets
+- [`docs/benchmarks.md`](docs/benchmarks.md) — benchmark commands, metrics, and reporting guidance
+- [`docs/validation.md`](docs/validation.md) — regression targets, quality gates, and validation practices
 
 ## Tests
 

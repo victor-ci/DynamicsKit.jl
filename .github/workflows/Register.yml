@@ -1,23 +1,38 @@
-name: Release
+name: Register
 
 # Manually triggered from the Actions tab. Validates the requested version, runs the full test
-# suite as a gate, then bumps Project.toml, tags vX.Y.Z, and creates a GitHub Release.
-# No package registry yet — a "release" here is a version bump + git tag + GitHub Release.
+# suite as a gate, bumps Project.toml, pushes the bump to main, and comments
+# `@JuliaRegistrator register` on that commit.
+#
+# From there the release is fully automated and this workflow is done: JuliaRegistrator opens the
+# General-registry PR, AutoMerge lands it, and TagBot.yml then creates the vX.Y.Z git tag + GitHub
+# Release (which in turn triggers the Zenodo archive). This workflow deliberately does NOT create the
+# tag or the GitHub Release itself — TagBot owns those, and pre-creating the tag would collide with it.
+#
+# Prerequisite: a repository secret REGISTRATOR_TOKEN holding a PAT (classic: `repo` scope; or a
+# fine-grained PAT for this repo with Contents: read & write) belonging to a user with push access
+# (Victor). JuliaRegistrator only honors a trigger comment from an authorized repo user; the default
+# GITHUB_TOKEN comments as github-actions[bot], which Registrator will not accept. The PAT also
+# authors the bump commit/push so it is attributable to a real user.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "New version, strict SemVer X.Y.Z (e.g. 0.1.1; a leading 'v' is accepted)"
+        description: "New version, strict SemVer X.Y.Z (e.g. 0.2.0; a leading 'v' is accepted)"
         required: true
         type: string
+      release_notes:
+        description: "Optional release notes (markdown). Passed to Registrator and used by TagBot for the GitHub Release."
+        required: false
+        type: string
 
-# Never run two releases at once.
+# Never run two registrations at once.
 concurrency:
-  group: release
+  group: register
   cancel-in-progress: false
 
 permissions:
-  contents: write   # push the bump commit + tag and create the Release
+  contents: write   # push the bump commit
   actions: write    # CI.yml cache step requests this when reused as the release gate
 
 jobs:
@@ -40,14 +55,14 @@ jobs:
 
           # 1. Strict SemVer X.Y.Z (prerelease/build intentionally not supported yet).
           if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::'$RAW' is not a valid version. Expected strict SemVer X.Y.Z (e.g. 0.1.1)."
+            echo "::error::'$RAW' is not a valid version. Expected strict SemVer X.Y.Z (e.g. 0.2.0)."
             exit 1
           fi
           tag="v$ver"
 
-          # 2. The tag must not already exist.
+          # 2. The tag must not already exist (a registered version already carries its tag).
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "::error::Tag $tag already exists — pick a higher version."
+            echo "::error::Tag $tag already exists — that version is already released; pick a higher version."
             exit 1
           fi
 
@@ -80,17 +95,31 @@ jobs:
     needs: validate
     uses: ./.github/workflows/CI.yml
 
-  release:
-    name: Tag & release
+  register:
+    name: Bump & trigger registration
     needs: [validate, test]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       TAG: ${{ needs.validate.outputs.tag }}
+      NOTES: ${{ inputs.release_notes }}
     steps:
+      - name: Guard against missing token
+        env:
+          HAS_TOKEN: ${{ secrets.REGISTRATOR_TOKEN != '' }}
+        run: |
+          if [[ "$HAS_TOKEN" != "true" ]]; then
+            echo "::error::REGISTRATOR_TOKEN secret is not set. Add a PAT with push access so the"
+            echo "::error::@JuliaRegistrator comment is authored by an authorized user."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # Persist the PAT so the push (and thus the bump commit's author context) is a real user,
+          # which is what JuliaRegistrator requires to honor the trigger comment.
+          token: ${{ secrets.REGISTRATOR_TOKEN }}
 
       - name: Configure git identity
         run: |
@@ -103,11 +132,11 @@ jobs:
           perl -i -pe 's/^version\s*=\s*"[^"]*"/version = "$ENV{VERSION}"/' Project.toml
           grep -E '^version = ' Project.toml
 
-      - name: Commit version bump (if changed)
+      - name: Commit and push version bump (if changed)
         run: |
           set -euo pipefail
           if git diff --quiet -- Project.toml; then
-            echo "Project.toml already at $VERSION; tagging current HEAD."
+            echo "Project.toml already at $VERSION; registering current HEAD."
           else
             git add Project.toml
             # [skip ci]: the test gate above already validated this tree; the bump only touches the
@@ -116,13 +145,20 @@ jobs:
             git push origin HEAD:main
           fi
 
-      - name: Create and push annotated tag
+      - name: Comment @JuliaRegistrator on the release commit
+        env:
+          GH_TOKEN: ${{ secrets.REGISTRATOR_TOKEN }}
         run: |
           set -euo pipefail
-          git tag -a "$TAG" -m "DynamicsKit $TAG"
-          git push origin "$TAG"
+          sha="$(git rev-parse HEAD)"
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$TAG" --title "$TAG" --generate-notes
+          body="@JuliaRegistrator register"
+          if [[ -n "${NOTES:-}" ]]; then
+            body="$body"$'\n\n'"Release notes:"$'\n\n'"$NOTES"
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/comments" \
+            -f body="$body"
+
+          echo "Triggered JuliaRegistrator on $sha for $TAG."
+          echo "Next (automated): Registrator opens the General PR -> AutoMerge -> TagBot tags $TAG + creates the GitHub Release."
