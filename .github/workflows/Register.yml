@@ -22,7 +22,7 @@ on:
         required: true
         type: string
       release_notes:
-        description: "Optional release notes (markdown). Passed to Registrator and used by TagBot for the GitHub Release."
+        description: "Optional release notes (markdown). The Actions input is single-line — use \\n for line breaks; they are expanded before posting. Passed to Registrator and used by TagBot for the GitHub Release."
         required: false
         type: string
 
@@ -154,7 +154,10 @@ jobs:
 
           body="@JuliaRegistrator register"
           if [[ -n "${NOTES:-}" ]]; then
-            body="$body"$'\n\n'"Release notes:"$'\n\n'"$NOTES"
+            # The Actions UI passes release_notes as a single line; expand \n escapes so the
+            # notes render as multi-line markdown in the GitHub Release TagBot creates.
+            expanded="$(printf '%b' "$NOTES")"
+            body="$body"$'\n\n'"Release notes:"$'\n\n'"$expanded"
           fi
 
           gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/comments" \
