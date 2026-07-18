@@ -8,6 +8,168 @@ workbench's session store.
 _serialize_timestamp(dt::DateTime) = Dates.format(dt, dateformat"yyyy-mm-ddTHH:MM:SS.s")
 _deserialize_timestamp(value) = DateTime(String(value))
 
+const _MAP_NORMAL_FORM_FORMAT = "map-normal-form-v1"
+const _MAP_SPECIAL_POINT_FORMAT = "map-special-point-v1"
+
+function _require_serialized_fields(data::AbstractDict, fields, label::AbstractString)
+    missing = filter(field -> !haskey(data, field), fields)
+    isempty(missing) || error(
+        "Serialized $label is missing required fields: $(join(missing, ", ")).")
+end
+
+function _validate_map_normal_form(normal_form::MapNormalForm)
+    expected_name = _normal_form_name(normal_form.kind)
+    normal_form.coefficient_name === expected_name || error(
+        "Map normal form kind $(normal_form.kind) requires coefficient_name $expected_name.")
+    normal_form.convention == _normal_form_convention(normal_form.kind) || error(
+        "Map normal form convention does not match the declared $(normal_form.kind) kind.")
+    coefficient = normal_form.coefficient
+    coefficient === nothing || isfinite(coefficient) || error(
+        "Map normal-form coefficient must be finite when present.")
+
+    if normal_form.status === :ok
+        coefficient === nothing && error("A map normal form with status :ok requires a coefficient.")
+        allowed = normal_form.kind === :fold ? (:nondegenerate,) :
+                  (:supercritical, :subcritical)
+        normal_form.criticality in allowed || error(
+            "Map normal-form status :ok has invalid criticality $(normal_form.criticality).")
+    elseif normal_form.status === :degenerate
+        coefficient === nothing && error(
+            "A degenerate map normal form requires its evaluated coefficient.")
+        normal_form.criticality === :degenerate || error(
+            "Map normal-form status :degenerate requires criticality :degenerate.")
+    elseif normal_form.status in (
+            :near_singular, :strong_resonance, :not_critical,
+            :critical_eigenvector_unavailable, :derivative_failed,
+            :conjugate_pair_unavailable, :multiple_critical_pairs,
+            :fd_step_unstable)
+        coefficient === nothing || error(
+            "Unavailable map normal forms must not carry a coefficient.")
+        normal_form.criticality === :unclassified || error(
+            "Unavailable map normal forms require criticality :unclassified.")
+    else
+        error("Unknown map normal-form status $(repr(normal_form.status)).")
+    end
+    return normal_form
+end
+
+function _serialize_map_normal_form(normal_form::MapNormalForm)
+    _validate_map_normal_form(normal_form)
+    return Dict{String, Any}(
+        "format" => _MAP_NORMAL_FORM_FORMAT,
+        "kind" => String(normal_form.kind),
+        "coefficientName" => String(normal_form.coefficient_name),
+        "coefficient" => normal_form.coefficient,
+        "criticality" => String(normal_form.criticality),
+        "status" => String(normal_form.status),
+        "convention" => normal_form.convention,
+    )
+end
+
+function _deserialize_map_normal_form(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "kind", "coefficientName", "coefficient", "criticality",
+         "status", "convention"),
+        "map normal form")
+    format = _as_string(get(data, "format", ""), "")
+    format == _MAP_NORMAL_FORM_FORMAT || error(
+        "Unsupported map normal-form serialization format '$format'.")
+    kind = Symbol(_as_string(get(data, "kind", ""), ""))
+    coefficient_name = Symbol(_as_string(get(data, "coefficientName", ""), ""))
+    coefficient = get(data, "coefficient", nothing)
+    expected_name = _normal_form_name(kind)
+    coefficient_name === expected_name || error(
+        "Serialized map normal form kind $kind requires coefficientName $expected_name; got $coefficient_name.")
+    coefficient === nothing || coefficient isa Real || error(
+        "Serialized map normal-form coefficient must be a real number or nothing.")
+    value = coefficient === nothing ? nothing : Float64(coefficient)
+    value === nothing || isfinite(value) || error(
+        "Serialized map normal-form coefficient must be finite when present.")
+    return _validate_map_normal_form(MapNormalForm(
+        kind,
+        coefficient_name,
+        value,
+        Symbol(_as_string(get(data, "criticality", "unclassified"), "unclassified")),
+        Symbol(_as_string(get(data, "status", ""), "")),
+        _as_string(get(data, "convention", ""), ""),
+    ))
+end
+
+function _serialize_map_special_point(point::MapSpecialPoint)
+    isfinite(point.param) || error("Map special-point param must be finite.")
+    all(isfinite, point.state) || error("Map special-point state must be finite.")
+    all(value -> isfinite(real(value)) && isfinite(imag(value)), point.multipliers) ||
+        error("Map special-point multipliers must be finite.")
+    isfinite(real(point.critical_multiplier)) &&
+        isfinite(imag(point.critical_multiplier)) || error(
+            "Map special-point critical multiplier must be finite.")
+    isfinite(point.test_value) || error("Map special-point test value must be finite.")
+    point.period >= 1 || error("Map special-point period must be >= 1.")
+    point.kind in (:fold, :pd, :ns) || error(
+        "Map special-point kind must be fold, pd, or ns.")
+    point.normal_form === nothing || point.normal_form.kind === point.kind || error(
+        "Map special-point normal-form kind must match the point kind.")
+    return Dict{String, Any}(
+        "format" => _MAP_SPECIAL_POINT_FORMAT,
+        "kind" => String(point.kind),
+        "param" => point.param,
+        "state" => copy(point.state),
+        "multipliers" => [[real(value), imag(value)] for value in point.multipliers],
+        "criticalMultiplier" => [
+            real(point.critical_multiplier), imag(point.critical_multiplier)],
+        "testValue" => point.test_value,
+        "period" => point.period,
+        "converged" => point.converged,
+        "normalForm" => point.normal_form === nothing ? nothing :
+                        _serialize_map_normal_form(point.normal_form),
+    )
+end
+
+function _deserialize_map_special_point(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "kind", "param", "state", "multipliers",
+         "criticalMultiplier", "testValue", "period", "converged", "normalForm"),
+        "map special point")
+    format = _as_string(get(data, "format", ""), "")
+    format == _MAP_SPECIAL_POINT_FORMAT || error(
+        "Unsupported map special-point serialization format '$format'.")
+    pair(value, field) = begin
+        value isa AbstractVector && length(value) == 2 &&
+            all(item -> item isa Real, value) || error(
+                "Serialized map special-point $field must be a [re, im] pair.")
+        result = complex(Float64(value[1]), Float64(value[2]))
+        isfinite(real(result)) && isfinite(imag(result)) || error(
+            "Serialized map special-point $field must be finite.")
+        result
+    end
+    normal_form_data = get(data, "normalForm", nothing)
+    normal_form = normal_form_data === nothing ? nothing :
+                  _deserialize_map_normal_form(normal_form_data)
+    period = _as_int(get(data, "period", 0), 0)
+    period >= 1 || error("Serialized map special-point period must be >= 1; got $period.")
+    state = collect(Float64, get(data, "state", Float64[]))
+    all(isfinite, state) || error("Serialized map special-point state must be finite.")
+    multipliers = ComplexF64[
+        pair(value, "multipliers entry") for value in get(data, "multipliers", Any[])]
+    critical = pair(get(data, "criticalMultiplier", Any[]), "criticalMultiplier")
+    param = _as_float(get(data, "param", NaN), NaN)
+    test_value = _as_float(get(data, "testValue", NaN), NaN)
+    isfinite(param) || error("Serialized map special-point param must be finite.")
+    isfinite(test_value) || error("Serialized map special-point testValue must be finite.")
+    kind = Symbol(_as_string(get(data, "kind", ""), ""))
+    kind in (:fold, :pd, :ns) || error(
+        "Serialized map special-point kind must be fold, pd, or ns; got $(repr(kind)).")
+    normal_form === nothing || normal_form.kind === kind || error(
+        "Serialized map special-point normal form kind does not match point kind $kind.")
+    get(data, "converged", nothing) isa Bool || error(
+        "Serialized map special-point converged must be a boolean.")
+    return MapSpecialPoint(
+        kind, param, state, multipliers, critical, test_value, period,
+        data["converged"], normal_form)
+end
+
 function _serialize_branch_point(point)
     Dict(String(name) => _plain(getproperty(point, name)) for name in propertynames(point))
 end
@@ -480,3 +642,11 @@ const deserialize_codim2_continuation_result = _deserialize_codim2_continuation_
 const serialize_robust_chaos_certificate = _serialize_robust_chaos_certificate
 """    deserialize_robust_chaos_certificate(data::AbstractDict) -> RobustChaosCertificate"""
 const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certificate
+"""    serialize_map_normal_form(normal_form::MapNormalForm) -> Dict — versioned JSON-plain form."""
+const serialize_map_normal_form = _serialize_map_normal_form
+"""    deserialize_map_normal_form(data::AbstractDict) -> MapNormalForm"""
+const deserialize_map_normal_form = _deserialize_map_normal_form
+"""    serialize_map_special_point(point::MapSpecialPoint) -> Dict — versioned JSON-plain form."""
+const serialize_map_special_point = _serialize_map_special_point
+"""    deserialize_map_special_point(data::AbstractDict) -> MapSpecialPoint"""
+const deserialize_map_special_point = _deserialize_map_special_point

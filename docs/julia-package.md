@@ -324,9 +324,21 @@ Each `BranchBasinAssignment` carries `branch_index`, `basin_index`, `basin_id` (
 
 `switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.
 
-## Map special points (period-doubling / fold)
+## Map normal forms and special points
 
-`map_special_points(sys, branch, base_params)` locates period-doubling (`:pd`) and fold (`:fold`) points on a continued map / Poincaré return-map branch. BifurcationKit's residual-convention detector misses map period-doublings (multiplier `μ = λ + 1`, so `μ → −1` never crosses the imaginary axis); this routine detects sign changes of the map test functions `∏(μᵢ − 1)` (fold) and `∏(μᵢ + 1)` (flip) along the branch and refines each by arclength bisection with a fixed-point re-solve.
+`map_normal_form(sys, kind, state, params; period=1)` computes the local coefficient for a fold (`kind=:fold`), flip (`:pd`), or Neimark-Sacker point (`:ns`) of the period-`N` map `G=F^N`. The overload `map_normal_form(sys, point::MapSpecialPoint, params)` uses the point's kind, state, and period. Discrete maps use nested ForwardDiff directional derivatives. Continuous ODEs use centered finite differences of the Poincare return map and require three successive step sizes to agree in sign, classification, and scale. `normal_form_fd_step` controls the initial scale (default `3e-3`); the implementation increases it adaptively when integration error dominates.
+
+The implementation uses the standard Kuznetsov/MATCONT map convention. The right eigenvector has Euclidean norm one and the left eigenvector is scaled so the Hermitian product `dot(p,q)=1`. Complex multilinear forms are evaluated by real/imaginary multilinear expansion because ForwardDiff accepts real directions.
+The formulas follow Kuznetsov, *Elements of Applied Bifurcation Theory*, map
+normal forms (DOI `10.1007/978-1-4757-3978-7`).
+
+- Fold: `b = 1/2 <p,B(q,q)>`. Its sign depends on the real eigenvector orientation, so the result only reports `:nondegenerate` or `:degenerate`.
+- Flip: `c = 1/6 <p,C(q,q,q)> + <p,B(q,h20)>`, where `h20=(I-A)^-1 B(q,q)/2`. `c>0` is supercritical/soft and `c<0` is subcritical/hard.
+- Neimark-Sacker: `d = Re(conj(lambda)/2 * (<p,C(q,q,qbar)> + <p,B(h20,qbar)> + 2<p,B(h11,q)>))`, where `h11=-(A-I)^-1 B(q,qbar)` and `h20=-(A-lambda^2 I)^-1 B(q,q)`. `d<0` is supercritical and `d>0` is subcritical.
+
+`MapNormalForm` is plain data with `kind`, `coefficient_name` (`:b`, `:c`, or `:d`), an optional `coefficient`, `criticality`, `status`, and the exact `convention`. Degenerate coefficients, strong resonances, near-singular homological equations, multiple simultaneously critical NS pairs, unstable finite-difference steps, and unavailable critical eigenvectors carry explicit statuses; no coefficient is fabricated when evaluation is unreliable.
+
+`map_special_points(sys, branch, base_params)` locates period-doubling (`:pd`), fold (`:fold`), and Neimark-Sacker (`:ns`) points on a continued map / Poincare return-map branch. BifurcationKit's residual-convention detector misses map period-doublings (multiplier `mu = lambda + 1`, so `mu -> -1` never crosses the imaginary axis); this routine detects sign changes of `det(J-I)` (fold), `det(J+I)` (flip), and `abs(mu_c)-1` for each non-real conjugate pair (NS), then refines each by arclength bisection with a fixed-point re-solve. Real multipliers near `+1` or `-1` are not accepted as NS points. Results are sorted and deduplicated by kind, parameter, and (for NS points) critical multiplier, so distinct simultaneous pairs remain distinct.
 
 ```julia
 branch = continuation_branch(boost_converter(), ContinuationConfig(p_min=1.2, p_max=1.95, ds=0.005, param_index=1), 1;
@@ -335,9 +347,12 @@ sp = map_special_points(boost_converter(), branch, [1.5, 10.0, 20.0, 0.0]; detec
 sp[1].kind             # :pd
 sp[1].param            # subharmonic period-doubling (μ = -1), missed by branch.branch.specialpoint
 sp[1].critical_multiplier
+sp[1].normal_form     # MapNormalForm, attached by default
 ```
 
-Each `MapSpecialPoint` carries `kind`, `param`, `state`, `multipliers`, `critical_multiplier`, `test_value`, `period`, and `converged`. Complex-conjugate pairs contribute a non-negative factor to each test function, so Neimark–Sacker crossings are not reported as PD/fold. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match their closed-form values.
+Each `MapSpecialPoint` carries `kind`, `param`, `state`, `multipliers`, `critical_multiplier`, `test_value`, `period`, `converged`, and optional `normal_form`. Pass `attach_normal_forms=false` to skip coefficient evaluation. Complex-conjugate pairs contribute a non-negative factor to each fold/flip determinant, so NS crossings are not reported as PD/fold. On the Henon map the located period-1 flip (`a=0.3675`) and fold (`a=-0.1225`) match their closed-form values.
+
+`serialize_map_normal_form` / `deserialize_map_normal_form` and `serialize_map_special_point` / `deserialize_map_special_point` provide strict, versioned JSON-plain dictionaries. Complex multipliers are represented as `[real, imag]` pairs.
 
 ## Codimension-2 bifurcation curves
 

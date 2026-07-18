@@ -54,7 +54,8 @@ include("analysis/continuation.jl")
 include("analysis/collocation.jl")
 include("analysis/codim2.jl")
 include("analysis/skeleton.jl")
-include("analysis/map_special_points.jl")      # map-aware PD/fold emission (uses skeleton Newton + continuation multipliers)
+include("analysis/normal_forms.jl")
+include("analysis/map_special_points.jl")      # map-aware fold/flip/NS emission
 include("analysis/atlas.jl")
 include("analysis/contract_kernels.jl")     # publish analysis kernels (after defs)
 include("analysis/contract_accessors.jl")   # publish result/diagnostics accessors (after defs)
@@ -67,7 +68,7 @@ include("visualization/plots.jl")
 
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
-export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapSpecialPoint
+export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapNormalForm, MapSpecialPoint
 export StableWindowEvidence, RobustChaosCertificate
 
 # Exports — system accessors
@@ -113,7 +114,7 @@ export select_ode_solver, collect_trajectory_seed_points
 export brute_force_diagram, continuation_branch, continuation_branches, continuation_branch_diagnostics, continuation_atlas, atlas_branches, find_periodic_skeleton
 export continuation_orbit_collocation
 export orbit_branch_parameters, orbit_branch_periods, orbit_branch_orbit, orbit_branch_amplitude, orbit_branch_multipliers, orbit_branch_stability
-export map_special_points
+export map_normal_form, map_special_points
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
@@ -138,6 +139,8 @@ export serialize_branch_result, deserialize_branch_result
 export serialize_atlas_result, deserialize_atlas_result
 export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
 export serialize_robust_chaos_certificate, deserialize_robust_chaos_certificate
+export serialize_map_normal_form, deserialize_map_normal_form
+export serialize_map_special_point, deserialize_map_special_point
 
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum

@@ -584,15 +584,34 @@ struct OrbitBranchResult
 end
 
 """
+    MapNormalForm
+
+Plain-data normal-form classification for a map bifurcation. `coefficient_name` is `:b`
+for a fold, `:c` for a flip, and `:d` for a Neimark-Sacker point. `coefficient` is
+`nothing` whenever the coefficient cannot be computed reliably; `status` and
+`criticality` then state why no classification was made. `convention` records the
+normalization and formula convention used for the coefficient.
+"""
+struct MapNormalForm
+    kind::Symbol
+    coefficient_name::Symbol
+    coefficient::Union{Nothing, Float64}
+    criticality::Symbol
+    status::Symbol
+    convention::String
+end
+
+"""
     MapSpecialPoint
 
-A period-doubling (`:pd`, multiplier crossing −1) or fold (`:fold`, multiplier crossing
-+1) special point located on a continued map / Poincaré return-map branch, using
-map-aware test functions rather than BifurcationKit's equilibrium-convention detection
-(which misses map period-doublings). `critical_multiplier` is the multiplier nearest the
-bifurcation value; `test_value` is the map test function `∏(μᵢ ∓ 1)` at the located point
-(≈ 0); `converged` reports whether the critical multiplier reached the bifurcation value
-within tolerance during refinement.
+A period-doubling (`:pd`, multiplier crossing -1), fold (`:fold`, multiplier crossing
++1), or Neimark-Sacker (`:ns`, a complex-conjugate pair crossing the unit circle)
+special point located on a continued map / Poincare return-map branch.
+`critical_multiplier` is the representative critical multiplier; `test_value` is the
+map test function at the located point; `converged` reports whether refinement reached
+the bifurcation tolerance. Simultaneous Neimark-Sacker pairs are represented by separate
+points distinguished by `critical_multiplier`. `normal_form` is the optional local
+classification.
 """
 struct MapSpecialPoint
     kind::Symbol
@@ -603,7 +622,15 @@ struct MapSpecialPoint
     test_value::Float64
     period::Int
     converged::Bool
+    normal_form::Union{Nothing, MapNormalForm}
 end
+
+MapSpecialPoint(kind::Symbol, param::Real, state::AbstractVector,
+                multipliers::AbstractVector, critical_multiplier::Number,
+                test_value::Real, period::Integer, converged::Bool) =
+    MapSpecialPoint(kind, Float64(param), collect(Float64, state),
+                    collect(ComplexF64, multipliers), ComplexF64(critical_multiplier),
+                    Float64(test_value), Int(period), converged, nothing)
 
 """
     BifurcationResult

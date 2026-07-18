@@ -233,16 +233,24 @@ function _run_discrete_continuation(sys::DiscreteMap, config::ContinuationConfig
         save_sol_every_step = config.save_sol_every_step
     )
     safe_run(ds) = try
-        continuation(prob_from_seed(x0, p0), PALC(), build_par(ds); normC = norminf, verbosity = 0)
-    catch
-        nothing
+        (
+            continuation(prob_from_seed(x0, p0), PALC(), build_par(ds); normC = norminf, verbosity = 0),
+            nothing,
+        )
+    catch err
+        err isa InterruptException && rethrow()
+        (nothing, sprint(showerror, err))
     end
 
-    backward = run_backward ? safe_run(-abs(config.ds)) : nothing
-    forward = run_forward ? safe_run(abs(config.ds)) : nothing
+    backward, backward_error = run_backward ? safe_run(-abs(config.ds)) : (nothing, nothing)
+    forward, forward_error = run_forward ? safe_run(abs(config.ds)) : (nothing, nothing)
 
     if isnothing(backward) && isnothing(forward)
-        error("No continuation steps converged for the period-$period branch of $(sys.name).")
+        failures = String[]
+        !isnothing(backward_error) && push!(failures, "backward: $backward_error")
+        !isnothing(forward_error) && push!(failures, "forward: $forward_error")
+        details = isempty(failures) ? "" : " " * join(failures, "; ")
+        error("No continuation steps converged for the period-$period branch of $(sys.name).$details")
     end
     merged = if isnothing(backward)
         forward

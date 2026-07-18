@@ -14,7 +14,7 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | Which attractor is reached from each initial condition? | Basins of attraction |
 | What happens across two parameters? | 2D bifurcation map |
 | Where does a continuation bifurcation boundary bend across two parameters? | Codimension-2 curve |
-| Where are the period-doubling / fold points on a map branch? | Map special points |
+| Where are fold / flip / Neimark-Sacker points and what is their local criticality? | Map special points + normal forms |
 | How does the largest Lyapunov exponent vary along one parameter? | Lyapunov diagram |
 | What is the full Lyapunov spectrum at one operating point? | Lyapunov spectrum |
 | What frequencies dominate an ODE regime? | Power spectrum |
@@ -123,15 +123,22 @@ computed with the same variational machinery as the shooting branches — Bifurc
 collocation-Floquet eigenvalues are not used because their largest-magnitude entries are
 dominated by spurious discretization modes.
 
-## Map special points (period-doubling / fold)
+## Map special points and normal forms
 
 Function:
 
 ```julia
-map_special_points(sys, branch::BranchResult, base_params; detect=[:pd, :fold], kwargs...)
+map_special_points(sys, branch::BranchResult, base_params; detect=[:pd, :fold, :ns], kwargs...)
+map_normal_form(sys, kind, state, params; period=1, kwargs...)
 ```
 
-Locates period-doubling (`:pd`) and fold (`:fold`) special points on a continued map or
+Continuous-system coefficients use an adaptive centered-difference sequence (initial
+step `normal_form_fd_step=3e-3`) and are returned only when three successive steps agree
+in sign, classification, and scale. Unstable steps produce `status=:fd_step_unstable`
+with no coefficient. Simultaneous NS eigenpairs remain separate special points and
+produce `status=:multiple_critical_pairs` rather than a simple-NS coefficient.
+
+Locates period-doubling (`:pd`), fold (`:fold`), and Neimark-Sacker (`:ns`) special points on a continued map or
 Poincaré return-map branch. BifurcationKit assesses special points with the equilibrium
 convention `Re(λ) < 0` on the residual `F = Π^p(x) − x`; since a map multiplier is
 `μ = λ + 1`, a period-doubling (`μ → −1`) never crosses the imaginary axis and is **missed**
@@ -140,16 +147,19 @@ return-map multipliers,
 
 - fold: `∏ᵢ(μᵢ − 1) = det(J − I)`,
 - flip: `∏ᵢ(μᵢ + 1) = det(J + I)`,
+- Neimark-Sacker: `|μ_c| - 1` for a tracked non-real conjugate pair,
 
 whose sign changes mark a real multiplier crossing +1 or −1 (a complex-conjugate pair
-contributes a non-negative factor, so Neimark–Sacker crossings do not produce false
-positives). Each detected sign change is refined by bisection in the arclength fraction
+contributes a non-negative factor, so Neimark-Sacker crossings do not produce false
+fold/flip positives). Each detected sign change is refined by bisection in the arclength fraction
 between the two bracketing branch points, re-solving the fixed point at each trial (robust
 at folds, where the parameter is not monotonic).
 
 Each returned `MapSpecialPoint` carries `kind`, `param`, the fixed-point `state`, the
-`multipliers`, the `critical_multiplier` (nearest ∓1), the test value, and a `converged`
-flag. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match
+`multipliers`, the `critical_multiplier`, the test value, a `converged` flag, and an
+optional `MapNormalForm` attached by default. The normal form uses the standard
+Kuznetsov/MATCONT map convention and reports coefficient `b`, `c`, or `d` plus an
+explicit criticality/status. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match
 their closed-form values; on the peak-current-mode boost converter the subharmonic
 period-doubling is recovered where BifurcationKit's own `.specialpoint` list has none.
 

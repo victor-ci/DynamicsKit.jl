@@ -555,7 +555,10 @@ function _map_multipliers(sys::DiscreteMap,
         end
         Array(current) .- x
     end
-    return eigvals(ForwardDiff.jacobian(F, x0) + Matrix{Float64}(I, dim, dim))
+    map_jacobian = ForwardDiff.jacobian(F, x0) + Matrix{Float64}(I, dim, dim)
+    all(isfinite, map_jacobian) || error(
+        "Discrete return-map Jacobian contains non-finite values for $(sys.name).")
+    return eigvals(map_jacobian)
 end
 
 function _map_multipliers(sys::ContinuousODE,
@@ -585,6 +588,8 @@ function _map_multipliers(sys::ContinuousODE,
             min_crossing_time=min_crossing_time
         )
         found || error("Variational Poincaré derivative failed to find a period-$period return for $(sys.name).")
+        all(isfinite, map_jacobian) || error(
+            "Variational Poincare return-map Jacobian contains non-finite values for $(sys.name).")
         return eigvals(map_jacobian)
     elseif ode_jacobian_method != :finite_difference
         throw(ArgumentError("Unknown ODE Jacobian method $(repr(ode_jacobian_method)); expected :finite_difference or :variational."))
@@ -605,7 +610,10 @@ function _map_multipliers(sys::ContinuousODE,
         found || return fill(NaN, map_dim)
         next_point .- x
     end
-    return eigvals(_fd_jacobian(F, x0, fd_step) + Matrix{Float64}(I, map_dim, map_dim))
+    map_jacobian = _fd_jacobian(F, x0, fd_step) + Matrix{Float64}(I, map_dim, map_dim)
+    all(isfinite, map_jacobian) || error(
+        "Finite-difference Poincare return-map Jacobian contains non-finite values for $(sys.name).")
+    return eigvals(map_jacobian)
 end
 
 function _map_stability(sys::DynamicalSystem,
