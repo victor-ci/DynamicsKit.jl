@@ -627,3 +627,92 @@ with finer step sizes to capture missed details.
     @assert save_sol_every_step > 0 "RefinementConfig.save_sol_every_step must be > 0"
     @assert ode_jacobian_method in (:finite_difference, :variational) "RefinementConfig.ode_jacobian_method must be :finite_difference or :variational"
 end
+
+"""
+    RobustChaosConfig
+
+Configuration for `robust_chaos_certificate`. Nests the three analysis-layer configs and adds
+per-layer threshold fractions for conservative pass/fail verdicts.
+
+All three nested configs must describe the same physical parameter slice: matching parameter
+indices, linked-parameter indices, non-varied base parameters, and Lyapunov/atlas intervals.
+`basins.bif_param` must lie within `[lyapunov.param_min, lyapunov.param_max]`. The atlas must
+carry non-`nothing` `brute_force` and `continuation` sub-configs.
+
+# Fields
+- `lyapunov`: `LyapunovConfig` for the parameter sweep; defines the certified interval
+- `atlas`: `AtlasConfig` for the continuation-atlas window search; must have a `brute_force`
+- `basins`: `BasinsConfig` for basin evaluation at `basins.bif_param`
+- `min_lyapunov_positive_fraction`: Required fraction of *resolved* Lyapunov samples that must
+  be `:chaotic_candidate`. Applied after the resolved-coverage threshold. Default `1.0`.
+- `min_lyapunov_resolved_fraction`: Minimum fraction of all Lyapunov samples that must yield a
+  finite estimate. If below this, the verdict is inconclusive unless failure is already
+  provable. Default `1.0`.
+- `min_chaotic_basin_fraction`: Required fraction of *resolved* basin seeds classified as
+  chaotic. Applied after the basin resolved-coverage threshold. Default `1.0`.
+- `min_basin_resolved_fraction`: Minimum fraction of all basin seeds that must be resolved
+  (Lyapunov estimation succeeded or periodicity was detected). Default `1.0`.
+"""
+function _robust_float_repr_equal(a, b)
+    a == b && return true
+    a isa Real && b isa Real || return false
+    af = Float64(a)
+    bf = Float64(b)
+    return abs(af - bf) <= 8 * eps(Float64) * max(abs(af), abs(bf), 1.0)
+end
+
+function _robust_config_base_params_match(
+   lhs::AbstractVector,
+   rhs::AbstractVector,
+   varied_indices::AbstractVector{Int},
+)
+   # Parameter builders throughout the package define omitted trailing entries as zero;
+   # compare against that same canonical zero-padded representation.
+   n = max(length(lhs), length(rhs))
+   varied = Set(varied_indices)
+   for idx in 1:n
+       idx in varied && continue
+       left = idx <= length(lhs) ? lhs[idx] : 0.0
+       right = idx <= length(rhs) ? rhs[idx] : 0.0
+       _robust_float_repr_equal(left, right) || return false
+   end
+   return true
+end
+
+@with_kw struct RobustChaosConfig
+    lyapunov::LyapunovConfig
+    atlas::AtlasConfig
+    basins::BasinsConfig
+    min_lyapunov_positive_fraction::Float64 = 1.0
+    min_lyapunov_resolved_fraction::Float64 = 1.0
+    min_chaotic_basin_fraction::Float64      = 1.0
+    min_basin_resolved_fraction::Float64     = 1.0
+    @assert 0.0 <= min_lyapunov_positive_fraction <= 1.0 "RobustChaosConfig.min_lyapunov_positive_fraction must be in [0, 1]"
+    @assert 0.0 <= min_lyapunov_resolved_fraction <= 1.0 "RobustChaosConfig.min_lyapunov_resolved_fraction must be in [0, 1]"
+    @assert 0.0 <= min_chaotic_basin_fraction <= 1.0 "RobustChaosConfig.min_chaotic_basin_fraction must be in [0, 1]"
+    @assert 0.0 <= min_basin_resolved_fraction <= 1.0 "RobustChaosConfig.min_basin_resolved_fraction must be in [0, 1]"
+    @assert !isnothing(atlas.brute_force) "RobustChaosConfig: atlas must carry a non-nothing brute_force (required to locate periodic windows)"
+    @assert !isnothing(atlas.continuation) "RobustChaosConfig: atlas must carry a non-nothing continuation (required to verify the full certificate interval)"
+    @assert atlas.brute_force.param_index == lyapunov.param_index "RobustChaosConfig: atlas.brute_force.param_index must match lyapunov.param_index"
+    @assert atlas.continuation.param_index == lyapunov.param_index "RobustChaosConfig: atlas.continuation.param_index must match lyapunov.param_index"
+    @assert basins.param_index == lyapunov.param_index "RobustChaosConfig: basins.param_index must match lyapunov.param_index"
+    @assert atlas.brute_force.param_min == lyapunov.param_min && atlas.brute_force.param_max == lyapunov.param_max "RobustChaosConfig: atlas.brute_force must cover exactly the lyapunov parameter interval"
+    @assert atlas.continuation.p_min <= lyapunov.param_min && atlas.continuation.p_max >= lyapunov.param_max "RobustChaosConfig: atlas.continuation must cover the full lyapunov parameter interval"
+    @assert sort(unique(atlas.brute_force.linked_param_indices)) == sort(unique(lyapunov.linked_param_indices)) "RobustChaosConfig: atlas.brute_force linked parameters must match lyapunov.linked_param_indices"
+    @assert sort(unique(atlas.continuation.linked_param_indices)) == sort(unique(lyapunov.linked_param_indices)) "RobustChaosConfig: atlas.continuation linked parameters must match lyapunov.linked_param_indices"
+    @assert _robust_config_base_params_match(
+        atlas.brute_force.fixed_params,
+        lyapunov.fixed_params,
+        unique(vcat([lyapunov.param_index], lyapunov.linked_param_indices)),
+    ) "RobustChaosConfig: atlas.brute_force and lyapunov must use the same non-varied base parameters"
+    @assert all(
+        idx <= length(basins.fixed_params) && basins.fixed_params[idx] == basins.bif_param
+        for idx in lyapunov.linked_param_indices
+    ) "RobustChaosConfig: basins.fixed_params must set every linked parameter to basins.bif_param"
+    @assert _robust_config_base_params_match(
+        basins.fixed_params,
+        lyapunov.fixed_params,
+        unique(vcat([lyapunov.param_index], lyapunov.linked_param_indices)),
+    ) "RobustChaosConfig: basins and lyapunov must use the same non-varied base parameters"
+    @assert lyapunov.param_min <= basins.bif_param <= lyapunov.param_max "RobustChaosConfig: basins.bif_param must lie within [lyapunov.param_min, lyapunov.param_max]"
+end

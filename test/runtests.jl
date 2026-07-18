@@ -27,6 +27,7 @@ const ALL_TEST_FILES = [
     "test_skeleton.jl",
     "test_atlas.jl",
     "test_basins_map_refine.jl",
+    "test_robust_chaos.jl",
 ]
 
 const TEST_TARGETS = Dict(
@@ -59,6 +60,8 @@ const TEST_TARGETS = Dict(
     "atlas" => ["test_atlas.jl"],
     "basins-map-refine" => ["test_basins_map_refine.jl"],
     "basins_map_refine" => ["test_basins_map_refine.jl"],
+    "robust-chaos" => ["test_robust_chaos.jl"],
+    "robust_chaos" => ["test_robust_chaos.jl"],
 )
 
 function _selected_test_files(args)

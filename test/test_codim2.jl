@@ -148,7 +148,7 @@ end
             ds=0.0003,
             dsmax=0.0010,
             dsmin=1e-8,
-            max_steps=800,
+            max_steps=400,
             newton_tol=1e-8,
             newton_max_iter=30,
             detect_bifurcation=1,
@@ -290,7 +290,7 @@ end
     sys = memristive_diode_bridge()
     continuation = ContinuationConfig(
         p_min=0.0112, p_max=0.024, ds=0.0003, dsmax=0.0010, dsmin=1e-8,
-        max_steps=800, newton_tol=1e-8, newton_max_iter=30,
+        max_steps=300, newton_tol=1e-8, newton_max_iter=30,
         detect_bifurcation=1, param_index=1,
         ode_jacobian_method=:variational
     )
@@ -346,7 +346,7 @@ end
     )
     config = Codim2Config(
         continuation=continuation,
-        second_min=0.4, second_max=1.0, second_steps=6,
+        second_min=0.4, second_max=1.0, second_steps=3,
         second_param_index=2, fixed_params=[0.9, 0.7],
         bifurcation_kind=:ns, endpoint_margin=0.0,
         diagnostics_max_points=300, engine=:defining_system
@@ -401,19 +401,19 @@ end
     end
     continuation = ContinuationConfig(
         p_min=-0.30, p_max=-0.04, ds=0.005, dsmax=0.02, dsmin=1e-9,
-        max_steps=300, newton_tol=1e-10, newton_max_iter=30,
+        max_steps=150, newton_tol=1e-10, newton_max_iter=30,
         detect_bifurcation=3, param_index=1, ode_jacobian_method=:variational
     )
     make_config(threaded) = Codim2Config(
         continuation=continuation,
-        second_min=0.6, second_max=1.0, second_steps=4,
+        second_min=0.6, second_max=1.0, second_steps=2,
         second_param_index=2, fixed_params=[-0.1, 0.8],
         bifurcation_kind=:fold, endpoint_margin=0.0,
         anchor_second=0.8, diagnostics_max_points=200,
         engine=:defining_system, threaded=threaded,
         curve_continuation=ContinuationConfig(
             p_min=0.6, p_max=1.0, ds=0.02, dsmax=0.05, dsmin=1e-9,
-            max_steps=100, newton_tol=1e-8, newton_max_iter=30,
+            max_steps=50, newton_tol=1e-8, newton_max_iter=30,
             detect_bifurcation=0, param_index=2
         )
     )

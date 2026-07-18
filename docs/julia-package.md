@@ -104,6 +104,88 @@ plot_lyapunov_field(field)
 
 `lyapunov_field(result::BifurcationMapResult)` still works for combined map+field runs that were computed via `bifurcation_map(..., lyapunov_enabled=true)`. Use the direct `lyapunov_field(sys, config)` method when you want the exponent field itself as the primary artifact and want to avoid paying for a full period map first.
 
+## Robust-chaos certificate
+
+`robust_chaos_certificate` combines three independently limited evidence layers over one
+parameter interval: a largest-Lyapunov sweep, continuation-atlas recovery of stable
+low-period windows, and a basin census at one representative operating point. A basin
+seed with no detected low period counts as chaotic only when a separate finite-time
+Lyapunov estimate is resolved and positive.
+
+```julia
+sys = henon_map()
+lyap = LyapunovConfig(
+    param_min=1.1, param_max=1.2, param_steps=80,
+    param_index=1, fixed_params=[1.15, 0.3],
+    transient=300, iterations=500,
+)
+atlas = AtlasConfig(
+    periods=collect(1:8),
+    brute_force=BruteForceConfig(
+        param_min=1.1, param_max=1.2, param_steps=120,
+        param_index=1, fixed_params=[1.15, 0.3],
+        transient=300, iterations=500,
+    ),
+    continuation=ContinuationConfig(
+        p_min=1.1, p_max=1.2, param_index=1,
+        ds=0.001, dsmax=0.005,
+    ),
+)
+basins = BasinsConfig(
+    bif_param=1.15, param_index=1, fixed_params=[1.15, 0.3],
+    x_min=-1.5, x_max=1.5, y_min=-0.5, y_max=0.5,
+    x_steps=30, y_steps=30, max_period=8, iterations=600,
+)
+
+certificate = robust_chaos_certificate(
+    sys,
+    RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins);
+    initial_point=[0.1, 0.1],
+)
+certificate.overall_verdict  # :certified, :fragile, or :inconclusive
+certificate.certificate_items
+```
+
+### Source-result reuse (optional)
+
+If you have already computed a Lyapunov diagram or atlas with identical
+system/parameter settings, pass it as a keyword to skip that layer's sweep:
+
+```julia
+# Pre-compute the atlas independently (e.g., from an earlier interactive session).
+existing_atlas = continuation_atlas(sys, atlas; initial_point=[0.1, 0.1])
+
+# The certificate reuses the atlas result; only the Lyapunov and basin layers run fresh.
+certificate = robust_chaos_certificate(
+    sys,
+    RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins);
+    atlas_result=existing_atlas,
+    initial_point=[0.1, 0.1],
+)
+```
+
+Available keywords: `lyapunov_result::LyapunovDiagramResult` and
+`atlas_result::AtlasResult`. Each is validated before use; an `ArgumentError` is thrown on
+system-name mismatch, interval/grid mismatch, or missing period coverage.
+Validation uses floating-point representation tolerance only (tight, ~8 ULP), not scientific
+tolerance, so scientifically different values are always rejected.
+
+**Bounded responsibility:** atlas reuse requires exact interval endpoint match — zoomed
+subinterval certificates rerun the atlas until subset coverage accounting exists. Brute-force
+and continuation sources cannot replace the full atlas reconnaissance, so no reuse is offered
+for those. Basin results are not accepted for reuse because `BasinsResult` does not yet retain
+enough parameter-injection metadata to prove that a supplied grid represents the same physical
+slice; the basin layer therefore always runs from `config.basins`.
+
+`:certified` means all three layers passed their configured thresholds. `:fragile`
+means at least one layer found contrary evidence; `:inconclusive` means the available
+coverage could not support either conclusion. The claim is always bounded to the
+sampled interval, atlas period ceiling and search effort, basin grid, finite-time
+Lyapunov settings, and selected initial conditions. It is not a mathematical proof
+that no stable orbit exists outside those limits. Use
+`serialize_robust_chaos_certificate` and
+`deserialize_robust_chaos_certificate` for the versioned plain-data wire format.
+
 ## Continuation branch
 
 Continuation traces periodic solutions with pseudo-arclength continuation.

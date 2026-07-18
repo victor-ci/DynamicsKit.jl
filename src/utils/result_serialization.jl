@@ -323,6 +323,140 @@ function _deserialize_codim2_continuation_result(data::AbstractDict)
     )
 end
 
+const _ROBUST_CHAOS_FORMAT = "robust-chaos-certificate-v1"
+
+function _serialize_stable_window_evidence(e::StableWindowEvidence)::Dict{String, Any}
+    return Dict{String, Any}(
+        "branchId"          => e.branch_id,
+        "windowId"          => e.window_id,
+        "period"            => e.period,
+        "paramMin"          => e.param_min,
+        "paramMax"          => e.param_max,
+        "stableSampleCount" => e.stable_sample_count,
+    )
+end
+
+function _deserialize_stable_window_evidence(data::AbstractDict)::StableWindowEvidence
+    required = ("branchId", "windowId", "period", "paramMin", "paramMax", "stableSampleCount")
+    missing = filter(key -> !haskey(data, key), required)
+    isempty(missing) || error(
+        "Serialized stable-window evidence is missing required fields: $(join(missing, ", ")).")
+    branch_id = _as_string(data["branchId"], "")
+    window_id = _as_string(data["windowId"], "")
+    period = _as_int(data["period"], 0)
+    param_min = _as_float(data["paramMin"], NaN)
+    param_max = _as_float(data["paramMax"], NaN)
+    stable_sample_count = _as_int(data["stableSampleCount"], 0)
+    isempty(branch_id) && error("Serialized stable-window evidence requires a non-empty branchId.")
+    isempty(window_id) && error("Serialized stable-window evidence requires a non-empty windowId.")
+    period >= 1 || error("Serialized stable-window evidence period must be >= 1; got $period.")
+    isfinite(param_min) && isfinite(param_max) || error(
+        "Serialized stable-window evidence parameter bounds must be finite.")
+    param_min <= param_max || error(
+        "Serialized stable-window evidence requires paramMin <= paramMax; got $param_min > $param_max.")
+    stable_sample_count >= 1 || error(
+        "Serialized stable-window evidence stableSampleCount must be >= 1; got $stable_sample_count.")
+    return StableWindowEvidence(
+        branch_id,
+        window_id,
+        period,
+        param_min,
+        param_max,
+        stable_sample_count,
+    )
+end
+
+function _serialize_robust_chaos_certificate(cert::RobustChaosCertificate)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format"                      => _ROBUST_CHAOS_FORMAT,
+        "paramMin"                    => cert.param_min,
+        "paramMax"                    => cert.param_max,
+        "systemName"                  => cert.system_name,
+        "paramIndex"                  => cert.param_index,
+        "lyapunovVerdict"             => String(cert.lyapunov_verdict),
+        "atlasVerdict"                => String(cert.atlas_verdict),
+        "basinVerdict"                => String(cert.basin_verdict),
+        "overallVerdict"              => String(cert.overall_verdict),
+        "lyapunovPositiveFraction"    => cert.lyapunov_positive_fraction,
+        "lyapunovResolvedFraction"    => cert.lyapunov_resolved_fraction,
+        "lyapunovMinResolvedExponent" => cert.lyapunov_min_resolved_exponent,
+        "lyapunovNTotal"              => cert.lyapunov_n_total,
+        "lyapunovNResolved"           => cert.lyapunov_n_resolved,
+        "lyapunovNPositive"           => cert.lyapunov_n_positive,
+        "atlasSearchedPeriods"        => copy(cert.atlas_searched_periods),
+        "atlasSearchComplete"         => cert.atlas_search_complete,
+        "atlasCoverageEffort"         => cert.atlas_coverage_effort,
+        "atlasNWindows"               => cert.atlas_n_windows,
+        "atlasNCovered"               => cert.atlas_n_covered,
+        "atlasNPartial"               => cert.atlas_n_partial,
+        "atlasNUnresolved"            => cert.atlas_n_unresolved,
+        "atlasNGaps"                  => cert.atlas_n_gaps,
+        "atlasUnresolvedStabilityCount" => cert.atlas_unresolved_stability_count,
+        "stableEvidence"              => [_serialize_stable_window_evidence(e) for e in cert.stable_evidence],
+        "basinParam"                  => cert.basin_param,
+        "basinChaoticFraction"        => cert.basin_chaotic_fraction,
+        "basinResolvedFraction"       => cert.basin_resolved_fraction,
+        "basinNTotal"                 => cert.basin_n_total,
+        "basinNResolved"              => cert.basin_n_resolved,
+        "basinNChaotic"               => cert.basin_n_chaotic,
+        "basinClassCounts"            => Dict{String, Any}(String(k) => v for (k, v) in cert.basin_class_counts),
+        "robustnessScore"             => cert.robustness_score,
+        "certificateItems"            => copy(cert.certificate_items),
+        "timestamp"                   => _serialize_timestamp(cert.timestamp),
+    )
+end
+
+function _deserialize_robust_chaos_certificate(data::AbstractDict)::RobustChaosCertificate
+    format = _as_string(get(data, "format", ""), "")
+    format == _ROBUST_CHAOS_FORMAT || error(
+        "Unsupported robust-chaos certificate format '$format'; expected '$(_ROBUST_CHAOS_FORMAT)'.")
+    haskey(data, "timestamp") || error(
+        "Serialized robust-chaos certificate format '$(_ROBUST_CHAOS_FORMAT)' requires a timestamp.")
+    basin_class_counts = Dict{Symbol, Int}(
+        Symbol(String(k)) => _as_int(v)
+        for (k, v) in get(data, "basinClassCounts", Dict{String, Any}())
+    )
+    items = [Dict{String, Any}(String(k) => v for (k, v) in item)
+             for item in collect(get(data, "certificateItems", Any[]))]
+    return RobustChaosCertificate(
+        _as_float(get(data, "paramMin", NaN)),
+        _as_float(get(data, "paramMax", NaN)),
+        _as_string(get(data, "systemName", ""), ""),
+        _as_int(get(data, "paramIndex", 1)),
+        Symbol(_as_string(get(data, "lyapunovVerdict", "inconclusive"), "inconclusive")),
+        Symbol(_as_string(get(data, "atlasVerdict",    "inconclusive"), "inconclusive")),
+        Symbol(_as_string(get(data, "basinVerdict",    "inconclusive"), "inconclusive")),
+        Symbol(_as_string(get(data, "overallVerdict",  "inconclusive"), "inconclusive")),
+        _as_float(get(data, "lyapunovPositiveFraction",    0.0)),
+        _as_float(get(data, "lyapunovResolvedFraction",    0.0)),
+        _as_float(get(data, "lyapunovMinResolvedExponent", NaN)),
+        _as_int(get(data, "lyapunovNTotal",    0)),
+        _as_int(get(data, "lyapunovNResolved", 0)),
+        _as_int(get(data, "lyapunovNPositive", 0)),
+        Int[_as_int(x) for x in collect(get(data, "atlasSearchedPeriods", Any[]))],
+        _as_bool(get(data, "atlasSearchComplete",  false)),
+        _as_float(get(data, "atlasCoverageEffort", 0.0)),
+        _as_int(get(data, "atlasNWindows",    0)),
+        _as_int(get(data, "atlasNCovered",    0)),
+        _as_int(get(data, "atlasNPartial",    0)),
+        _as_int(get(data, "atlasNUnresolved", 0)),
+        _as_int(get(data, "atlasNGaps",       0)),
+        _as_int(get(data, "atlasUnresolvedStabilityCount", 0)),
+        StableWindowEvidence[_deserialize_stable_window_evidence(e)
+                              for e in collect(get(data, "stableEvidence", Any[]))],
+        _as_float(get(data, "basinParam",            NaN)),
+        _as_float(get(data, "basinChaoticFraction",  0.0)),
+        _as_float(get(data, "basinResolvedFraction", 0.0)),
+        _as_int(get(data, "basinNTotal",    0)),
+        _as_int(get(data, "basinNResolved", 0)),
+        _as_int(get(data, "basinNChaotic",  0)),
+        basin_class_counts,
+        _as_float(get(data, "robustnessScore", 0.0)),
+        items,
+        _deserialize_timestamp(data["timestamp"])
+    )
+end
+
 # --- Public serialization API ---
 # The JSON-plain wire format for the library's public result types; external persistence layers
 # build on these. The per-field sub-helpers above stay private — only these entry points are public.
@@ -342,3 +476,7 @@ const deserialize_atlas_result = _deserialize_atlas_result
 const serialize_codim2_continuation_result = _serialize_codim2_continuation_result
 """    deserialize_codim2_continuation_result(data::AbstractDict) -> Codim2ContinuationResult"""
 const deserialize_codim2_continuation_result = _deserialize_codim2_continuation_result
+"""    serialize_robust_chaos_certificate(cert::RobustChaosCertificate) -> Dict — JSON-plain form (format version "robust-chaos-certificate-v1")."""
+const serialize_robust_chaos_certificate = _serialize_robust_chaos_certificate
+"""    deserialize_robust_chaos_certificate(data::AbstractDict) -> RobustChaosCertificate"""
+const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certificate

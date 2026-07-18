@@ -616,3 +616,116 @@ struct BifurcationResult
     system_name::String
     timestamp::DateTime
 end
+
+"""
+    StableWindowEvidence
+
+Plain-data record of a stable low-period orbit found on an atlas branch within a
+`robust_chaos_certificate` search. Any such evidence means the region may not be
+robustly chaotic under the configured search.
+
+# Fields
+- `branch_id`: Atlas branch record identifier (`AtlasBranchRecord.id`)
+- `window_id`: Atlas window identifier (`AtlasWindow.id`)
+- `period`: Period of the orbit
+- `param_min`: Lower bound of the parameter sub-interval over which stability was confirmed
+- `param_max`: Upper bound of that interval
+- `stable_sample_count`: Number of branch points on this record classified as stable
+"""
+struct StableWindowEvidence
+    branch_id::String
+    window_id::String
+    period::Int
+    param_min::Float64
+    param_max::Float64
+    stable_sample_count::Int
+end
+
+"""
+    RobustChaosCertificate
+
+Conservative certificate for a robust-chaos region, produced by `robust_chaos_certificate`.
+Three analysis layers — Lyapunov sweep, continuation-atlas window search, and basin-of-attraction
+Lyapunov re-estimation — are orchestrated and issue layered verdicts.
+
+**Bounded semantics**: certification is bounded to the configured sampling, search periods, and
+parameter range. It does **not** mathematically prove the absence of stable orbits or chaotic
+behaviour outside the configured search.
+
+# Overall verdicts
+- `:certified`: all three layers passed with sufficient resolved coverage
+- `:fragile`: at least one layer found positive evidence against chaos (stable periodic orbit, or
+  chaotic fraction definitively too low)
+- `:inconclusive`: no layer failed but coverage was insufficient to issue a certificate
+
+# Robustness score ∈ [0, 1]
+Conservative minimum of three layer scores:
+- **Lyapunov**: `lyapunov_positive_fraction × lyapunov_resolved_fraction`
+- **Atlas**: `0` if any stable evidence was found; otherwise the atlas coverage/effort measure
+- **Basin**: `basin_chaotic_fraction × basin_resolved_fraction`
+
+# Fields
+- `param_min`, `param_max`: Certified interval (from `lyapunov.param_min/max`)
+- `system_name`: System name
+- `param_index`: Bifurcation parameter index shared by all three layers
+- `lyapunov_verdict`, `atlas_verdict`, `basin_verdict`, `overall_verdict`: Layer verdicts
+- `lyapunov_positive_fraction`: Fraction of *resolved* Lyapunov samples that are `:chaotic_candidate`
+- `lyapunov_resolved_fraction`: Fraction of all Lyapunov samples with a finite estimate
+- `lyapunov_min_resolved_exponent`: Minimum exponent among resolved samples (can be negative)
+- `lyapunov_n_total`, `lyapunov_n_resolved`, `lyapunov_n_positive`: Lyapunov sample counts
+- `atlas_searched_periods`: Periods searched by the atlas recon
+- `atlas_search_complete`: Whether the atlas ran to completion without time-budget exhaustion
+- `atlas_coverage_effort`: Bounded [0, 1] measure of atlas window coverage effort
+- `atlas_n_windows`, `atlas_n_covered`, `atlas_n_partial`, `atlas_n_unresolved`, `atlas_n_gaps`
+- `atlas_unresolved_stability_count`: Branch samples whose stability could not be evaluated
+- `stable_evidence`: `StableWindowEvidence` records (empty when atlas layer passes or is inconclusive)
+- `basin_param`: Representative parameter value used for basin evaluation
+- `basin_chaotic_fraction`: Fraction of *resolved* basin seeds classified as chaotic
+- `basin_resolved_fraction`: Fraction of all basin seeds that were resolved
+- `basin_n_total`, `basin_n_resolved`, `basin_n_chaotic`: Basin seed counts
+- `basin_class_counts`: Classification → count for all basin seeds
+- `robustness_score`: Conservative [0, 1] score (see above)
+- `certificate_items`: Ordered audit trail (Vector of plain-data Dicts)
+- `timestamp`: When the certificate was computed
+"""
+struct RobustChaosCertificate
+    param_min::Float64
+    param_max::Float64
+    system_name::String
+    param_index::Int
+
+    lyapunov_verdict::Symbol
+    atlas_verdict::Symbol
+    basin_verdict::Symbol
+    overall_verdict::Symbol
+
+    lyapunov_positive_fraction::Float64
+    lyapunov_resolved_fraction::Float64
+    lyapunov_min_resolved_exponent::Float64
+    lyapunov_n_total::Int
+    lyapunov_n_resolved::Int
+    lyapunov_n_positive::Int
+
+    atlas_searched_periods::Vector{Int}
+    atlas_search_complete::Bool
+    atlas_coverage_effort::Float64
+    atlas_n_windows::Int
+    atlas_n_covered::Int
+    atlas_n_partial::Int
+    atlas_n_unresolved::Int
+    atlas_n_gaps::Int
+    atlas_unresolved_stability_count::Int
+    stable_evidence::Vector{StableWindowEvidence}
+
+    basin_param::Float64
+    basin_chaotic_fraction::Float64
+    basin_resolved_fraction::Float64
+    basin_n_total::Int
+    basin_n_resolved::Int
+    basin_n_chaotic::Int
+    basin_class_counts::Dict{Symbol, Int}
+
+    robustness_score::Float64
+    certificate_items::Vector{Dict{String, Any}}
+    timestamp::DateTime
+end

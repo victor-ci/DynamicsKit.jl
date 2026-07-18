@@ -740,7 +740,7 @@
             p_max = 0.8,
             ds = 0.02,
             dsmax = 0.05,
-            max_steps = 200,
+            max_steps = 100,
             newton_tol = 1e-8,
             detect_bifurcation = 1
         )
@@ -750,7 +750,7 @@
             config,
             [1];
             skeleton_params=[0.25, 0.36, 0.49],
-            n_initial=6,
+            n_initial=4,
             max_branches_per_period=3,
             signature_state_tol=0.2
         )
@@ -768,7 +768,7 @@
             config,
             [1];
             skeleton_params=[0.25, 0.36, 0.49],
-            n_initial=6,
+            n_initial=4,
             trajectory_seed_points=false,
             reuse_neighbor_seeds=true,
             threaded=false,
@@ -791,7 +791,7 @@
             config,
             [1, 2];
             skeleton_params=[0.25, 0.36, 0.49],
-            n_initial=6,
+            n_initial=4,
             threaded=false,
             max_branches_per_period=3,
             signature_state_tol=0.2
@@ -802,7 +802,7 @@
             config,
             [1, 2];
             skeleton_params=[0.25, 0.36, 0.49],
-            n_initial=6,
+            n_initial=4,
             threaded=true,
             max_branches_per_period=3,
             signature_state_tol=0.2

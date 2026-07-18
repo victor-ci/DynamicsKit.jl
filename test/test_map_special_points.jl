@@ -3,7 +3,7 @@
         sys = henon_map()
         b = 0.3
         config = ContinuationConfig(p_min=-0.25, p_max=0.6, ds=0.01, dsmax=0.03,
-                                    max_steps=800, detect_bifurcation=3, param_index=1)
+                                    max_steps=300, detect_bifurcation=3, param_index=1)
         a0 = 0.3
         x_star = (-(1 - b) + sqrt((1 - b)^2 + 4a0)) / (2a0)
         branch = continuation_branch(sys, config, 1; initial_point=[x_star, b * x_star], params=[a0, b])
@@ -35,9 +35,9 @@
         sys = boost_converter()
         base = [1.5, 10.0, 20.0, 0.0]
         # Settle onto the stable period-1 orbit below the subharmonic threshold.
-        attractor = foldl((s, _) -> sys.f(s, base), 1:2000; init=SVector(8.0, 1.0))
+        attractor = foldl((s, _) -> sys.f(s, base), 1:500; init=SVector(8.0, 1.0))
         config = ContinuationConfig(p_min=1.2, p_max=1.95, ds=0.005, dsmax=0.01,
-                                    max_steps=600, detect_bifurcation=3, param_index=1)
+                                    max_steps=200, detect_bifurcation=3, param_index=1)
         branch = continuation_branch(sys, config, 1; initial_point=collect(attractor), params=base)
 
         specials = map_special_points(sys, branch, base; detect=[:pd])

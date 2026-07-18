@@ -59,6 +59,7 @@ include("analysis/atlas.jl")
 include("analysis/contract_kernels.jl")     # publish analysis kernels (after defs)
 include("analysis/contract_accessors.jl")   # publish result/diagnostics accessors (after defs)
 include("analysis/branch_families.jl")      # conservative orbit-geometry family inference
+include("analysis/robust_chaos.jl")         # robust-chaos certificate (after atlas + kernels/accessors)
 include("utils/result_serialization.jl")    # serialize library result types (atlas cache; after Atlas* types)
 
 # Visualization
@@ -67,6 +68,7 @@ include("visualization/plots.jl")
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
 export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapSpecialPoint
+export StableWindowEvidence, RobustChaosCertificate
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -115,6 +117,7 @@ export map_special_points
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
+export robust_chaos_certificate
 
 # Exports — atlas + combined-branch results
 export AtlasResult, AtlasWindow, AtlasGap, AtlasReconSample, AtlasBranchRecord
@@ -123,6 +126,7 @@ export Codim2ContinuationResult
 
 # Exports — config
 export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
+export RobustChaosConfig
 
 # Exports — I/O
 export save_result, load_result
@@ -133,6 +137,7 @@ export serialize_bruteforce_result, deserialize_bruteforce_result
 export serialize_branch_result, deserialize_branch_result
 export serialize_atlas_result, deserialize_atlas_result
 export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
+export serialize_robust_chaos_certificate, deserialize_robust_chaos_certificate
 
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum

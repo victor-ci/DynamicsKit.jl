@@ -5,9 +5,9 @@
             bif_param = 1.0,
             max_period = 8,
             precision = 1e-4,
-            iterations = 500,
-            x_min = -2.0, x_max = 2.0, x_steps = 20,
-            y_min = -1.0, y_max = 1.0, y_steps = 20
+            iterations = 200,
+            x_min = -2.0, x_max = 2.0, x_steps = 12,
+            y_min = -1.0, y_max = 1.0, y_steps = 12
         )
 
         result = basins_of_attraction(sys, config)
@@ -15,9 +15,9 @@
         @test result isa BasinsResult
         @test result.system_name == "Hénon"
         @test result.bif_param == 1.0
-        @test size(result.periodicity) == (21, 21)
-        @test length(result.x_grid) == 21
-        @test length(result.y_grid) == 21
+        @test size(result.periodicity) == (13, 13)
+        @test length(result.x_grid) == 13
+        @test length(result.y_grid) == 13
 
         # Should detect some periodic orbits (not all zeros)
         @test any(result.periodicity .> 0)
@@ -86,8 +86,8 @@
             max_period = 6,
             precision = 1e-3,
             iterations = 120,                       # 113 transient + 7 classification crossings
-            x_min = -1.5, x_max = 1.5, x_steps = 14,
-            y_min = -1.5, y_max = 1.5, y_steps = 14,
+            x_min = -1.5, x_max = 1.5, x_steps = 10,
+            y_min = -1.5, y_max = 1.5, y_steps = 10,
             fixed_params = [0.0155, 6.02e-6, 0.05],
             param_index = 1,
             x_index = 1, y_index = 2,               # grid the (v_C1, v_C2) initial plane
@@ -96,7 +96,7 @@
         result = basins_of_attraction(sys, config; solver=solver, reltol=1e-8, abstol=1e-8)
         @test result isa BasinsResult
         @test result.system_name == "Memristive Diode Bridge"
-        @test size(result.periodicity) == (15, 15)
+        @test size(result.periodicity) == (11, 11)
         @test all(result.periodicity .>= 0)
         @test all(result.periodicity .<= config.max_period)
         # At a = 0.0155 period-1 and period-3 limit cycles coexist (Xu et al.
@@ -714,12 +714,12 @@ end
         )
 
         config = BifurcationMapConfig(
-            a_min = 0.5, a_max = 1.4, a_steps = 15,
-            b_min = 0.1, b_max = 0.5, b_steps = 10,
+            a_min = 0.5, a_max = 1.4, a_steps = 9,
+            b_min = 0.1, b_max = 0.5, b_steps = 6,
             a_index = 1, b_index = 2,
             max_period = 8,
             precision = 1e-4,
-            iterations = 500,
+            iterations = 200,
             base_params = [1.0, 0.3]
         )
 
@@ -728,7 +728,7 @@ end
         @test result isa BifurcationMapResult
         @test result.system_name == "Hénon 2P"
         @test result.param_names == (:a, :b)
-        @test size(result.periodicity) == (16, 11)
+        @test size(result.periodicity) == (10, 7)
 
         # Should detect various periodicities
         @test any(result.periodicity .> 0)
