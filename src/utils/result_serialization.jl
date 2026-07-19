@@ -486,6 +486,7 @@ function _deserialize_codim2_continuation_result(data::AbstractDict)
 end
 
 const _ROBUST_CHAOS_FORMAT = "robust-chaos-certificate-v1"
+const _ROBUST_CHAOS_EVIDENCE_FORMAT = "robust-chaos-evidence-v1"
 
 function _serialize_stable_window_evidence(e::StableWindowEvidence)::Dict{String, Any}
     return Dict{String, Any}(
@@ -619,6 +620,174 @@ function _deserialize_robust_chaos_certificate(data::AbstractDict)::RobustChaosC
     )
 end
 
+function _serialize_robust_chaos_lyapunov(result::LyapunovDiagramResult)
+    return Dict{String, Any}(
+        "params" => copy(result.params),
+        "exponents" => [isfinite(value) ? value : nothing for value in result.exponents],
+        "classifications" => String.(result.classifications),
+        "estimationStatuses" => String.(result.estimation_statuses),
+        "sampleCounts" => copy(result.sample_counts),
+        "neutralTolerance" => result.neutral_tolerance,
+        "systemName" => result.system_name,
+        "paramName" => String(result.param_name),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_robust_chaos_lyapunov(data::AbstractDict)
+    params = Float64[_as_float(value) for value in get(data, "params", Any[])]
+    exponents = Float64[
+        isnothing(value) ? NaN : _as_float(value, NaN)
+        for value in get(data, "exponents", Any[])
+    ]
+    classifications = Symbol[Symbol(_as_string(value, "unresolved"))
+                             for value in get(data, "classifications", Any[])]
+    statuses = Symbol[Symbol(_as_string(value, "uncomputed"))
+                      for value in get(data, "estimationStatuses", Any[])]
+    sample_counts = Int[_as_int(value, 0) for value in get(data, "sampleCounts", Any[])]
+    lengths = (length(params), length(exponents), length(classifications),
+               length(statuses), length(sample_counts))
+    all(==(first(lengths)), lengths) || error(
+        "Serialized robust-chaos Lyapunov evidence vectors must have equal lengths; got $(lengths).")
+    return LyapunovDiagramResult(
+        params,
+        exponents,
+        classifications,
+        statuses,
+        sample_counts,
+        _as_float(get(data, "neutralTolerance", 1e-3), 1e-3),
+        _as_string(get(data, "systemName", ""), ""),
+        Symbol(_as_string(get(data, "paramName", "p"), "p")),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+    )
+end
+
+function _serialize_robust_chaos_bruteforce(result::BruteForceResult)
+    return Dict{String, Any}(
+        "params" => copy(result.params),
+        "pointValues" => vec(copy(result.points)),
+        "pointShape" => [size(result.points, 1), size(result.points, 2)],
+        "systemName" => result.system_name,
+        "paramName" => String(result.param_name),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_robust_chaos_bruteforce(data::AbstractDict)
+    shape = Int[_as_int(value, -1) for value in get(data, "pointShape", Any[])]
+    length(shape) == 2 && all(>=(0), shape) || error(
+        "Serialized robust-chaos brute-force pointShape must contain two non-negative dimensions.")
+    values = Float64[_as_float(value) for value in get(data, "pointValues", Any[])]
+    length(values) == prod(shape) || error(
+        "Serialized robust-chaos brute-force pointValues length $(length(values)) " *
+        "does not match pointShape $(Tuple(shape)).")
+    return BruteForceResult(
+        Float64[_as_float(value) for value in get(data, "params", Any[])],
+        reshape(values, Tuple(shape)),
+        _as_string(get(data, "systemName", ""), ""),
+        Symbol(_as_string(get(data, "paramName", "p"), "p")),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+    )
+end
+
+function _serialize_robust_chaos_basins(result::BasinsResult)
+    return Dict{String, Any}(
+        "xGrid" => copy(result.x_grid),
+        "yGrid" => copy(result.y_grid),
+        "periodicity" => [collect(view(result.periodicity, i, :))
+                          for i in axes(result.periodicity, 1)],
+        "bifParam" => result.bif_param,
+        "maxPeriod" => result.max_period,
+        "systemName" => result.system_name,
+        "timestamp" => _serialize_timestamp(result.timestamp),
+        "xIndex" => result.x_index,
+        "yIndex" => result.y_index,
+        "icTemplate" => copy(result.ic_template),
+    )
+end
+
+function _deserialize_robust_chaos_matrix(raw, ::Type{T}, convert_value::Function,
+                                          label::AbstractString) where T
+    raw isa AbstractMatrix && return T.(map(convert_value, raw))
+    rows = collect(raw)
+    isempty(rows) && return Matrix{T}(undef, 0, 0)
+    all(row -> row isa AbstractVector, rows) || error(
+        "Serialized robust-chaos $label must be a vector of rows.")
+    width = length(first(rows))
+    all(row -> length(row) == width, rows) || error(
+        "Serialized robust-chaos $label rows must have equal lengths.")
+    converted = T[convert_value(value) for row in rows for value in row]
+    return permutedims(reshape(converted, width, length(rows)))
+end
+
+function _deserialize_robust_chaos_basins(data::AbstractDict)
+    periodicity = _deserialize_robust_chaos_matrix(
+        get(data, "periodicity", Any[]),
+        Int,
+        value -> _as_int(value, 0),
+        "basin periodicity",
+    )
+    return BasinsResult(
+        Float64[_as_float(value) for value in get(data, "xGrid", Any[])],
+        Float64[_as_float(value) for value in get(data, "yGrid", Any[])],
+        periodicity,
+        _as_float(get(data, "bifParam", NaN), NaN),
+        _as_int(get(data, "maxPeriod", 0), 0),
+        _as_string(get(data, "systemName", ""), ""),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+        _as_int(get(data, "xIndex", 1), 1),
+        _as_int(get(data, "yIndex", 2), 2),
+        Float64[_as_float(value) for value in get(data, "icTemplate", Any[])],
+    )
+end
+
+function _serialize_robust_chaos_evidence(evidence::RobustChaosEvidence)::Dict{String, Any}
+    classifications = [
+        String.(collect(view(evidence.basin_classifications, i, :)))
+        for i in axes(evidence.basin_classifications, 1)
+    ]
+    return Dict{String, Any}(
+        "format" => _ROBUST_CHAOS_EVIDENCE_FORMAT,
+        "certificate" => _serialize_robust_chaos_certificate(evidence.certificate),
+        "lyapunov" => _serialize_robust_chaos_lyapunov(evidence.lyapunov),
+        "atlasBruteForce" => _serialize_robust_chaos_bruteforce(evidence.atlas.brute_force),
+        "atlas" => _serialize_atlas_result(evidence.atlas),
+        "basins" => _serialize_robust_chaos_basins(evidence.basins),
+        "basinClassifications" => classifications,
+    )
+end
+
+function _deserialize_robust_chaos_evidence(data::AbstractDict)::RobustChaosEvidence
+    format = _as_string(get(data, "format", ""), "")
+    format == _ROBUST_CHAOS_EVIDENCE_FORMAT || error(
+        "Unsupported robust-chaos evidence format '$format'; expected '$(_ROBUST_CHAOS_EVIDENCE_FORMAT)'.")
+    required = ("certificate", "lyapunov", "atlasBruteForce", "atlas", "basins",
+                "basinClassifications")
+    missing = filter(key -> !haskey(data, key), required)
+    isempty(missing) || error(
+        "Serialized robust-chaos evidence is missing required fields: $(join(missing, ", ")).")
+    brute_force = _deserialize_robust_chaos_bruteforce(
+        _jsonish_dict(data["atlasBruteForce"]))
+    atlas = _deserialize_atlas_result(_jsonish_dict(data["atlas"]); brute_force=brute_force)
+    basins = _deserialize_robust_chaos_basins(_jsonish_dict(data["basins"]))
+    classifications = _deserialize_robust_chaos_matrix(
+        data["basinClassifications"],
+        Symbol,
+        value -> Symbol(_as_string(value, "unresolved")),
+        "basin classifications",
+    )
+    size(classifications) == size(basins.periodicity) || error(
+        "Serialized robust-chaos basin classifications must match basin periodicity shape; " *
+        "got $(size(classifications)) and $(size(basins.periodicity)).")
+    return RobustChaosEvidence(
+        _deserialize_robust_chaos_certificate(_jsonish_dict(data["certificate"])),
+        _deserialize_robust_chaos_lyapunov(_jsonish_dict(data["lyapunov"])),
+        atlas,
+        basins,
+        classifications,
+    )
+end
+
 # --- Public serialization API ---
 # The JSON-plain wire format for the library's public result types; external persistence layers
 # build on these. The per-field sub-helpers above stay private — only these entry points are public.
@@ -642,6 +811,10 @@ const deserialize_codim2_continuation_result = _deserialize_codim2_continuation_
 const serialize_robust_chaos_certificate = _serialize_robust_chaos_certificate
 """    deserialize_robust_chaos_certificate(data::AbstractDict) -> RobustChaosCertificate"""
 const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certificate
+"""    serialize_robust_chaos_evidence(evidence::RobustChaosEvidence) -> Dict — versioned JSON-plain exact evidence bundle."""
+const serialize_robust_chaos_evidence = _serialize_robust_chaos_evidence
+"""    deserialize_robust_chaos_evidence(data::AbstractDict) -> RobustChaosEvidence"""
+const deserialize_robust_chaos_evidence = _deserialize_robust_chaos_evidence
 """    serialize_map_normal_form(normal_form::MapNormalForm) -> Dict — versioned JSON-plain form."""
 const serialize_map_normal_form = _serialize_map_normal_form
 """    deserialize_map_normal_form(data::AbstractDict) -> MapNormalForm"""

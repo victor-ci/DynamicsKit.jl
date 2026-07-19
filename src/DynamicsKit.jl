@@ -69,7 +69,7 @@ include("visualization/plots.jl")
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
 export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapNormalForm, MapSpecialPoint
-export StableWindowEvidence, RobustChaosCertificate
+export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -118,7 +118,7 @@ export map_normal_form, map_special_points
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
-export robust_chaos_certificate
+export robust_chaos_certificate, robust_chaos_evidence
 
 # Exports — atlas + combined-branch results
 export AtlasResult, AtlasWindow, AtlasGap, AtlasReconSample, AtlasBranchRecord
@@ -139,6 +139,7 @@ export serialize_branch_result, deserialize_branch_result
 export serialize_atlas_result, deserialize_atlas_result
 export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
 export serialize_robust_chaos_certificate, deserialize_robust_chaos_certificate
+export serialize_robust_chaos_evidence, deserialize_robust_chaos_evidence
 export serialize_map_normal_form, deserialize_map_normal_form
 export serialize_map_special_point, deserialize_map_special_point
 

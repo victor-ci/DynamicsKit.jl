@@ -5,6 +5,25 @@
 _rc_log!(log, msg) = isnothing(log) ? nothing : log(String(msg))
 
 """
+    RobustChaosEvidence
+
+Complete evidence bundle produced by `robust_chaos_evidence`. The certificate
+summarizes the verdict while the remaining fields retain the exact analysis
+results that support each layer for audit, plotting, and reproducibility.
+
+`basin_classifications` records the final certificate classification for every
+basin seed (`:chaotic`, `:periodic`, `:non_chaotic`, or `:unresolved`) and has
+the same shape as `basins.periodicity`.
+"""
+struct RobustChaosEvidence
+    certificate::RobustChaosCertificate
+    lyapunov::LyapunovDiagramResult
+    atlas::AtlasResult
+    basins::BasinsResult
+    basin_classifications::Matrix{Symbol}
+end
+
+"""
     _rc_validate_lyapunov_reuse(lya_result, sys, config)
 
 Throw `ArgumentError` if `lya_result` is not a coherent, compatible pre-computed
@@ -314,7 +333,7 @@ function _rc_basin_verdict(
 end
 
 """
-    robust_chaos_certificate(sys, config; kwargs...) -> RobustChaosCertificate
+    robust_chaos_evidence(sys, config; kwargs...) -> RobustChaosEvidence
 
 Compute a conservative robust-chaos certificate by orchestrating three analysis layers:
 
@@ -360,10 +379,10 @@ configured search periods, grid resolution, or parameter range.
   (step sizes, time budget, seed counts); these differences are reflected in the reused
   result's own diagnostics and coverage summary, which drive the atlas-layer verdict.
 # Returns
-`RobustChaosCertificate` with per-layer verdicts, fractions, stable-orbit evidence, an audit
-trail, a timestamp, and a conservative [0, 1] robustness score.
+`RobustChaosEvidence` containing the summary certificate and the exact Lyapunov,
+atlas, basin-periodicity, and per-seed basin-classification evidence.
 """
-function robust_chaos_certificate(
+function robust_chaos_evidence(
     sys::Union{DiscreteMap, ContinuousODE},
     config::RobustChaosConfig;
     initial_point::Union{Nothing, AbstractVector} = nothing,
@@ -377,7 +396,41 @@ function robust_chaos_certificate(
     cache_enabled::Bool = config.atlas.cache_enabled,
     lyapunov_result::Union{Nothing, LyapunovDiagramResult} = nothing,
     atlas_result::Union{Nothing, AtlasResult} = nothing,
-)::RobustChaosCertificate
+)::RobustChaosEvidence
+    return _robust_chaos_analysis(
+        sys,
+        config,
+        true;
+        initial_point,
+        solver,
+        reltol,
+        abstol,
+        min_crossing_time,
+        log,
+        cache_key,
+        cache_file,
+        cache_enabled,
+        lyapunov_result,
+        atlas_result,
+    )::RobustChaosEvidence
+end
+
+function _robust_chaos_analysis(
+    sys::Union{DiscreteMap, ContinuousODE},
+    config::RobustChaosConfig,
+    store_evidence::Bool;
+    initial_point::Union{Nothing, AbstractVector} = nothing,
+    solver = Tsit5(),
+    reltol::Float64 = 1e-8,
+    abstol::Float64 = 1e-8,
+    min_crossing_time::Float64 = 1e-6,
+    log::Union{Nothing, Function} = nothing,
+    cache_key::Union{Nothing, AbstractString} = nothing,
+    cache_file::Union{Nothing, AbstractString} = nothing,
+    cache_enabled::Bool = config.atlas.cache_enabled,
+    lyapunov_result::Union{Nothing, LyapunovDiagramResult} = nothing,
+    atlas_result::Union{Nothing, AtlasResult} = nothing,
+)
     items = Dict{String, Any}[]
     ts = now()
 
@@ -521,6 +574,8 @@ function robust_chaos_certificate(
     base_ic = copy(basins_result.ic_template)
 
     basin_class_counts = Dict{Symbol, Int}()
+    basin_classifications = store_evidence ?
+        fill(:unresolved, length(x_grid), length(y_grid)) : nothing
     n_basin_total    = 0
     n_basin_resolved = 0
     n_basin_chaotic  = 0
@@ -541,6 +596,7 @@ function robust_chaos_certificate(
         else
             _rc_classify_basin_seed(sys, ic, basin_params, config.lyapunov)
         end
+        !isnothing(basin_classifications) && (basin_classifications[i, j] = cls)
         basin_class_counts[cls] = get(basin_class_counts, cls, 0) + 1
         if cls == :chaotic
             n_basin_resolved += 1
@@ -594,7 +650,7 @@ function robust_chaos_certificate(
     ))
     _rc_log!(log, "overall verdict: $overall_verdict (robustness_score=$(round(robustness_score, digits=4)))")
 
-    return RobustChaosCertificate(
+    certificate = RobustChaosCertificate(
         config.lyapunov.param_min,
         config.lyapunov.param_max,
         sys.name,
@@ -630,4 +686,29 @@ function robust_chaos_certificate(
         items,
         ts,
     )
+    if store_evidence
+        return RobustChaosEvidence(
+            certificate,
+            lya_result,
+            _atlas_result,
+            basins_result,
+            basin_classifications::Matrix{Symbol},
+        )
+    end
+    return certificate
+end
+
+"""
+    robust_chaos_certificate(sys, config; kwargs...) -> RobustChaosCertificate
+
+Compute the conservative certificate summary without retaining the supporting
+analysis results. Use `robust_chaos_evidence` when the exact evidence layers are
+needed for audit, visualization, or persistence.
+"""
+function robust_chaos_certificate(
+    sys::Union{DiscreteMap, ContinuousODE},
+    config::RobustChaosConfig;
+    kwargs...,
+)::RobustChaosCertificate
+    return _robust_chaos_analysis(sys, config, false; kwargs...)::RobustChaosCertificate
 end

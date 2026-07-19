@@ -146,6 +146,27 @@ certificate.overall_verdict  # :certified, :fragile, or :inconclusive
 certificate.certificate_items
 ```
 
+When an audit or visualization needs the exact supporting results, call
+`robust_chaos_evidence` with the same arguments:
+
+```julia
+evidence = robust_chaos_evidence(
+    sys,
+    RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins);
+    initial_point=[0.1, 0.1],
+)
+evidence.certificate.overall_verdict
+evidence.lyapunov
+evidence.atlas
+evidence.basins
+evidence.basin_classifications
+```
+
+`basin_classifications` is the final per-seed certificate decision and is not
+the same as `evidence.basins.periodicity`: undetected-period seeds have been
+classified further as chaotic, non-chaotic, or unresolved by finite-time
+Lyapunov estimation.
+
 ### Source-result reuse (optional)
 
 If you have already computed a Lyapunov diagram or atlas with identical
@@ -184,7 +205,9 @@ sampled interval, atlas period ceiling and search effort, basin grid, finite-tim
 Lyapunov settings, and selected initial conditions. It is not a mathematical proof
 that no stable orbit exists outside those limits. Use
 `serialize_robust_chaos_certificate` and
-`deserialize_robust_chaos_certificate` for the versioned plain-data wire format.
+`deserialize_robust_chaos_certificate` for the compact versioned summary, or
+`serialize_robust_chaos_evidence` and `deserialize_robust_chaos_evidence` for
+the complete versioned evidence bundle.
 
 ## Continuation branch
 

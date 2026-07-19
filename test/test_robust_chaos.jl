@@ -399,12 +399,13 @@ using Dates: DateTime
             initial_point=_rc_reuse_ip)
 
         log_msgs = String[]
-        cert = robust_chaos_certificate(
+        evidence = robust_chaos_evidence(
             _rc_reuse_cat_map, _rc_reuse_cfg;
             initial_point=_rc_reuse_ip,
             lyapunov_result=precomputed_lya,
             log=msg -> push!(log_msgs, msg),
         )
+        cert = evidence.certificate
 
         @test any(contains(m, "reusing supplied LyapunovDiagramResult") for m in log_msgs)
         # Layer 1 was reused; layers 2 and 3 ran fresh
@@ -424,6 +425,55 @@ using Dates: DateTime
         @test cert.lyapunov_n_resolved == length(resolved_indices)
         @test cert.lyapunov_n_positive == expected_positive
         @test cert.lyapunov_positive_fraction ≈ expected_positive / length(resolved_indices)
+        @test evidence.lyapunov.params == precomputed_lya.params
+        @test evidence.lyapunov.exponents == precomputed_lya.exponents
+        @test evidence.lyapunov.classifications == precomputed_lya.classifications
+        @test evidence.lyapunov.estimation_statuses == precomputed_lya.estimation_statuses
+        @test evidence.atlas isa AtlasResult
+        @test evidence.basins isa BasinsResult
+        @test size(evidence.basin_classifications) == size(evidence.basins.periodicity)
+        @test Set(evidence.basin_classifications) ⊆
+              Set((:chaotic, :periodic, :non_chaotic, :unresolved))
+
+        plain = serialize_robust_chaos_evidence(evidence)
+        @test plain["format"] == "robust-chaos-evidence-v1"
+        @test plain["atlasBruteForce"]["pointValues"] isa AbstractVector
+        @test plain["atlasBruteForce"]["pointShape"] ==
+              collect(size(evidence.atlas.brute_force.points))
+        @test serialize_bruteforce_result(evidence.atlas.brute_force)["points"] isa AbstractMatrix
+        restored = deserialize_robust_chaos_evidence(plain)
+        @test restored.certificate.overall_verdict == cert.overall_verdict
+        @test restored.lyapunov.params == evidence.lyapunov.params
+        @test restored.atlas.coverage_summary == evidence.atlas.coverage_summary
+        @test restored.basins.periodicity == evidence.basins.periodicity
+        @test restored.basin_classifications == evidence.basin_classifications
+
+        matrix_plain = deepcopy(plain)
+        matrix_plain["basins"]["periodicity"] = evidence.basins.periodicity
+        matrix_plain["basinClassifications"] = evidence.basin_classifications
+        matrix_restored = deserialize_robust_chaos_evidence(matrix_plain)
+        @test matrix_restored.basins.periodicity == evidence.basins.periodicity
+        @test matrix_restored.basin_classifications == evidence.basin_classifications
+
+        malformed = deepcopy(plain)
+        malformed["basinClassifications"] = [["chaotic"]]
+        @test_throws ErrorException deserialize_robust_chaos_evidence(malformed)
+
+        unresolved_lyapunov = LyapunovDiagramResult(
+            [0.5],
+            [NaN],
+            [:unresolved],
+            [:uncomputed],
+            [0],
+            1e-3,
+            "json_safe_test",
+            :p,
+            DateTime(2024, 1, 1),
+        )
+        unresolved_plain = DynamicsKit._serialize_robust_chaos_lyapunov(unresolved_lyapunov)
+        @test isnothing(only(unresolved_plain["exponents"]))
+        unresolved_restored = DynamicsKit._deserialize_robust_chaos_lyapunov(unresolved_plain)
+        @test isnan(only(unresolved_restored.exponents))
     end
 
     @testset "Source-result reuse — Atlas layer" begin
