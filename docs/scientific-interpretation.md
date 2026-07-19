@@ -171,6 +171,10 @@ Power-electronics maps and switching circuits can have border collisions, satura
 
 `SwitchingEvent` metadata reports proximity to guard surfaces. A branch or map cell near a guard deserves interpretation as a nonsmooth event candidate even if the smooth multiplier story appears ordinary.
 
+When a fixed point or period-`q` cycle of a **continuous** piecewise-smooth map crosses a switching manifold, `border_collision_classify` / `border_collision_at_cycle` / `border_collision_points` classify the border collision from the two one-sided ordered `q`-return Jacobians `A_L`/`A_R`. The verdicts follow the Feigin/Simpson/di Bernardo determinant signs: `sign(det(I-A_L)·det(I-A_R))` distinguishes the cycle **persisting** across the border from a **nonsmooth fold** (the cycle existing on one side only), and `sign(det(I+A_L)·det(I+A_R))` reports whether a **companion `2q`-cycle** is created. These are exactly the four generic scenarios; they are reported explicitly rather than collapsed into a single label.
+
+Read these results conservatively. The classification is valid only for *continuous* maps: a map that fails the switching-manifold rank-one continuity condition is reported as `:noncontinuous` and left unclassified rather than forced into a scenario. A `±1` return-multiplier (`:degenerate`), a non-transverse crossing (`:nontransversal`), or an ambiguous colliding phase (`:multiple_border_phases`) likewise yield explicit non-generic statuses. **The determinant-sign scenario is not a chaos verdict.** Border collisions of nonsmooth maps *can* produce transitions with no smooth analogue (a direct route to chaos, period-adding, robust chaos), but those are not inferred here from spectral radii; stability is reported separately, and a robust-chaos claim needs the dedicated robust-chaos certificate plus its evidence layers. Treat the `σ₊`/`σ₋` counts as tolerance-aware diagnostics and defer to the determinant signs when `sigma_reliable` is false.
+
 ## Practical validation checklist
 
 Before treating a result as scientifically meaningful:

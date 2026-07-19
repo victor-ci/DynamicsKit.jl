@@ -163,7 +163,68 @@ explicit criticality/status. On the Hénon map the located period-1 flip (a = 0.
 their closed-form values; on the peak-current-mode boost converter the subharmonic
 period-doubling is recovered where BifurcationKit's own `.specialpoint` list has none.
 
-## Codimension-2 curves
+## Border-collision classification (continuous piecewise-smooth maps)
+
+Functions:
+
+```julia
+border_collision_classify(A_L, A_R; switching_normal=nothing, period=1, transversality=nothing, kwargs...)
+border_collision_at_cycle(sys, cycle, params; period=nothing, param=NaN, events=switching_events(sys), kwargs...)
+border_collision_points(sys, branch::BranchResult, base_params; events=switching_events(sys), kwargs...)
+```
+
+Classifies a border-collision bifurcation of a **continuous** piecewise-smooth map — a
+fixed point or period-`q` cycle crossing a `SwitchingEvent` manifold — from the two
+one-sided ordered `q`-return Jacobians `A_L` (guard-negative branch at the colliding
+phase) and `A_R` (guard-positive branch), following the Feigin/Simpson/di Bernardo
+determinant-sign theory:
+
+- persistence vs nonsmooth fold: `sign(det(I − A_L)·det(I − A_R))` — `> 0` the cycle
+  persists across the collision, `< 0` a nonsmooth fold (the cycle exists on one side
+  only),
+- companion `2q`-cycle creation: `sign(det(I + A_L)·det(I + A_R))` — `< 0` a companion
+  `2q`-cycle is created.
+
+The four generic scenarios are reported explicitly as `:persistence`,
+`:nonsmooth_fold`, `:persistence_with_companion_cycle`, and
+`:nonsmooth_fold_with_companion_cycle`. LU-derived determinant signs are the authoritative
+classifier and avoid overflow/underflow in the verdict; the `σ₊`/`σ₋` counts (real eigenvalues above `+1` / below `−1`, since
+`sign(det(I ∓ A)) = (−1)^σ` away from `±1` eigenvalues) are exported as tolerance-aware
+diagnostics with a `sigma_reliable` flag. Genericity is decided from eigenvalue distance
+to `±1`, not raw determinant magnitude. Stability is reported separately via the
+one-sided and (for `status == :ok`) companion spectral radii; **no chaos, robust-chaos, period-adding, or
+torus-creation verdict is ever inferred** from a spectral radius.
+
+For a real period-`q` cycle (not a period-1 approximation) `border_collision_at_cycle`
+reconstructs the orbit, evaluates every switching-guard component at every phase,
+requires a single generic colliding phase, holds the other `q − 1` itinerary symbols
+fixed, and assembles the two ordered `q`-return Jacobians that differ only at the
+colliding phase. That phase's one-sided Jacobians use forced one-sided finite
+differences (the base point is pushed strictly onto the target side and a Richardson
+`δ`-refinement removes the leading bias — robust where branch selection invalidates
+naive automatic differentiation at the border); interior phases use automatic
+differentiation. `border_collision_points` detects crossings between adjacent
+`BranchResult` points (a sign change of the signed nearest-border guard value),
+refines each honestly in both the parameter and the periodic state by bisection with a
+Newton re-solve of the period-`q` fixed point, deduplicates, and classifies.
+
+Continuity is verified as the switching-manifold rank-one condition (`A_L − A_R` must be
+rank one with row space the switching normal); a violation yields status
+`:noncontinuous` and classification is refused (the theory is defined only for
+continuous piecewise-smooth maps), while an unusable supplied normal yields `:invalid`.
+Genericity (`:degenerate` on a `±1` eigenvalue),
+transversality (`:nontransversal`), an absent or ambiguous colliding phase
+(`:unavailable` / `:multiple_border_phases`), and invalid Jacobians (`:invalid`) each
+have an explicit status and never produce a generic scenario. Companion-cycle
+admissibility is left `nothing` (not decidable from the return Jacobians alone).
+`BorderCollisionClassification` and `BorderCollisionPoint` are plain-data results with
+full provenance (event, guard component, period, colliding phase, itinerary, `A_L`/`A_R`,
+determinant invariants, spectra, `σ` counts, stability, continuity residual,
+transversality, status, scenario, and a conservative inference string) and versioned
+serializers. Validated against the Simpson (2014) 1D fixtures for all four scenarios,
+2D border-collision-normal-form fixtures, and a period-2 cycle-phase fixture.
+
+
 
 Functions:
 
@@ -493,3 +554,19 @@ Lyapunov classification labels:
 | `chaotic_candidate` | Positive largest exponent above tolerance |
 | `quasiperiodic_neutral_candidate` | Exponent near zero |
 | `unresolved` | Estimate unavailable or not decisive |
+
+Border-collision classification status codes (`BorderCollisionClassification.status`):
+
+| Label | Meaning |
+| --- | --- |
+| `ok` | A generic scenario was issued from the determinant signs |
+| `noncontinuous` | `A_L − A_R` failed the switching-manifold rank-one condition; refused (the theory applies only to continuous piecewise-smooth maps) |
+| `nontransversal` | The supplied transversality measure is below tolerance |
+| `degenerate` | A one-sided return Jacobian has a `±1` eigenvalue, so a determinant invariant vanishes and the signs are ambiguous |
+| `multiple_border_phases` | More than one phase or guard component lies on the border; the colliding phase is ambiguous |
+| `unavailable` | No phase lies on the border, or the one-sided return Jacobians could not be formed |
+| `invalid` | The one-sided Jacobians are not equally sized, square, finite matrices, or the supplied switching normal is unusable |
+
+Border-collision scenarios (`BorderCollisionClassification.scenario`): `persistence`,
+`nonsmooth_fold`, `persistence_with_companion_cycle`,
+`nonsmooth_fold_with_companion_cycle`, or `undetermined` (any non-`ok` status).

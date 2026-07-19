@@ -10,6 +10,8 @@ _deserialize_timestamp(value) = DateTime(String(value))
 
 const _MAP_NORMAL_FORM_FORMAT = "map-normal-form-v1"
 const _MAP_SPECIAL_POINT_FORMAT = "map-special-point-v1"
+const _BORDER_COLLISION_CLASSIFICATION_FORMAT = "border-collision-classification-v1"
+const _BORDER_COLLISION_POINT_FORMAT = "border-collision-point-v1"
 
 function _require_serialized_fields(data::AbstractDict, fields, label::AbstractString)
     missing = filter(field -> !haskey(data, field), fields)
@@ -172,6 +174,206 @@ end
 
 function _serialize_branch_point(point)
     Dict(String(name) => _plain(getproperty(point, name)) for name in propertynames(point))
+end
+
+_bcb_complex_pairs(values) = [[real(v), imag(v)] for v in values]
+
+function _bcb_matrix_plain(matrix::AbstractMatrix)
+    return [collect(Float64, row) for row in eachrow(matrix)]
+end
+
+function _bcb_read_matrix(value, field::AbstractString)
+    value === nothing && return Matrix{Float64}(undef, 0, 0)
+    value isa AbstractVector || error(
+        "Serialized border-collision $field must be an array of rows.")
+    isempty(value) && return Matrix{Float64}(undef, 0, 0)
+    rows = Vector{Vector{Float64}}()
+    ncol = -1
+    for row in value
+        row isa AbstractVector || error(
+            "Serialized border-collision $field rows must be arrays.")
+        vals = Float64[_as_float(item, NaN) for item in row]
+        if ncol < 0
+            ncol = length(vals)
+        elseif length(vals) != ncol
+            error("Serialized border-collision $field rows must have equal length.")
+        end
+        push!(rows, vals)
+    end
+    matrix = Matrix{Float64}(undef, length(rows), ncol)
+    for (i, row) in enumerate(rows)
+        matrix[i, :] = row
+    end
+    return matrix
+end
+
+function _bcb_read_pairs(value, field::AbstractString)
+    value === nothing && return ComplexF64[]
+    value isa AbstractVector || error(
+        "Serialized border-collision $field must be an array of [re, im] pairs.")
+    out = ComplexF64[]
+    for entry in value
+        entry isa AbstractVector && length(entry) == 2 || error(
+            "Serialized border-collision $field entries must be [re, im] pairs.")
+        push!(out, complex(_as_float(entry[1], NaN), _as_float(entry[2], NaN)))
+    end
+    return out
+end
+
+_bcb_opt_bool(value) = value === nothing ? nothing : _as_bool(value, false)
+_bcb_opt_int(value) = value === nothing ? nothing : _as_int(value, 0)
+_bcb_opt_float(value) = value === nothing ? nothing : _as_float(value, NaN)
+
+function _serialize_border_collision_classification(c::BorderCollisionClassification)
+    return Dict{String, Any}(
+        "format"                  => _BORDER_COLLISION_CLASSIFICATION_FORMAT,
+        "scenario"                => String(c.scenario),
+        "status"                  => String(c.status),
+        "period"                  => c.period,
+        "detIMinusL"              => c.det_I_minus_L,
+        "detIMinusR"              => c.det_I_minus_R,
+        "detIPlusL"               => c.det_I_plus_L,
+        "detIPlusR"               => c.det_I_plus_R,
+        "persistenceProduct"      => c.persistence_product,
+        "persistenceSign"         => c.persistence_sign,
+        "companionProduct"        => c.companion_product,
+        "companionSign"           => c.companion_sign,
+        "sigmaPlusL"              => c.sigma_plus_L,
+        "sigmaPlusR"              => c.sigma_plus_R,
+        "sigmaMinusL"             => c.sigma_minus_L,
+        "sigmaMinusR"             => c.sigma_minus_R,
+        "sigmaReliable"           => c.sigma_reliable,
+        "spectrumL"               => _bcb_complex_pairs(c.spectrum_L),
+        "spectrumR"               => _bcb_complex_pairs(c.spectrum_R),
+        "stableL"                 => c.stable_L,
+        "stableR"                 => c.stable_R,
+        "spectralRadiusL"         => c.spectral_radius_L,
+        "spectralRadiusR"         => c.spectral_radius_R,
+        "companionExists"         => c.companion_exists,
+        "companionAdmissible"     => c.companion_admissible,
+        "companionStable"         => c.companion_stable,
+        "companionSpectralRadius" => c.companion_spectral_radius,
+        "companionMultipliers"    => _bcb_complex_pairs(c.companion_multipliers),
+        "transversal"             => c.transversal,
+        "transversalityMeasure"   => c.transversality_measure,
+        "continuous"              => c.continuous,
+        "continuityResidual"      => c.continuity_residual,
+        "continuityTolerance"     => c.continuity_tolerance,
+        "generic"                 => c.generic,
+        "jacobianL"               => _bcb_matrix_plain(c.jacobian_L),
+        "jacobianR"               => _bcb_matrix_plain(c.jacobian_R),
+        "inference"               => c.inference,
+        "warnings"                => copy(c.warnings),
+        "convention"              => c.convention,
+    )
+end
+
+function _deserialize_border_collision_classification(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "scenario", "status", "period",
+         "detIMinusL", "detIMinusR", "detIPlusL", "detIPlusR",
+         "persistenceProduct", "persistenceSign", "companionProduct", "companionSign",
+         "spectrumL", "spectrumR", "jacobianL", "jacobianR",
+         "generic", "continuityTolerance", "inference", "warnings", "convention"),
+        "border collision classification")
+    format = _as_string(get(data, "format", ""), "")
+    format == _BORDER_COLLISION_CLASSIFICATION_FORMAT || error(
+        "Unsupported border-collision classification serialization format '$format'.")
+    period = _as_int(get(data, "period", 0), 0)
+    period >= 1 || error(
+        "Serialized border-collision classification period must be >= 1; got $period.")
+    warnings = String[_as_string(w, "") for w in get(data, "warnings", Any[])]
+    return BorderCollisionClassification(
+        scenario = Symbol(_as_string(data["scenario"], "")),
+        status = Symbol(_as_string(data["status"], "")),
+        period = period,
+        det_I_minus_L = _as_float(data["detIMinusL"], NaN),
+        det_I_minus_R = _as_float(data["detIMinusR"], NaN),
+        det_I_plus_L = _as_float(data["detIPlusL"], NaN),
+        det_I_plus_R = _as_float(data["detIPlusR"], NaN),
+        persistence_product = _as_float(data["persistenceProduct"], NaN),
+        persistence_sign = _as_int(data["persistenceSign"], 0),
+        companion_product = _as_float(data["companionProduct"], NaN),
+        companion_sign = _as_int(data["companionSign"], 0),
+        sigma_plus_L = _bcb_opt_int(get(data, "sigmaPlusL", nothing)),
+        sigma_plus_R = _bcb_opt_int(get(data, "sigmaPlusR", nothing)),
+        sigma_minus_L = _bcb_opt_int(get(data, "sigmaMinusL", nothing)),
+        sigma_minus_R = _bcb_opt_int(get(data, "sigmaMinusR", nothing)),
+        sigma_reliable = _as_bool(get(data, "sigmaReliable", false), false),
+        spectrum_L = _bcb_read_pairs(get(data, "spectrumL", nothing), "spectrumL"),
+        spectrum_R = _bcb_read_pairs(get(data, "spectrumR", nothing), "spectrumR"),
+        stable_L = _bcb_opt_bool(get(data, "stableL", nothing)),
+        stable_R = _bcb_opt_bool(get(data, "stableR", nothing)),
+        spectral_radius_L = _as_float(get(data, "spectralRadiusL", NaN), NaN),
+        spectral_radius_R = _as_float(get(data, "spectralRadiusR", NaN), NaN),
+        companion_exists = _bcb_opt_bool(get(data, "companionExists", nothing)),
+        companion_admissible = _bcb_opt_bool(get(data, "companionAdmissible", nothing)),
+        companion_stable = _bcb_opt_bool(get(data, "companionStable", nothing)),
+        companion_spectral_radius = _bcb_opt_float(get(data, "companionSpectralRadius", nothing)),
+        companion_multipliers = _bcb_read_pairs(
+            get(data, "companionMultipliers", nothing), "companionMultipliers"),
+        transversal = _bcb_opt_bool(get(data, "transversal", nothing)),
+        transversality_measure = _bcb_opt_float(get(data, "transversalityMeasure", nothing)),
+        continuous = _bcb_opt_bool(get(data, "continuous", nothing)),
+        continuity_residual = _bcb_opt_float(get(data, "continuityResidual", nothing)),
+        continuity_tolerance = _as_float(data["continuityTolerance"], NaN),
+        generic = _as_bool(data["generic"], false),
+        jacobian_L = _bcb_read_matrix(data["jacobianL"], "jacobianL"),
+        jacobian_R = _bcb_read_matrix(data["jacobianR"], "jacobianR"),
+        inference = _as_string(data["inference"], ""),
+        warnings = warnings,
+        convention = _as_string(data["convention"], ""),
+    )
+end
+
+function _serialize_border_collision_point(point::BorderCollisionPoint)
+    return Dict{String, Any}(
+        "format"          => _BORDER_COLLISION_POINT_FORMAT,
+        "param"           => point.param,
+        "orbit"           => [collect(Float64, phase) for phase in point.orbit],
+        "collidingPhase"  => point.colliding_phase,
+        "itinerary"       => copy(point.itinerary),
+        "eventName"       => point.event_name,
+        "guardComponent"  => point.guard_component,
+        "guardValues"     => copy(point.guard_values),
+        "period"          => point.period,
+        "classification"  => _serialize_border_collision_classification(point.classification),
+        "converged"       => point.converged,
+    )
+end
+
+function _deserialize_border_collision_point(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "param", "orbit", "collidingPhase", "itinerary", "eventName",
+         "guardComponent", "guardValues", "period", "classification", "converged"),
+        "border collision point")
+    format = _as_string(get(data, "format", ""), "")
+    format == _BORDER_COLLISION_POINT_FORMAT || error(
+        "Unsupported border-collision point serialization format '$format'.")
+    orbit_data = get(data, "orbit", Any[])
+    orbit_data isa AbstractVector || error(
+        "Serialized border-collision point orbit must be an array of phases.")
+    orbit = [collect(Float64, phase) for phase in orbit_data]
+    period = _as_int(get(data, "period", 0), 0)
+    period >= 1 || error(
+        "Serialized border-collision point period must be >= 1; got $period.")
+    get(data, "converged", nothing) isa Bool || error(
+        "Serialized border-collision point converged must be a boolean.")
+    classification = _deserialize_border_collision_classification(data["classification"])
+    return BorderCollisionPoint(
+        _as_float(data["param"], NaN),
+        orbit,
+        _as_int(data["collidingPhase"], 0),
+        Int[_as_int(v, 0) for v in get(data, "itinerary", Any[])],
+        _as_string(data["eventName"], ""),
+        _as_int(data["guardComponent"], 1),
+        Float64[_as_float(v, NaN) for v in get(data, "guardValues", Any[])],
+        period,
+        classification,
+        data["converged"],
+    )
 end
 
 function _serialize_branch_point_columns(points::AbstractVector)
@@ -823,3 +1025,11 @@ const deserialize_map_normal_form = _deserialize_map_normal_form
 const serialize_map_special_point = _serialize_map_special_point
 """    deserialize_map_special_point(data::AbstractDict) -> MapSpecialPoint"""
 const deserialize_map_special_point = _deserialize_map_special_point
+"""    serialize_border_collision_classification(c::BorderCollisionClassification) -> Dict — versioned JSON-plain form (format "border-collision-classification-v1")."""
+const serialize_border_collision_classification = _serialize_border_collision_classification
+"""    deserialize_border_collision_classification(data::AbstractDict) -> BorderCollisionClassification"""
+const deserialize_border_collision_classification = _deserialize_border_collision_classification
+"""    serialize_border_collision_point(point::BorderCollisionPoint) -> Dict — versioned JSON-plain form (format "border-collision-point-v1")."""
+const serialize_border_collision_point = _serialize_border_collision_point
+"""    deserialize_border_collision_point(data::AbstractDict) -> BorderCollisionPoint"""
+const deserialize_border_collision_point = _deserialize_border_collision_point

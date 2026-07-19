@@ -61,6 +61,7 @@ The full suite includes package-quality checks through Aqua.jl, and runs in CI o
 | Lyapunov spectrum | Benettin/QR spectra recover analytic maps/ODEs, the Hénon volume invariant, and the Rössler `(+, 0, −)` signature |
 | Collocation orbit continuation | Analytic radial-oscillator period/amplitude/multiplier; agreement with return-map shooting on the Vilnius and stiff MDB period-1 branches |
 | Map special points | Analytic Hénon period-1 flip (a=0.3675) and fold (a=−0.1225); boost-converter subharmonic period-doubling recovered where BifurcationKit emits none |
+| Border-collision classification | Simpson (2014) 1D fixtures for all four scenarios — persistence `(0.4, -0.4)`, nonsmooth fold `(2, -0.4)`, persistence-with-companion `(0.4, -1.5)`, fold-with-companion `(2, -1.5)`; 2D border-collision-normal-form fixtures with rank-one continuity; discontinuity, unusable switching normals, `±1` degeneracy, nontransversality, and marginal-stability rejections; scale/overflow checks for eigenvalue-based genericity and LU-derived determinant signs; branch-crossing location with known answer (`μ*=0`); a true period-2 cycle-phase fixture proving `q`-return handling; serialization round-trips |
 | Codim-2 curve tracking | Confirm stitched curves follow the expected slice candidates and preserve source/provenance metadata |
 | Adaptive 2D refinement | Confirm sparse refinement appears near period/status/confidence boundaries |
 | Cache fingerprinting | Confirm implementation/schema/input changes invalidate stale artifacts |

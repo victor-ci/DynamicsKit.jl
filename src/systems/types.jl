@@ -756,3 +756,211 @@ struct RobustChaosCertificate
     certificate_items::Vector{Dict{String, Any}}
     timestamp::DateTime
 end
+
+const _BORDER_COLLISION_CONVENTION =
+    "Feigin/Simpson/di Bernardo border-collision classification for continuous piecewise-smooth " *
+    "maps. Persistence vs nonsmooth fold from sign(det(I-A_L)*det(I-A_R)); companion 2q-cycle " *
+    "creation from sign(det(I+A_L)*det(I+A_R)). A_L, A_R are the one-sided q-return Jacobians " *
+    "(guard-negative and guard-positive branch at the colliding phase) and differ only at the " *
+    "colliding phase. Stability is reported separately; the classification never infers chaos, " *
+    "robust chaos, period-adding, torus creation, or any spectral-radius verdict."
+
+"""
+    BorderCollisionClassification
+
+Plain-data classification of a border-collision bifurcation (BCB) of a **continuous**
+piecewise-smooth map, following the Feigin/Simpson/di Bernardo determinant-sign theory.
+
+`A_L`/`A_R` are the two one-sided ordered *q*-return Jacobians at the colliding phase
+(`jacobian_L` = guard-negative branch, `jacobian_R` = guard-positive branch); for a
+period-`q` collision they differ only in the colliding phase's one-sided factor.
+
+# Scenario (only when `status === :ok`)
+- `:persistence` — `sign(det(I-A_L)·det(I-A_R)) > 0`, no companion cycle
+- `:nonsmooth_fold` — `sign(det(I-A_L)·det(I-A_R)) < 0`, no companion cycle
+- `:persistence_with_companion_cycle` — persistence plus a companion `2q`-cycle
+  (`sign(det(I+A_L)·det(I+A_R)) < 0`)
+- `:nonsmooth_fold_with_companion_cycle` — nonsmooth fold plus a companion `2q`-cycle
+- `:undetermined` — no scenario issued (see `status`)
+
+# Status
+- `:ok` — a generic scenario was issued
+- `:noncontinuous` — the map is not continuous at the border (rank-one continuity/normal
+  condition violated); classification is refused for discontinuous maps
+- `:nontransversal` — the border/eigenvalue crossing is not transverse
+- `:degenerate` — a `+1` or `-1` eigenvalue makes the determinant sign(s) ambiguous
+- `:multiple_border_phases` — more than one phase/guard component sits on the border
+- `:invalid` — non-square, mismatched, or non-finite Jacobians, or an unusable switching normal
+- `:unavailable` — the one-sided return Jacobians could not be formed
+
+Determinant invariants (`det_I_minus_*`, `det_I_plus_*`) and their sign products are the
+robust classifiers. The `sigma_plus_*`/`sigma_minus_*` counts (real eigenvalues `> 1` and
+`< -1`) are tolerance-aware diagnostics; `sigma_reliable` flags whether they are trustworthy.
+Stability (`stable_L`/`stable_R`, `spectral_radius_*`) is reported separately and is `nothing`
+when marginal. Companion-cycle fields are populated only when `status === :ok`;
+`companion_admissible` remains `nothing` because admissibility is not decidable from the return
+Jacobians alone.
+"""
+struct BorderCollisionClassification
+    scenario::Symbol
+    status::Symbol
+    period::Int
+
+    det_I_minus_L::Float64
+    det_I_minus_R::Float64
+    det_I_plus_L::Float64
+    det_I_plus_R::Float64
+    persistence_product::Float64
+    persistence_sign::Int
+    companion_product::Float64
+    companion_sign::Int
+
+    sigma_plus_L::Union{Nothing, Int}
+    sigma_plus_R::Union{Nothing, Int}
+    sigma_minus_L::Union{Nothing, Int}
+    sigma_minus_R::Union{Nothing, Int}
+    sigma_reliable::Bool
+
+    spectrum_L::Vector{ComplexF64}
+    spectrum_R::Vector{ComplexF64}
+
+    stable_L::Union{Nothing, Bool}
+    stable_R::Union{Nothing, Bool}
+    spectral_radius_L::Float64
+    spectral_radius_R::Float64
+
+    companion_exists::Union{Nothing, Bool}
+    companion_admissible::Union{Nothing, Bool}
+    companion_stable::Union{Nothing, Bool}
+    companion_spectral_radius::Union{Nothing, Float64}
+    companion_multipliers::Vector{ComplexF64}
+
+    transversal::Union{Nothing, Bool}
+    transversality_measure::Union{Nothing, Float64}
+
+    continuous::Union{Nothing, Bool}
+    continuity_residual::Union{Nothing, Float64}
+    continuity_tolerance::Float64
+
+    generic::Bool
+
+    jacobian_L::Matrix{Float64}
+    jacobian_R::Matrix{Float64}
+
+    inference::String
+    warnings::Vector{String}
+    convention::String
+end
+
+function BorderCollisionClassification(;
+        scenario::Symbol,
+        status::Symbol,
+        period::Integer=1,
+        det_I_minus_L::Real=NaN,
+        det_I_minus_R::Real=NaN,
+        det_I_plus_L::Real=NaN,
+        det_I_plus_R::Real=NaN,
+        persistence_product::Real=NaN,
+        persistence_sign::Integer=0,
+        companion_product::Real=NaN,
+        companion_sign::Integer=0,
+        sigma_plus_L::Union{Nothing, Integer}=nothing,
+        sigma_plus_R::Union{Nothing, Integer}=nothing,
+        sigma_minus_L::Union{Nothing, Integer}=nothing,
+        sigma_minus_R::Union{Nothing, Integer}=nothing,
+        sigma_reliable::Bool=false,
+        spectrum_L::AbstractVector=ComplexF64[],
+        spectrum_R::AbstractVector=ComplexF64[],
+        stable_L::Union{Nothing, Bool}=nothing,
+        stable_R::Union{Nothing, Bool}=nothing,
+        spectral_radius_L::Real=NaN,
+        spectral_radius_R::Real=NaN,
+        companion_exists::Union{Nothing, Bool}=nothing,
+        companion_admissible::Union{Nothing, Bool}=nothing,
+        companion_stable::Union{Nothing, Bool}=nothing,
+        companion_spectral_radius::Union{Nothing, Real}=nothing,
+        companion_multipliers::AbstractVector=ComplexF64[],
+        transversal::Union{Nothing, Bool}=nothing,
+        transversality_measure::Union{Nothing, Real}=nothing,
+        continuous::Union{Nothing, Bool}=nothing,
+        continuity_residual::Union{Nothing, Real}=nothing,
+        continuity_tolerance::Real=NaN,
+        generic::Bool=false,
+        jacobian_L::AbstractMatrix=Matrix{Float64}(undef, 0, 0),
+        jacobian_R::AbstractMatrix=Matrix{Float64}(undef, 0, 0),
+        inference::AbstractString="",
+        warnings::AbstractVector=String[],
+        convention::AbstractString=_BORDER_COLLISION_CONVENTION)
+    return BorderCollisionClassification(
+        scenario, status, Int(period),
+        Float64(det_I_minus_L), Float64(det_I_minus_R),
+        Float64(det_I_plus_L), Float64(det_I_plus_R),
+        Float64(persistence_product), Int(persistence_sign),
+        Float64(companion_product), Int(companion_sign),
+        sigma_plus_L === nothing ? nothing : Int(sigma_plus_L),
+        sigma_plus_R === nothing ? nothing : Int(sigma_plus_R),
+        sigma_minus_L === nothing ? nothing : Int(sigma_minus_L),
+        sigma_minus_R === nothing ? nothing : Int(sigma_minus_R),
+        sigma_reliable,
+        collect(ComplexF64, spectrum_L), collect(ComplexF64, spectrum_R),
+        stable_L, stable_R, Float64(spectral_radius_L), Float64(spectral_radius_R),
+        companion_exists, companion_admissible, companion_stable,
+        companion_spectral_radius === nothing ? nothing : Float64(companion_spectral_radius),
+        collect(ComplexF64, companion_multipliers),
+        transversal, transversality_measure === nothing ? nothing : Float64(transversality_measure),
+        continuous, continuity_residual === nothing ? nothing : Float64(continuity_residual),
+        Float64(continuity_tolerance),
+        generic,
+        Matrix{Float64}(jacobian_L), Matrix{Float64}(jacobian_R),
+        String(inference), collect(String, warnings), String(convention))
+end
+
+"""
+    BorderCollisionPoint
+
+A located border-collision of a period-`q` cycle on a continued map / return-map branch,
+together with its `BorderCollisionClassification`.
+
+# Fields
+- `param`: Bifurcation parameter value at the collision (`NaN` when classifying a bare cycle
+  without a swept parameter)
+- `orbit`: The reconstructed `q`-cycle phases at the collision
+- `colliding_phase`: 1-based index of the single phase sitting on the border
+- `itinerary`: Sign of the colliding guard component at each phase (`0` at the colliding phase)
+- `event_name`: Name of the `SwitchingEvent` whose guard collided
+- `guard_component`: 1-based index of the guard component that collided (`1` for a scalar guard)
+- `guard_values`: Colliding guard-component value at each phase
+- `period`: Cycle period `q`
+- `classification`: The determinant-sign classification
+- `converged`: Whether both the collision refinement and the one-sided Jacobians converged
+"""
+struct BorderCollisionPoint
+    param::Float64
+    orbit::Vector{Vector{Float64}}
+    colliding_phase::Int
+    itinerary::Vector{Int}
+    event_name::String
+    guard_component::Int
+    guard_values::Vector{Float64}
+    period::Int
+    classification::BorderCollisionClassification
+    converged::Bool
+end
+
+function BorderCollisionPoint(param::Real, orbit::AbstractVector, colliding_phase::Integer,
+                              itinerary::AbstractVector, event_name::AbstractString,
+                              guard_component::Integer, guard_values::AbstractVector,
+                              period::Integer, classification::BorderCollisionClassification,
+                              converged::Bool)
+    return BorderCollisionPoint(
+        Float64(param),
+        [collect(Float64, phase) for phase in orbit],
+        Int(colliding_phase),
+        collect(Int, itinerary),
+        String(event_name),
+        Int(guard_component),
+        collect(Float64, guard_values),
+        Int(period),
+        classification,
+        converged)
+end

@@ -56,6 +56,7 @@ include("analysis/codim2.jl")
 include("analysis/skeleton.jl")
 include("analysis/normal_forms.jl")
 include("analysis/map_special_points.jl")      # map-aware fold/flip/NS emission
+include("analysis/border_collision.jl")        # continuous-map border-collision classification
 include("analysis/atlas.jl")
 include("analysis/contract_kernels.jl")     # publish analysis kernels (after defs)
 include("analysis/contract_accessors.jl")   # publish result/diagnostics accessors (after defs)
@@ -70,6 +71,7 @@ include("visualization/plots.jl")
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
 export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapNormalForm, MapSpecialPoint
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
+export BorderCollisionClassification, BorderCollisionPoint
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -115,6 +117,7 @@ export brute_force_diagram, continuation_branch, continuation_branches, continua
 export continuation_orbit_collocation
 export orbit_branch_parameters, orbit_branch_periods, orbit_branch_orbit, orbit_branch_amplitude, orbit_branch_multipliers, orbit_branch_stability
 export map_normal_form, map_special_points
+export border_collision_classify, border_collision_at_cycle, border_collision_points
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
@@ -142,6 +145,8 @@ export serialize_robust_chaos_certificate, deserialize_robust_chaos_certificate
 export serialize_robust_chaos_evidence, deserialize_robust_chaos_evidence
 export serialize_map_normal_form, deserialize_map_normal_form
 export serialize_map_special_point, deserialize_map_special_point
+export serialize_border_collision_classification, deserialize_border_collision_classification
+export serialize_border_collision_point, deserialize_border_collision_point
 
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum

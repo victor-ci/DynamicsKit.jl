@@ -377,7 +377,28 @@ Each `MapSpecialPoint` carries `kind`, `param`, `state`, `multipliers`, `critica
 
 `serialize_map_normal_form` / `deserialize_map_normal_form` and `serialize_map_special_point` / `deserialize_map_special_point` provide strict, versioned JSON-plain dictionaries. Complex multipliers are represented as `[real, imag]` pairs.
 
-## Codimension-2 bifurcation curves
+## Border-collision classification
+
+`border_collision_classify(A_L, A_R; switching_normal=nothing, period=1, transversality=nothing)` classifies a border-collision bifurcation of a **continuous** piecewise-smooth map from its two one-sided ordered `q`-return Jacobians `A_L` (guard-negative branch) and `A_R` (guard-positive branch), using the Feigin/Simpson/di Bernardo determinant signs: `sign(det(I-A_L)·det(I-A_R))` gives persistence (`>0`) vs nonsmooth fold (`<0`), and `sign(det(I+A_L)·det(I+A_R))` gives companion `2q`-cycle creation (`<0`). The four generic scenarios are `:persistence`, `:nonsmooth_fold`, `:persistence_with_companion_cycle`, and `:nonsmooth_fold_with_companion_cycle`. LU-derived determinant signs are authoritative and genericity is based on eigenvalue distance to `±1`; the `σ₊`/`σ₋` real-eigenvalue counts are tolerance-aware diagnostics (`sigma_reliable`). Stability is reported separately (one-sided and, for `status == :ok`, companion spectral radii); no chaos, robust-chaos, period-adding, or torus verdict is inferred.
+
+`border_collision_at_cycle(sys, cycle, params; period=nothing, param=NaN, events=switching_events(sys))` classifies a real period-`q` cycle of a continuous piecewise-smooth `DiscreteMap`. `cycle` is the vector of `q` phase states or a single seed (the orbit is then reconstructed). Every switching-guard component is evaluated at every phase; a single generic colliding phase is required, and the two ordered `q`-return Jacobians differ only at that phase — its one-sided Jacobians use forced one-sided finite differences with Richardson `δ`-refinement (robust where branch selection invalidates automatic differentiation at the border), interior phases use AD.
+
+`border_collision_points(sys, branch::BranchResult, base_params; events=switching_events(sys))` scans a continued map / return-map branch for crossings (sign changes of the signed nearest-border guard value between adjacent points), refines each honestly in both the parameter and the periodic state (bisection with a Newton re-solve of the period-`q` fixed point), deduplicates, and classifies. A finite-difference `d(guard)/d(param)` across the bracket is passed through as the transversality measure.
+
+Continuity is verified as the switching-manifold rank-one condition (`A_L-A_R` rank one with row space the switching normal); a violation yields status `:noncontinuous` and classification is refused, while an incorrectly sized, non-finite, or zero supplied normal yields `:invalid`. Genericity (`:degenerate` on a `±1` eigenvalue), transversality (`:nontransversal`), an absent/ambiguous colliding phase (`:unavailable` / `:multiple_border_phases`), and invalid inputs (`:invalid`) each carry an explicit status and never produce a generic scenario; companion-cycle fields are populated only for `status == :ok`, and admissibility is left `nothing`.
+
+```julia
+# Simpson (2014) 1D fold-with-companion fixture: a_L = 2, a_R = -1.5.
+c = border_collision_classify(reshape([2.0], 1, 1), reshape([-1.5], 1, 1); switching_normal=[1.0])
+c.scenario            # :nonsmooth_fold_with_companion_cycle
+c.persistence_product # < 0 (nonsmooth fold)
+c.companion_product   # < 0 (companion 2-cycle created)
+c.status              # :ok
+```
+
+`BorderCollisionClassification` and `BorderCollisionPoint` are plain data with full provenance (event, guard component, period, colliding phase, itinerary, `A_L`/`A_R`, determinant invariants, spectra, `σ` counts, stability, continuity residual, transversality, status, scenario, companion-cycle existence/stability, and a conservative inference string). `serialize_border_collision_classification` / `deserialize_border_collision_classification` and `serialize_border_collision_point` / `deserialize_border_collision_point` provide strict, versioned JSON-plain dictionaries (complex spectra as `[real, imag]` pairs; nullable fields as `null`).
+
+
 
 `codim2_curve` assembles a traced curve in a two-parameter plane by sweeping a secondary parameter and running a 1D continuation slice along the primary parameter at each secondary value.
 
