@@ -1130,7 +1130,7 @@ end
 const _REGIME_BOUNDARY_FORMAT = "regime-boundary-v1"
 const _TOLERANCE_MAP_FORMAT = "tolerance-map-v1"
 
-# Special-float aware matrix (de)serialization: unlike the reachability helpers, the T2.4 margins
+# Special-float aware matrix (de)serialization: unlike the reachability helpers, margin fields
 # distinguish Inf (no boundary on this line) from NaN (invalid cell), so non-finite values are
 # encoded as explicit tokens rather than collapsed to `nothing`.
 _encode_special_float(x::Real) =
@@ -1361,3 +1361,98 @@ const deserialize_border_collision_classification = _deserialize_border_collisio
 const serialize_border_collision_point = _serialize_border_collision_point
 """    deserialize_border_collision_point(data::AbstractDict) -> BorderCollisionPoint"""
 const deserialize_border_collision_point = _deserialize_border_collision_point
+
+# ---- Codim2SpecialPoint serialization ------------------------------------
+
+const _CODIM2_SPECIAL_POINT_FORMAT = "codim2-special-point-v1"
+
+function _serialize_codim2_special_point(point::Codim2SpecialPoint)::Dict{String, Any}
+    point.kind in _CODIM2_SPECIAL_POINT_KINDS || throw(ArgumentError(
+        "Codim2SpecialPoint kind must be one of $(join(_CODIM2_SPECIAL_POINT_KINDS, ", ")); " *
+        "got $(repr(point.kind))."))
+    point.locus_kind in (:fold, :pd, :ns) || throw(ArgumentError(
+        "Codim2SpecialPoint locus_kind must be fold, pd, or ns; got $(repr(point.locus_kind))."))
+    isfinite(point.primary_param) || throw(ArgumentError("Codim2SpecialPoint primary_param must be finite."))
+    isfinite(point.secondary_param) || throw(ArgumentError("Codim2SpecialPoint secondary_param must be finite."))
+    all(isfinite, point.state) || throw(ArgumentError("Codim2SpecialPoint state must be finite."))
+    for (k, m) in enumerate(point.multipliers)
+        isfinite(real(m)) && isfinite(imag(m)) || throw(ArgumentError(
+            "Codim2SpecialPoint multiplier[$k] must be finite."))
+    end
+    point.period >= 1 || throw(ArgumentError("Codim2SpecialPoint period must be >= 1."))
+    point.status in (:interpolated, :sampled, :unavailable) || throw(ArgumentError(
+        "Codim2SpecialPoint status must be interpolated, sampled, or unavailable; " *
+        "got $(repr(point.status))."))
+    return Dict{String, Any}(
+        "format"         => _CODIM2_SPECIAL_POINT_FORMAT,
+        "kind"           => String(point.kind),
+        "locusKind"      => String(point.locus_kind),
+        "primaryParam"   => point.primary_param,
+        "secondaryParam" => point.secondary_param,
+        "state"          => collect(Float64, point.state),
+        "multipliers"    => [[real(m), imag(m)] for m in point.multipliers],
+        "testValue"      => point.test_value,
+        "period"         => point.period,
+        "converged"      => point.converged,
+        "status"         => String(point.status),
+        "normalForm"     => point.normal_form === nothing ? nothing :
+                            _serialize_map_normal_form(point.normal_form),
+    )
+end
+
+function _deserialize_codim2_special_point(data::AbstractDict)::Codim2SpecialPoint
+    _require_serialized_fields(
+        data,
+        ("format", "kind", "locusKind", "primaryParam", "secondaryParam",
+         "state", "multipliers", "testValue", "period", "converged", "status"),
+        "codim2 special point")
+    format = _as_string(get(data, "format", ""), "")
+    format == _CODIM2_SPECIAL_POINT_FORMAT || throw(ArgumentError(
+        "Unsupported codim2 special-point serialization format '$format'."))
+    kind = Symbol(_as_string(get(data, "kind", ""), ""))
+    kind in _CODIM2_SPECIAL_POINT_KINDS || throw(ArgumentError(
+        "Serialized codim2 special-point kind must be one of " *
+        "$(join(_CODIM2_SPECIAL_POINT_KINDS, ", ")); got $(repr(kind))."))
+    locus_kind = Symbol(_as_string(get(data, "locusKind", ""), ""))
+    locus_kind in (:fold, :pd, :ns) || throw(ArgumentError(
+        "Serialized codim2 special-point locusKind must be fold, pd, or ns; " *
+        "got $(repr(locus_kind))."))
+    primary_param   = _as_float(get(data, "primaryParam",   NaN), NaN)
+    secondary_param = _as_float(get(data, "secondaryParam", NaN), NaN)
+    isfinite(primary_param)   || throw(ArgumentError("Serialized codim2 special-point primaryParam must be finite."))
+    isfinite(secondary_param) || throw(ArgumentError("Serialized codim2 special-point secondaryParam must be finite."))
+    state = collect(Float64, get(data, "state", Float64[]))
+    all(isfinite, state) || throw(ArgumentError("Serialized codim2 special-point state must be finite."))
+    raw_mult = get(data, "multipliers", Any[])
+    raw_mult isa AbstractVector || throw(ArgumentError("Serialized codim2 special-point multipliers must be an array."))
+    multipliers = ComplexF64[]
+    for entry in raw_mult
+        entry isa AbstractVector && length(entry) == 2 &&
+            all(item -> item isa Real, entry) || throw(ArgumentError(
+                "Serialized codim2 special-point multiplier entry must be [re, im]."))
+        v = complex(Float64(entry[1]), Float64(entry[2]))
+        isfinite(real(v)) && isfinite(imag(v)) || throw(ArgumentError(
+            "Serialized codim2 special-point multiplier must be finite."))
+        push!(multipliers, v)
+    end
+    test_value = _as_float(get(data, "testValue", NaN), NaN)
+    period = _as_int(get(data, "period", 0), 0)
+    period >= 1 || throw(ArgumentError("Serialized codim2 special-point period must be >= 1; got $period."))
+    get(data, "converged", nothing) isa Bool || throw(ArgumentError(
+        "Serialized codim2 special-point converged must be a boolean."))
+    converged = data["converged"]::Bool
+    status = Symbol(_as_string(get(data, "status", ""), ""))
+    status in (:interpolated, :sampled, :unavailable) || throw(ArgumentError(
+        "Serialized codim2 special-point status must be interpolated, sampled, or unavailable; " *
+        "got $(repr(status))."))
+    nf_data = get(data, "normalForm", nothing)
+    normal_form = nf_data === nothing ? nothing : _deserialize_map_normal_form(nf_data)
+    return Codim2SpecialPoint(kind, locus_kind, primary_param, secondary_param,
+                              state, multipliers, test_value, period, converged,
+                              status, normal_form)
+end
+
+"""    serialize_codim2_special_point(point::Codim2SpecialPoint) -> Dict — versioned JSON-plain form (format "codim2-special-point-v1")."""
+const serialize_codim2_special_point = _serialize_codim2_special_point
+"""    deserialize_codim2_special_point(data::AbstractDict) -> Codim2SpecialPoint"""
+const deserialize_codim2_special_point = _deserialize_codim2_special_point

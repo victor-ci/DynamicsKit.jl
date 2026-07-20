@@ -1,4 +1,4 @@
-# Multistability-aware continuation (roadmap T2.3).
+# Multistability-aware continuation with basin reachability.
 #
 # Pairs continuation branches with a per-parameter basin initial-condition census so each coexisting
 # branch is reported with the basin fraction that actually reaches it. Every basin seed's terminal

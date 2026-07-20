@@ -720,7 +720,7 @@ end
 """
     BranchReachabilityConfig
 
-Configuration for `branch_reachability` (multistability-aware continuation, roadmap T2.3). Pairs a
+Configuration for `branch_reachability` (multistability-aware continuation). Pairs a
 set of continuation branches with a per-parameter basin initial-condition census so each coexisting
 branch is reported with the basin fraction that actually reaches it, not merely as stable/unstable.
 
@@ -839,7 +839,7 @@ end
     RegimeBoundaryConfig
 
 Configuration for `regime_boundary_distances` (deterministic regime-boundary margins over a
-classified 2D operating map, roadmap T2.4 layer A).
+classified 2D operating map).
 
 The margin field measures, for every *known-regime* cell, the physical Euclidean distance to the
 nearest regime boundary; a cell whose regime cannot be resolved is marked invalid rather than being
@@ -870,8 +870,8 @@ end
 """
     AbstractTolerance
 
-Supertype for zero-inclusive component-tolerance distributions used by `tolerance_regime_map`
-(roadmap T2.4 layer B). A tolerance with scale `0` is an exact Dirac delta (no perturbation, no RNG
+Supertype for zero-inclusive component-tolerance distributions used by `tolerance_regime_map`.
+A tolerance with scale `0` is an exact Dirac delta (no perturbation, no RNG
 draw). See `UniformTolerance` and `GaussianTolerance`.
 """
 abstract type AbstractTolerance end
@@ -910,7 +910,7 @@ end
     ToleranceConfig
 
 Configuration for `tolerance_regime_map` (probabilistic component-tolerance propagation through the
-classified 2D operating map, roadmap T2.4 layer B).
+classified 2D operating map).
 
 At each nominal grid cell the two parameters are independently perturbed by `tolerance_a` /
 `tolerance_b`, and each perturbed operating point is classified by *nearest physical-grid-cell

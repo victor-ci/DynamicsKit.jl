@@ -633,6 +633,51 @@ MapSpecialPoint(kind::Symbol, param::Real, state::AbstractVector,
                     Float64(test_value), Int(period), converged, nothing)
 
 """
+    Codim2SpecialPoint
+
+A codimension-2 bifurcation point detected on a `Codim2ContinuationResult` locus via
+`codim2_special_points`. Supported kinds and their applicable loci:
+
+- `:cusp` — fold locus turns in the primary parameter (`:fold` locus)
+- `:generalized_flip` — flip normal-form coefficient `c` changes sign (`:pd` locus)
+- `:fold_flip` — a non-tracked second multiplier reaches ∓1 (`:pd` or `:fold` locus)
+- `:resonance_1_1` — tracked unit-circle angle crosses 0 mod 2π (`:ns` locus)
+- `:resonance_1_2` — tracked unit-circle angle crosses π mod 2π (`:ns` locus)
+- `:bautin` — NS normal-form coefficient `d` changes sign (`:ns` locus)
+
+`locus_kind` records which locus produced this point. `primary_param` and
+`secondary_param` are the two-parameter coordinates of the located point. `state`
+is the fixed-point state vector; `multipliers` is the full multiplier set (empty when
+`Codim2Config.curve_diagnostics` was `false`). `test_value` is the scalar test
+function at the located point (zero for interpolated detections). `converged` is
+`true` only when Newton correction to the defining locus succeeded. `status` records
+the resolution:
+
+- `:interpolated` — point located by linear interpolation between two bracketing locus
+  samples; state is not corrected back to the locus.
+- `:sampled` — reported directly from the closest locus sample; no interpolation.
+- `:unavailable` — detection was requested but required data (multipliers, normal-form
+  coefficients) were absent or numerically unstable.
+
+`normal_form` carries the codim-1 normal form from the nearest bracketing sample when
+available (generalized-flip/bautin only); full codim-2 normal-form classification is
+out of scope.
+"""
+struct Codim2SpecialPoint
+    kind::Symbol
+    locus_kind::Symbol
+    primary_param::Float64
+    secondary_param::Float64
+    state::Vector{Float64}
+    multipliers::Vector{ComplexF64}
+    test_value::Float64
+    period::Int
+    converged::Bool
+    status::Symbol
+    normal_form::Union{Nothing, MapNormalForm}
+end
+
+"""
     BifurcationResult
 
 Aggregated result containing brute-force and/or branch data.

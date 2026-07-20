@@ -163,6 +163,72 @@ explicit criticality/status. On the Hénon map the located period-1 flip (a = 0.
 their closed-form values; on the peak-current-mode boost converter the subharmonic
 period-doubling is recovered where BifurcationKit's own `.specialpoint` list has none.
 
+## Codim-2 organising points along loci
+
+Function:
+
+```julia
+codim2_special_points(sys, result::Codim2ContinuationResult; detect=(...), kwargs...)
+    -> Vector{Codim2SpecialPoint}
+```
+
+Runs a test-function pass over an existing `Codim2ContinuationResult` produced by
+`engine=:defining_system` to detect and locate the organising codimension-2 points.
+Returns a `Vector{Codim2SpecialPoint}` sorted by `(kind, secondary_param, primary_param)` and
+deduplicated within configurable proximity tolerances.
+
+Supported kinds and applicable loci:
+
+| Kind | Locus | Test function | Needs `base_params` |
+| --- | --- | --- | --- |
+| `:cusp` | `:fold` | Turning point of the fold locus in the primary parameter (3-point quadratic vertex) | no |
+| `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | yes |
+| `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | no (needs `curve_diagnostics`) |
+| `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | no |
+| `:resonance_1_2` | `:ns` | `cos(θ/2)` crossing zero (θ = π+2πk) | no |
+| `:bautin` | `:ns` | Sign change of NS normal-form coefficient `d` at locus samples | yes |
+
+Each `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`, `secondary_param`,
+`state`, `multipliers` (empty when `curve_diagnostics=false`), `test_value`, `period`,
+`converged`, `status` (`:interpolated`, `:sampled`, or `:unavailable`), and an optional
+`MapNormalForm`.
+
+Resonance test functions: `sin(θ/2)` (1:1) and `cos(θ/2)` (1:2) respect unwrapped angle
+periodicity, correctly detect crossings at ±2π and ±π, and do not produce cross-contamination
+between the two resonances.
+
+Cusp detection uses a 3-point local quadratic vertex estimate.  Only strictly opposite-signed
+consecutive differences qualify; zero increments and plateaux never trigger false detections.
+
+Conservative location: a sample whose scalar test magnitude is within `test_tolerance`
+(default `1e-5`) is returned with `status=:sampled`; otherwise sign-change brackets are
+returned with `status=:interpolated`. Coefficient-zero detections (`:generalized_flip`,
+`:bautin`) evaluate the normal form at discrete locus samples, then interpolate the zero location.
+The resulting `Codim2SpecialPoint` carries `normal_form=nothing` — attaching the nearest
+bracketing sample's nonzero-coefficient form to the coefficient-zero point would be
+scientifically misleading.  All interpolated points carry `converged=false`.
+
+`ArgumentError` policy: if `:generalized_flip` or `:bautin` is **explicitly** listed in `detect`
+on an applicable locus (`:pd` or `:ns` respectively) but `base_params` / parameter indices are
+absent, an `ArgumentError` is raised.  The default `detect=nothing` (all kinds) silently skips
+coefficient detectors that lack parameter information, so it works on any locus without requiring
+`base_params`.
+
+`DiscreteMap` systems are fully supported. `ContinuousODE` (Poincaré return-map) systems use
+the same path; if `map_normal_form` returns `status=:fd_step_unstable` for a sample that
+sample is silently skipped (conservative: only stable evaluations bracket a sign change).
+
+Full codim-2 normal-form classification is explicitly out of scope.
+
+Keyword arguments:
+- `detect`: tuple/vector of kinds to detect, or `nothing` for all six (default).
+- `base_params`, `param_index`, `second_param_index`: required for `:generalized_flip` and `:bautin`
+  when those kinds are explicitly listed (see `ArgumentError` policy above).
+- `linked_param_indices`, `second_linked_param_indices`: parameter slots linked to the primary / secondary axes.
+- `duplicate_primary_tol`, `duplicate_secondary_tol`: proximity thresholds for deduplication (default `1e-7`).
+- `test_tolerance`: absolute scalar-test threshold for accepting a sampled root (default `1e-5`).
+- `normal_form_fd_step`, `solver`, `reltol`, `abstol`, `tmax`, `min_crossing_time`: normal-form evaluation controls.
+
 ## Border-collision classification (continuous piecewise-smooth maps)
 
 Functions:
@@ -508,7 +574,7 @@ For a `ContinuousODE` carrying a `PoincareSection`, the census runs on the secti
 
 The ODE integration is configured by `ode_solver` (resolved by `select_ode_solver`), `ode_reltol`/`ode_abstol`, `min_crossing_time`, `ode_fd_step`, and `ode_tmax`; the census is deterministic and thread-parity safe (`threaded=true`).
 
-**Stiff systems (e.g. Murali–Lakshmanan–Chua):** prefer `ode_solver="auto"` (stiffness-aware) or an explicit stiff key such as `"rosenbrock23"`, tighten `ode_reltol`/`ode_abstol`, and raise the system `tspan_hint` (which scales the default `ode_tmax=Inf` horizon) so slow transients complete before section detection. The thesis T2.3 validation recovers stable P1/P3/P3 MDB coexistence at `a=0.0155` with full seed accounting.
+**Stiff systems (e.g. Murali–Lakshmanan–Chua):** prefer `ode_solver="auto"` (stiffness-aware) or an explicit stiff key such as `"rosenbrock23"`, tighten `ode_reltol`/`ode_abstol`, and raise the system `tspan_hint` (which scales the default `ode_tmax=Inf` horizon) so slow transients complete before section detection. The thesis validation recovers stable P1/P3/P3 MDB coexistence at `a=0.0155` with full seed accounting.
 
 ## Parameter-robustness / tolerance fields
 

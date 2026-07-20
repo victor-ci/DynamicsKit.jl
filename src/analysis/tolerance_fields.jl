@@ -1,4 +1,4 @@
-# Parameter-robustness / tolerance fields over a classified 2D operating map (roadmap T2.4).
+# Parameter-robustness and tolerance fields over a classified 2D operating map.
 #
 # Two clearly separated layers share one classified-map surrogate (the (a, b) regime grid derived
 # from a `BifurcationMapResult`, optionally sharpened by per-cell status codes):
@@ -29,7 +29,7 @@ const _REGIME_DIVERGED = -2
 """
     RegimeBoundaryResult
 
-Plain-data result of `regime_boundary_distances` (roadmap T2.4 layer A). All per-cell matrices share
+Plain-data result of `regime_boundary_distances`. All per-cell matrices share
 the `(na, nb)` operating-map grid shape and the `[i, j] ↔ (a_grid[i], b_grid[j])` orientation of the
 source `BifurcationMapResult`.
 
@@ -80,7 +80,7 @@ end
 """
     ToleranceMapResult
 
-Plain-data result of `tolerance_regime_map` (roadmap T2.4 layer B). Per-cell matrices share the
+Plain-data result of `tolerance_regime_map`. Per-cell matrices share the
 `(na, nb)` operating-map grid shape and orientation.
 
 # Fields

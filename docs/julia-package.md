@@ -562,6 +562,39 @@ ignored — the leg always continues the secondary parameter
 (`second_param_index`). `nothing` derives conservative settings from the
 secondary grid.
 
+Once a `Codim2ContinuationResult` has been produced, a test-function pass can locate organising
+codimension-2 points along the locus:
+
+```julia
+# Default: all six kinds.  Coefficient detectors (:generalized_flip, :bautin) are skipped
+# without error when base_params is absent — safe to call on any locus.
+pts = codim2_special_points(sys, result)
+
+# Explicit subset with parameter info for coefficient detectors:
+pts = codim2_special_points(sys, result;
+    detect=[:cusp, :generalized_flip, :fold_flip,
+            :resonance_1_1, :resonance_1_2, :bautin],
+    base_params=[p1_base, p2_base],
+    param_index=1, second_param_index=2)
+```
+
+Each returned `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`,
+`secondary_param`, `state`, `multipliers`, `test_value`, `period`, `converged`,
+`status` (`:interpolated`, `:sampled`, or `:unavailable`), and `normal_form` (always
+`nothing` for interpolated coefficient-zero points — attaching a nonzero-coefficient form
+from the nearest bracketing sample would be misleading). Near-zero locus samples are
+reported as `status=:sampled` using the configurable `test_tolerance`; sign-change
+brackets are reported as `status=:interpolated`. Points are sorted by
+`(kind, secondary_param, primary_param)` and deduplicated.
+
+`serialize_codim2_special_point`/`deserialize_codim2_special_point` provide the JSON-plain
+wire form (format `"codim2-special-point-v1"`).  Full codim-2 normal-form classification
+is out of scope.
+
+**ArgumentError policy**: explicitly listing `:generalized_flip` (`:pd` locus) or `:bautin`
+(`:ns` locus) in `detect` without `base_params` raises `ArgumentError`.  Inapplicable kinds
+(wrong locus) return empty without error so the default all-kinds pass works everywhere.
+
 ## Periodic skeleton search
 
 Skeleton search finds periodic orbits at one parameter value by Newton iteration from a seed grid.
