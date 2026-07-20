@@ -68,6 +68,28 @@ The multistability map mode samples extra initial conditions per parameter cell 
 
 Use this mode for systems known to have coexisting attractors, especially the memristive diode bridge and parameter windows near basin boundaries.
 
+### Branch reachability
+
+The multistability map answers "what coexists at this parameter cell"; `branch_reachability` answers the complementary question "which *continued branch* does each initial condition actually land on, and with what basin fraction." It pairs continuation branches with a basin census and assigns every seed's terminal periodic orbit to a stable branch identity by period-gated, phase-invariant cycle geometry.
+
+Interpretation cautions:
+
+- **Period is not identity.** When several stable attractors share a period, the basin fraction reported for a branch reflects geometric assignment of each seed's terminal cycle, not a plurality vote over the period group. Two same-period branches can split a basin (e.g. the analytic bistable cubic map splits exactly 50/50), and the fractions distinguish them.
+- **Read the category census, not just the matched fractions.** The seven categories (`matched`, `unmatched`, `aperiodic`, `diverged`, `unresolved`, `stability_mismatch`, `outside_coverage`) partition the full seed census. A large `unmatched` or `outside_coverage` fraction means the continuation set is incomplete for that parameter (an attractor is reached that no supplied branch represents), not that reachability failed. `stability_mismatch` and `unresolved` flag seeds that only geometry-match an unstable branch or cannot be told apart between two same-period branches.
+- **Coverage matters.** A branch is only scored where its continuation actually reaches the knot; outside its range it is `covered = false` and contributes no matched fraction. Fractions are always relative to the full seed grid, so they are comparable across knots and branches.
+- **Continuous-time seeds are full states; branches are projected.** For a `ContinuousODE` the census runs on the Poincaré return map: seeds are full-state initial conditions, but branch fixed points and the seed's terminal cycle are compared in *projected* section coordinates (the section must carry a full-state `template` to lift them back for integration). Branches are Newton-corrected on the return map and their stability recomputed from the return-map multipliers, so the recorded continuation `stable` flag is only a seed. A branch whose return-map solve does not converge is honestly `uncovered`, and a seed the integrator cannot resolve to a bounded periodic orbit is `unresolved` — the return map degrades rather than fabricating matches. `basins_crosscheck` is rejected for `ContinuousODE`, since a return-map census and an independent basins census need not share crossing semantics (warm-up, solver, horizon).
+
+### Parameter-robustness / tolerance fields
+
+`regime_boundary_distances` and `tolerance_regime_map` turn a classified operating map into a component-drift robustness statement. They are pure post-processing of the map surrogate — they never rerun the model — so their honesty depends on reading them as such.
+
+- **Margins are to a boundary *cell centre*, not the true interface.** `regime_boundary_distances` reports the Euclidean distance to the nearest boundary cell centre on the sampled grid. This is a finite-grid convention carrying ≤ one cell-diagonal discretization error versus the continuous interface; refine the map to tighten it. Per-axis `distance_a` / `distance_b` are the single-parameter drift margins and are `Inf` when that grid line carries no boundary.
+- **Unknown is not a regime.** Cells whose regime cannot be resolved (period `0` without status evidence, or non-informative status codes) are treated as unknown: they get no margin and form a boundary for their neighbours. A margin therefore answers "distance to a *different known regime or to the edge of knowledge*," conservatively. Read `status_evidence`: without status codes the classification is periodicity-only and cannot separate chaos, divergence, and solver failure.
+- **The edge policy changes the meaning.** Under the default `:censored` policy a margin capped by the sampled-domain edge is flagged `edge_censored` and must be read as a *lower bound* — a regime change may lie just outside the window. Do not report a censored margin as the true distance.
+- **Tolerance probabilities are surrogate propagation, not a proof.** `tolerance_regime_map` estimates, by nearest-cell Monte-Carlo lookup over the fixed classified map, the probability that a tolerance-perturbed operating point stays in each regime. It is neither model reruns nor a closed-form tolerance bound; its resolution is the map's resolution, and integer regime labels are never interpolated. Report the Wilson interval, not just the point probability.
+- **Do not renormalize away unknown / out-of-domain mass.** Probability that lands in unknown cells or leaves the sampled domain is kept as its own category; the regime probabilities plus unknown plus out-of-domain sum to one. Rescaling the regimes to sum to one would fabricate confidence the map does not have. When both tolerances are zero the map collapses exactly to the deterministic classification (probability 1, entropy 0), which is the intended consistency check.
+
+
 ## Lyapunov diagnostics
 
 Largest-Lyapunov estimates help split period `0` cells into candidates:

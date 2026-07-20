@@ -24,6 +24,7 @@ using Parameters
 using Setfield
 using Accessors
 using UUIDs
+using Random
 
 # Type system
 include("systems/types.jl")
@@ -61,6 +62,8 @@ include("analysis/atlas.jl")
 include("analysis/contract_kernels.jl")     # publish analysis kernels (after defs)
 include("analysis/contract_accessors.jl")   # publish result/diagnostics accessors (after defs)
 include("analysis/branch_families.jl")      # conservative orbit-geometry family inference
+include("analysis/branch_reachability.jl")  # multistability-aware continuation (basin reachability)
+include("analysis/tolerance_fields.jl")     # parameter-robustness: regime-boundary margins + tolerance maps
 include("analysis/robust_chaos.jl")         # robust-chaos certificate (after atlas + kernels/accessors)
 include("utils/result_serialization.jl")    # serialize library result types (atlas cache; after Atlas* types)
 
@@ -106,6 +109,11 @@ export trim_branch_to_period, collect_distinct_period_branches, branch_stability
        branches_for_skeleton_param, is_duplicate_branch, poincare_projected
 export branch_points, splice_refined_continuous_branches
 export BranchFamilyAssignment, BranchBasinAssignment, branch_family_assignments, branch_basin_assignments
+export BranchReachabilityResult, BranchReachabilitySample, branch_reachability
+export reachability_category_counts, reachability_category_fractions, branch_reachability_fractions, branch_reachability_status_label
+export RegimeBoundaryResult, ToleranceMapResult, regime_boundary_distances, tolerance_regime_map
+export regime_boundary_summary, tolerance_regime_summary
+export AbstractTolerance, UniformTolerance, GaussianTolerance
 export map_effective_settings
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
 
@@ -131,6 +139,8 @@ export Codim2ContinuationResult
 # Exports — config
 export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
 export RobustChaosConfig
+export BranchReachabilityConfig
+export RegimeBoundaryConfig, ToleranceConfig
 
 # Exports — I/O
 export save_result, load_result
@@ -143,6 +153,9 @@ export serialize_atlas_result, deserialize_atlas_result
 export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
 export serialize_robust_chaos_certificate, deserialize_robust_chaos_certificate
 export serialize_robust_chaos_evidence, deserialize_robust_chaos_evidence
+export serialize_branch_reachability_result, deserialize_branch_reachability_result
+export serialize_regime_boundary_result, deserialize_regime_boundary_result
+export serialize_tolerance_map_result, deserialize_tolerance_map_result
 export serialize_map_normal_form, deserialize_map_normal_form
 export serialize_map_special_point, deserialize_map_special_point
 export serialize_border_collision_classification, deserialize_border_collision_classification

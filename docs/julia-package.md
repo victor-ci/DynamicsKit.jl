@@ -343,6 +343,108 @@ bas[1].observed          # true if this branch matches the seed's observed attra
 
 Each `BranchBasinAssignment` carries `branch_index`, `basin_index`, `basin_id` (`"observed"`/`"unobserved"`), `basin_label`, `observed::Bool`, `confidence`, and a `diagnostics` dict (`medianDistance`, `matchedSampleCount`, `paramTolerance`, ...).
 
+## Branch reachability (multistability-aware continuation)
+
+`branch_reachability(sys::DiscreteMap, branches, BranchReachabilityConfig(...); basins_crosscheck=nothing, log=nothing) -> BranchReachabilityResult` reports, per parameter knot, the basin fraction that actually reaches each coexisting branch. It runs a basin initial-condition census at each knot and assigns every seed's terminal periodic orbit to a *stable* branch identity by period-gated, phase-invariant cycle geometry — two same-period branches are separated by geometry, never by period alone, and no period group is plurality-assigned as a block.
+
+```julia
+# Bistable cubic map: stable fixed points (±1, 0), unstable origin, x = 0 basin boundary.
+cubic = DiscreteMap((x, p) -> SVector(1.5x[1] - 0.5x[1]^3, 0.5x[2]), 2, [:p], "CubicBistable")
+
+plus  = continuation_branch(cubic, ContinuationConfig(p_min=0.0, p_max=1.0); initial_point=[1.0, 0.0])
+minus = continuation_branch(cubic, ContinuationConfig(p_min=0.0, p_max=1.0); initial_point=[-1.0, 0.0])
+
+result = branch_reachability(cubic, [plus, minus],
+    BranchReachabilityConfig(
+        param_samples = [0.5],
+        base_params   = [0.0],
+        x_min = -1.5, x_max = 1.5, x_steps = 3,
+        y_min = -0.4, y_max = 0.4, y_steps = 2,
+        max_period = 4, iterations = 400,
+        branch_ids = ["plus", "minus"],
+    ))
+
+sample = result.samples[1]
+branch_reachability_fractions(sample)      # Dict("plus" => 0.5, "minus" => 0.5)
+reachability_category_counts(sample)       # (matched=12, unmatched=0, ..., total=12)
+reachability_category_fractions(sample)    # category fractions; sum to one
+```
+
+Every seed lands in exactly one of seven mutually-exclusive categories — `matched`, `unmatched`, `aperiodic`, `diverged`, `unresolved`, `stability_mismatch`, `outside_coverage` — and category fractions use the full seed census denominator, so `sum(values(reachability_category_fractions(sample))) ≈ 1`. Unstable branch segments attract zero fraction. Each `BranchReachabilitySample` also exposes per-branch `branch_periods` / `branch_stable` / `branch_covered` / `matched_counts` / `matched_fractions` and per-cell `assignment` / `status` / `match_distance` / `terminal_period` matrices (`branch_reachability_status_label(code)` maps a status code to its label).
+
+The branch state at each knot is Newton-solved to the exact period-`T` fixed point at that knot (never a distant branch point), and a branch is `covered` only inside its continued range (± `param_tolerance`). Independent basin evidence can be supplied via `basins_crosscheck`; the reachability census is still recomputed and must match after strict provenance + periodicity checks:
+
+```julia
+basins = [basins_of_attraction(cubic, BasinsConfig(bif_param=0.5,
+             x_min=-1.5, x_max=1.5, x_steps=3, y_min=-0.4, y_max=0.4, y_steps=2,
+             max_period=4, iterations=400))]
+result = branch_reachability(cubic, [plus, minus], cfg; basins_crosscheck=basins)  # rejected on any mismatch
+```
+
+Serialize with `serialize_branch_reachability_result` / `deserialize_branch_reachability_result` (format `"branch-reachability-v1"`).
+
+### Continuous-time (Poincaré return map)
+
+`branch_reachability` also accepts a `ContinuousODE` carrying a `PoincareSection`, running the same seven-category census on the section return map. Seeds are full-state initial conditions on the `(x_index, y_index)` grid; each seed's terminal orbit is detected on the section and reconstructed in projected coordinates, while branch fixed points are interpolated and Newton-corrected on the return map at the exact knot with stability recomputed from the return-map multipliers. The section must carry a full-state `template` (length = state dimension) so projected fixed points can be lifted for integration.
+
+```julia
+section = PoincareSection((u, t, integrator) -> u[2]; direction=:up, projection=[1], template=[0.0, 0.0])
+sys = ContinuousODE(mdb!, 2, section, [:F], "MDB"; tspan_hint=8.0, default_params=[0.0])
+
+result = branch_reachability(sys, branches,
+    BranchReachabilityConfig(
+        param_samples = [0.5], base_params = [0.0], param_index = 1,
+        x_min = 0.75, x_max = 3.25, x_steps = 3,
+        y_min = -0.1, y_max = 0.1, y_steps = 1,
+        x_index = 1, y_index = 2,
+        max_period = 2, iterations = 8,
+        ode_solver = "auto", ode_reltol = 1e-9, ode_abstol = 1e-9,
+        ode_tmax = Inf, threaded = true,
+    ))
+```
+
+Integration is controlled by `ode_solver` (resolved by `select_ode_solver`), `ode_reltol`/`ode_abstol`, `min_crossing_time` (launch-crossing suppression), `ode_fd_step`, and `ode_tmax` (`Inf` uses the `tspan_hint`-scaled horizon). A branch whose return-map Newton solve does not converge is reported `uncovered`, and a seed the integrator cannot resolve is `unresolved` — neither throws nor fabricates a match. `basins_crosscheck` is **rejected** for `ContinuousODE` (the return-map census cannot prove identical crossing semantics against an independent basins census). For stiff systems (e.g. Murali–Lakshmanan–Chua) prefer `ode_solver="auto"` or `"rosenbrock23"`, tighten tolerances, and raise `tspan_hint`; the thesis validation recovers stable P1/P3/P3 MDB coexistence at `a=0.0155`.
+
+## Parameter-robustness / tolerance fields
+
+Two separate layers post-process a classified 2D operating map (a `BifurcationMapResult`) into a component-drift robustness deliverable. Neither reruns the model.
+
+**A. Deterministic regime-boundary margins.** `regime_boundary_distances(map_result; cells=nothing, status_codes=nothing, config=RegimeBoundaryConfig()) -> RegimeBoundaryResult` gives, for each known-regime cell, the physical Euclidean distance to the nearest regime boundary (plus per-axis single-parameter margins), computed with a generalized distance transform at the true grid coordinates (monotone nonuniform grids supported; ≤ one cell-diagonal discretization error).
+
+```julia
+# Vertical regime split on a uniform grid: regime 1 for a < 5, regime 2 otherwise.
+a = collect(0.0:1.0:10.0); b = collect(0.0:1.0:6.0)
+labels = [a[i] < 5.0 ? 1 : 2 for i in eachindex(a), j in eachindex(b)]
+resolved = trues(length(a), length(b))
+
+rb = regime_boundary_distances(a, b, labels, resolved;
+        config = RegimeBoundaryConfig(edge_policy = :ignore))
+rb.distance[1, 1]     # 4.0  (cell centre a=0 to nearest boundary-cell centre a=4)
+rb.distance_a[1, 1]   # 4.0  (single-parameter drift margin along a)
+rb.distance_b[1, 1]   # Inf  (no boundary varies with b alone here)
+regime_boundary_summary(rb)   # (n_valid, n_boundary, min_margin, median_margin, ...)
+```
+
+Unknown/unresolved cells never become a physical regime: they carry `NaN` margin and `valid = false`, and form a boundary for their known neighbours. `edge_policy` is `:censored` (default; caps at the domain-edge distance and flags `edge_censored` as a lower bound), `:boundary` (edge is a real boundary), or `:ignore` (raw distance, may be `Inf`). Status evidence (`cells::MapCellGrid` or a `status_codes` matrix, exactly one, provenance-validated) distinguishes detected-aperiodic / diverged / unresolved cells; without it the classification is explicitly periodicity-only (period `0` ⇒ unknown). Serialize with `serialize_regime_boundary_result` / `deserialize_regime_boundary_result` (format `"regime-boundary-v1"`).
+
+**B. Probabilistic component-tolerance propagation.** `tolerance_regime_map(map_result, ToleranceConfig(...); cells=nothing, status_codes=nothing) -> ToleranceMapResult` perturbs each nominal cell's two parameters by stated tolerances and classifies each perturbed point by nearest physical-grid-cell lookup.
+
+```julia
+cfg = ToleranceConfig(
+    tolerance_a = GaussianTolerance(0.5),   # std; zero is an exact Dirac delta
+    tolerance_b = UniformTolerance(0.3),    # half-width
+    n_samples   = 4000,
+    seed        = UInt64(2024),
+    threaded    = true,
+)
+tr = tolerance_regime_map(a, b, labels, resolved, cfg)
+tr.nominal_probability[5, 3]    # P(stay in the nominal regime), with Wilson CI + binomial SE
+tr.out_of_domain_probability    # mass leaving the sampled domain — retained, never renormalized
+tolerance_regime_summary(tr)    # (n_regimes, n_effective, mean_nominal_probability, mean_entropy, ...)
+```
+
+Regime probabilities + unknown + out-of-domain partition 1 (never renormalized). Both tolerances zero ⇒ deterministic exact collapse (probability `1`, entropy `0`, CI `[1, 1]`, `n_effective = 0`, no RNG). Each cell uses an independent `Xoshiro` stream seeded by a stable `UInt64` mix of `(seed, i, j)`, so `threaded=false` and `threaded=true` give bitwise-identical results regardless of thread count. This is propagation through a finite classified-map surrogate, not model reruns or a tolerance proof. Serialize with `serialize_tolerance_map_result` / `deserialize_tolerance_map_result` (format `"tolerance-map-v1"`).
+
 ## Switching-event diagnostics
 
 `switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.

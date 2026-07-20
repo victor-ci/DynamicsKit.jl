@@ -716,3 +716,228 @@ end
     ) "RobustChaosConfig: basins and lyapunov must use the same non-varied base parameters"
     @assert lyapunov.param_min <= basins.bif_param <= lyapunov.param_max "RobustChaosConfig: basins.bif_param must lie within [lyapunov.param_min, lyapunov.param_max]"
 end
+
+"""
+    BranchReachabilityConfig
+
+Configuration for `branch_reachability` (multistability-aware continuation, roadmap T2.3). Pairs a
+set of continuation branches with a per-parameter basin initial-condition census so each coexisting
+branch is reported with the basin fraction that actually reaches it, not merely as stable/unstable.
+
+The analysis evaluates a basin census on the `(x, y)` initial-condition grid at each parameter knot
+in `param_samples`, assigns every seed's terminal periodic orbit to a stable branch identity using
+period-gated, phase-invariant state-space geometry, and accounts for every seed in exactly one
+category (`matched` / `unmatched` / `aperiodic` / `diverged` / `unresolved` / `stability_mismatch` /
+`outside_coverage`).
+
+# Fields
+- `param_samples`: Explicit list of parameter knots to evaluate (non-empty). Branch states are
+  selected/solved at each knot; a branch is `covered` at a knot only when the knot lies within its
+  continued parameter range (± `param_tolerance`).
+- `param_index`: Parameter slot holding the varied continuation parameter
+- `linked_param_indices`: Additional parameter slots set to the same varied value
+- `base_params`: Base parameter vector (varied + linked slots are overwritten per knot). Empty ⇒ a
+  zero vector sized to the referenced parameter slots.
+- `x_min`, `x_max`, `x_steps`: Grid bounds and number of intervals for the first
+  initial-condition axis (`x_steps + 1` seed points)
+- `y_min`, `y_max`, `y_steps`: Grid bounds and number of intervals for the second
+  initial-condition axis (`y_steps + 1` seed points)
+- `x_index`, `y_index`: State dimensions the grid axes vary
+- `ic_template`: Full-state fill for the non-gridded dimensions (empty ⇒ zeros)
+- `max_period`: Maximum period to detect for a seed's terminal orbit
+- `precision`: Amplitude-relative tolerance for period detection (matches `BasinsConfig.precision`)
+- `iterations`: Total iterations per seed (must be at least `max_period + 1`)
+- `divergence_cutoff`: State-amplitude cutoff flagging a diverged seed; `Inf` disables bailout
+- `param_tolerance`: How far outside a branch's recorded parameter range a knot may lie and still be
+  treated as covered (guards against using a branch point far from the requested sample)
+- `match_tolerance`: Amplitude-relative phase-invariant distance below which a seed cycle matches a
+  branch cycle
+- `ambiguity_ratio`: A seed with two same-period stable branches within `match_tolerance` is
+  `matched` to the nearest only when the best distance is at most `ambiguity_ratio` times the
+  second-best; otherwise it is `unresolved`. Must lie in `(0, 1)`.
+- `stability_tol`: Unit-circle tolerance for branch multiplier stability at each knot
+- `newton_max_iter`, `newton_tol`: Newton settings for solving the exact branch fixed point at a knot
+- `branch_ids`: Optional stable IDs aligned to the input branches; empty ⇒ deterministic
+  `"branch-<k>"` fallback IDs by input order
+- `threaded`: Thread the per-cell census (assignment is deterministic and thread-parity safe)
+
+## Continuous-time (`ContinuousODE`) fields
+
+For a `ContinuousODE`, seeds are full-state initial conditions, terminal orbits are detected on the
+Poincaré section, and branch states are the section-*projected* coordinates. These configure the
+shared ODE/Poincaré kernels (they are ignored for `DiscreteMap`):
+
+- `ode_solver`: solver key resolved by `select_ode_solver` (`"auto"`, `"tsit5"`, `"rosenbrock23"`);
+  `"auto"` is the stiff/non-stiff auto-switcher. Resolution is strict — an unknown key throws.
+- `ode_reltol`, `ode_abstol`: integrator tolerances for section-return integration
+- `min_crossing_time`: ignore section crossings before this time (drops the launch crossing)
+- `ode_fd_step`: finite-difference step for the return-map Newton/Jacobian (projected fixed-point
+  correction and multiplier stability)
+- `ode_tmax`: maximum integration horizon per Poincaré segment; `Inf` (the default) uses the
+  internal `tspan_hint`-scaled horizon, matching `basins_of_attraction`
+"""
+@with_kw struct BranchReachabilityConfig
+    param_samples::Vector{Float64}
+    param_index::Int = 1
+    linked_param_indices::Vector{Int} = Int[]
+    base_params::Vector{Float64} = Float64[]
+    x_min::Float64
+    x_max::Float64
+    x_steps::Int = 50
+    y_min::Float64
+    y_max::Float64
+    y_steps::Int = 50
+    x_index::Int = 1
+    y_index::Int = 2
+    ic_template::Vector{Float64} = Float64[]
+    max_period::Int = 10
+    precision::Float64 = 1e-4
+    iterations::Int = 1000
+    divergence_cutoff::Float64 = Inf
+    param_tolerance::Float64 = 1e-6
+    match_tolerance::Float64 = 1e-3
+    ambiguity_ratio::Float64 = 0.5
+    stability_tol::Float64 = 1e-7
+    newton_max_iter::Int = 25
+    newton_tol::Float64 = 1e-10
+    branch_ids::Vector{String} = String[]
+    threaded::Bool = true
+    ode_solver::String = "auto"
+    ode_reltol::Float64 = 1e-8
+    ode_abstol::Float64 = 1e-8
+    min_crossing_time::Float64 = 1e-6
+    ode_fd_step::Float64 = 1e-6
+    ode_tmax::Float64 = Inf
+    @assert !isempty(param_samples) "BranchReachabilityConfig.param_samples must be non-empty"
+    @assert all(isfinite, param_samples) "BranchReachabilityConfig.param_samples must be finite"
+    @assert param_index >= 1 "BranchReachabilityConfig.param_index must be >= 1"
+    @assert all(>=(1), linked_param_indices) "BranchReachabilityConfig.linked_param_indices must be >= 1"
+    @assert x_steps >= 1 "BranchReachabilityConfig.x_steps must be >= 1"
+    @assert y_steps >= 1 "BranchReachabilityConfig.y_steps must be >= 1"
+    @assert isfinite(x_min) && isfinite(x_max) && x_min < x_max "BranchReachabilityConfig requires finite x_min < x_max"
+    @assert isfinite(y_min) && isfinite(y_max) && y_min < y_max "BranchReachabilityConfig requires finite y_min < y_max"
+    @assert x_index >= 1 && y_index >= 1 && x_index != y_index "BranchReachabilityConfig requires distinct positive grid indices"
+    @assert max_period >= 1 "BranchReachabilityConfig.max_period must be >= 1"
+    @assert isfinite(precision) && precision > 0.0 "BranchReachabilityConfig.precision must be finite and > 0"
+    @assert iterations >= max_period + 1 "BranchReachabilityConfig.iterations must be at least max_period + 1"
+    @assert !isnan(divergence_cutoff) && divergence_cutoff > 0.0 "BranchReachabilityConfig.divergence_cutoff must be > 0 (use Inf to disable)"
+    @assert isfinite(param_tolerance) && param_tolerance >= 0.0 "BranchReachabilityConfig.param_tolerance must be finite and >= 0"
+    @assert isfinite(match_tolerance) && match_tolerance > 0.0 "BranchReachabilityConfig.match_tolerance must be finite and > 0"
+    @assert 0.0 < ambiguity_ratio < 1.0 "BranchReachabilityConfig.ambiguity_ratio must lie in (0, 1)"
+    @assert isfinite(stability_tol) && stability_tol >= 0.0 "BranchReachabilityConfig.stability_tol must be finite and >= 0"
+    @assert newton_max_iter >= 1 "BranchReachabilityConfig.newton_max_iter must be >= 1"
+    @assert isfinite(newton_tol) && newton_tol > 0.0 "BranchReachabilityConfig.newton_tol must be finite and > 0"
+    @assert !isempty(ode_solver) "BranchReachabilityConfig.ode_solver must be a non-empty solver key (resolved by select_ode_solver)"
+    @assert isfinite(ode_reltol) && ode_reltol > 0.0 "BranchReachabilityConfig.ode_reltol must be finite and > 0"
+    @assert isfinite(ode_abstol) && ode_abstol > 0.0 "BranchReachabilityConfig.ode_abstol must be finite and > 0"
+    @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BranchReachabilityConfig.min_crossing_time must be finite and >= 0"
+    @assert isfinite(ode_fd_step) && ode_fd_step > 0.0 "BranchReachabilityConfig.ode_fd_step must be finite and > 0"
+    @assert !isnan(ode_tmax) && ode_tmax > 0.0 "BranchReachabilityConfig.ode_tmax must be > 0 (use Inf for the tspan_hint-scaled horizon)"
+end
+
+"""
+    RegimeBoundaryConfig
+
+Configuration for `regime_boundary_distances` (deterministic regime-boundary margins over a
+classified 2D operating map, roadmap T2.4 layer A).
+
+The margin field measures, for every *known-regime* cell, the physical Euclidean distance to the
+nearest regime boundary; a cell whose regime cannot be resolved is marked invalid rather than being
+silently assigned a physical regime.
+
+# Fields
+- `edge_policy`: how the sampled-domain edge is treated.
+    - `:censored` (default, "open"): the reported margin is capped at the physical distance to the
+      sampled edge and `edge_censored` is set, marking the value as a *lower bound* — a regime change
+      may lie just outside the sampled window.
+    - `:boundary`: the sampled edge is treated as a genuine regime boundary (leaving the domain is a
+      mode change); the margin is capped at the edge distance but *not* flagged as censored.
+    - `:ignore`: the edge is ignored; the margin is the raw distance to the nearest interior boundary
+      cell (`Inf` when the region has no boundary in the sampled window).
+- `aperiodic_is_regime`: when status-code evidence is supplied, treat detected-aperiodic
+  (`:aperiodic_or_high_period`) cells as a distinct known regime (chaos is a physical mode). Default
+  `true`.
+- `diverged_is_regime`: when status-code evidence is supplied, treat diverged (`:diverged`) cells as
+  a distinct known regime (escape/unbounded is a physical outcome). Default `true`.
+"""
+@with_kw struct RegimeBoundaryConfig
+    edge_policy::Symbol = :censored
+    aperiodic_is_regime::Bool = true
+    diverged_is_regime::Bool = true
+    @assert edge_policy in (:censored, :boundary, :ignore) "RegimeBoundaryConfig.edge_policy must be :censored, :boundary, or :ignore"
+end
+
+"""
+    AbstractTolerance
+
+Supertype for zero-inclusive component-tolerance distributions used by `tolerance_regime_map`
+(roadmap T2.4 layer B). A tolerance with scale `0` is an exact Dirac delta (no perturbation, no RNG
+draw). See `UniformTolerance` and `GaussianTolerance`.
+"""
+abstract type AbstractTolerance end
+
+"""
+    UniformTolerance(half_width)
+
+Symmetric uniform component tolerance: offsets are drawn from `U(-half_width, +half_width)`.
+`half_width` must be finite and `>= 0`; `UniformTolerance(0.0)` is an exact Dirac delta.
+"""
+struct UniformTolerance <: AbstractTolerance
+    half_width::Float64
+    function UniformTolerance(half_width::Real)
+        (isfinite(half_width) && half_width >= 0) || throw(ArgumentError(
+            "UniformTolerance half_width must be finite and >= 0; got $half_width."))
+        return new(Float64(half_width))
+    end
+end
+
+"""
+    GaussianTolerance(std)
+
+Gaussian component tolerance: offsets are drawn from `Normal(0, std)`. `std` must be finite and
+`>= 0`; `GaussianTolerance(0.0)` is an exact Dirac delta.
+"""
+struct GaussianTolerance <: AbstractTolerance
+    std::Float64
+    function GaussianTolerance(std::Real)
+        (isfinite(std) && std >= 0) || throw(ArgumentError(
+            "GaussianTolerance std must be finite and >= 0; got $std."))
+        return new(Float64(std))
+    end
+end
+
+"""
+    ToleranceConfig
+
+Configuration for `tolerance_regime_map` (probabilistic component-tolerance propagation through the
+classified 2D operating map, roadmap T2.4 layer B).
+
+At each nominal grid cell the two parameters are independently perturbed by `tolerance_a` /
+`tolerance_b`, and each perturbed operating point is classified by *nearest physical-grid-cell
+lookup* over the supplied classified map (integer regime labels are never interpolated). The result
+is a per-cell categorical distribution over regimes plus unknown and out-of-domain mass.
+
+# Fields
+- `tolerance_a`, `tolerance_b`: the per-parameter tolerance distributions (`AbstractTolerance`). A
+  zero tolerance is an exact Dirac delta and draws no random offset on that axis. When *both* are
+  zero the analysis returns the deterministic exact classification (probability `1`, entropy `0`,
+  Wilson interval `[1, 1]`, `n_effective = 0`) with no sampling error.
+- `n_samples`: Monte-Carlo samples per cell (`>= 1`).
+- `seed`: global `UInt64` seed. Each cell mixes `(seed, i, j)` through a stable `UInt64` mixer into
+  an independent `Xoshiro` stream, so results are bitwise-identical regardless of thread count or
+  scheduling.
+- `threaded`: thread the per-cell sweep (bitwise thread-parity safe).
+- `aperiodic_is_regime`, `diverged_is_regime`: as in `RegimeBoundaryConfig` — whether
+  detected-aperiodic / diverged status cells count as distinct known regimes when status evidence is
+  supplied.
+"""
+@with_kw struct ToleranceConfig
+    tolerance_a::AbstractTolerance = UniformTolerance(0.0)
+    tolerance_b::AbstractTolerance = UniformTolerance(0.0)
+    n_samples::Int = 2000
+    seed::UInt64 = 0x00000000004469df
+    threaded::Bool = true
+    aperiodic_is_regime::Bool = true
+    diverged_is_regime::Bool = true
+    @assert n_samples >= 1 "ToleranceConfig.n_samples must be >= 1"
+end

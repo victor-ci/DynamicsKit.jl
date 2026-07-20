@@ -379,10 +379,12 @@ function _newton_ad(F, x0, tol, max_iter)
     x = copy(x0)
     for _ in 1:max_iter
         Fx = F(x)
+        all(isfinite, Fx) || return x, false
         if norm(Fx) < _newton_convergence_threshold(x, tol)
             return x, true
         end
         J = ForwardDiff.jacobian(F, x)
+        all(isfinite, J) || return x, false
         cnd = cond(J)
         if !isfinite(cnd) || cnd > 1e15
             return x, false
@@ -397,10 +399,12 @@ function _newton_fd(F, x0, tol, max_iter, fd_step)
     x = copy(x0)
     for _ in 1:max_iter
         Fx = F(x)
+        all(isfinite, Fx) || return x, false
         if norm(Fx) < _newton_convergence_threshold(x, tol)
             return x, true
         end
         J = _fd_jacobian(F, x, fd_step)
+        all(isfinite, J) || return x, false
         cnd = cond(J)
         if !isfinite(cnd) || cnd > 1e15
             return x, false

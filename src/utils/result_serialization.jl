@@ -990,6 +990,322 @@ function _deserialize_robust_chaos_evidence(data::AbstractDict)::RobustChaosEvid
     )
 end
 
+const _BRANCH_REACHABILITY_FORMAT = "branch-reachability-v1"
+
+_serialize_reach_int_matrix(m::AbstractMatrix{<:Integer}) =
+    [collect(view(m, i, :)) for i in axes(m, 1)]
+
+_serialize_reach_float_matrix(m::AbstractMatrix{<:Real}) =
+    [[isfinite(value) ? value : nothing for value in view(m, i, :)] for i in axes(m, 1)]
+
+function _serialize_branch_reachability_sample(sample::BranchReachabilitySample)::Dict{String, Any}
+    return Dict{String, Any}(
+        "param" => sample.param,
+        "branchIds" => copy(sample.branch_ids),
+        "branchPeriods" => copy(sample.branch_periods),
+        "branchStable" => copy(sample.branch_stable),
+        "branchCovered" => copy(sample.branch_covered),
+        "branchConfidence" => copy(sample.branch_confidence),
+        "matchedCounts" => copy(sample.matched_counts),
+        "matchedFractions" => copy(sample.matched_fractions),
+        "nSeeds" => sample.n_seeds,
+        "nMatched" => sample.n_matched,
+        "nUnmatched" => sample.n_unmatched,
+        "nAperiodic" => sample.n_aperiodic,
+        "nDiverged" => sample.n_diverged,
+        "nUnresolved" => sample.n_unresolved,
+        "nStabilityMismatch" => sample.n_stability_mismatch,
+        "nOutsideCoverage" => sample.n_outside_coverage,
+        "assignment" => _serialize_reach_int_matrix(sample.assignment),
+        "status" => _serialize_reach_int_matrix(sample.status),
+        "matchDistance" => _serialize_reach_float_matrix(sample.match_distance),
+        "terminalPeriod" => _serialize_reach_int_matrix(sample.terminal_period),
+        "diagnostics" => sample.diagnostics,
+    )
+end
+
+function _deserialize_branch_reachability_sample(data::AbstractDict)::BranchReachabilitySample
+    assignment = _deserialize_robust_chaos_matrix(
+        get(data, "assignment", Any[]), Int, value -> _as_int(value, 0), "reachability assignment")
+    status = _deserialize_robust_chaos_matrix(
+        get(data, "status", Any[]), Int, value -> _as_int(value, 0), "reachability status")
+    match_distance = _deserialize_robust_chaos_matrix(
+        get(data, "matchDistance", Any[]), Float64,
+        value -> isnothing(value) ? NaN : _as_float(value, NaN), "reachability match distance")
+    terminal_period = _deserialize_robust_chaos_matrix(
+        get(data, "terminalPeriod", Any[]), Int, value -> _as_int(value, 0), "reachability terminal period")
+    return BranchReachabilitySample(
+        _as_float(get(data, "param", NaN), NaN),
+        String[_as_string(value, "") for value in get(data, "branchIds", Any[])],
+        Int[_as_int(value, 0) for value in get(data, "branchPeriods", Any[])],
+        Bool[_as_bool(value, false) for value in get(data, "branchStable", Any[])],
+        Bool[_as_bool(value, false) for value in get(data, "branchCovered", Any[])],
+        Float64[_as_float(value, NaN) for value in get(data, "branchConfidence", Any[])],
+        Int[_as_int(value, 0) for value in get(data, "matchedCounts", Any[])],
+        Float64[_as_float(value, 0.0) for value in get(data, "matchedFractions", Any[])],
+        _as_int(get(data, "nSeeds", 0), 0),
+        _as_int(get(data, "nMatched", 0), 0),
+        _as_int(get(data, "nUnmatched", 0), 0),
+        _as_int(get(data, "nAperiodic", 0), 0),
+        _as_int(get(data, "nDiverged", 0), 0),
+        _as_int(get(data, "nUnresolved", 0), 0),
+        _as_int(get(data, "nStabilityMismatch", 0), 0),
+        _as_int(get(data, "nOutsideCoverage", 0), 0),
+        assignment,
+        status,
+        match_distance,
+        terminal_period,
+        _jsonish_dict(get(data, "diagnostics", Dict{String, Any}())),
+    )
+end
+
+function _serialize_branch_reachability_result(result::BranchReachabilityResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _BRANCH_REACHABILITY_FORMAT,
+        "systemName" => result.system_name,
+        "paramName" => String(result.param_name),
+        "paramIndex" => result.param_index,
+        "linkedParamIndices" => copy(result.linked_param_indices),
+        "baseParams" => copy(result.base_params),
+        "xGrid" => copy(result.x_grid),
+        "yGrid" => copy(result.y_grid),
+        "xIndex" => result.x_index,
+        "yIndex" => result.y_index,
+        "icTemplate" => copy(result.ic_template),
+        "maxPeriod" => result.max_period,
+        "precision" => result.precision,
+        "divergenceCutoff" => isfinite(result.divergence_cutoff) ? result.divergence_cutoff : nothing,
+        "paramTolerance" => result.param_tolerance,
+        "matchTolerance" => result.match_tolerance,
+        "ambiguityRatio" => result.ambiguity_ratio,
+        "stabilityTol" => result.stability_tol,
+        "branchIds" => copy(result.branch_ids),
+        "branchPeriods" => copy(result.branch_periods),
+        "statusLabels" => Dict{String, Any}(string(code) => label for (code, label) in result.status_labels),
+        "samples" => [_serialize_branch_reachability_sample(sample) for sample in result.samples],
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_branch_reachability_result(data::AbstractDict)::BranchReachabilityResult
+    format = _as_string(get(data, "format", ""), "")
+    format == _BRANCH_REACHABILITY_FORMAT || error(
+        "Unsupported branch-reachability format '$format'; expected '$(_BRANCH_REACHABILITY_FORMAT)'.")
+    raw_cutoff = get(data, "divergenceCutoff", nothing)
+    divergence_cutoff = isnothing(raw_cutoff) ? Inf : _as_float(raw_cutoff, Inf)
+    status_labels = Dict{Int, String}()
+    for (key, value) in _jsonish_dict(get(data, "statusLabels", Dict{String, Any}()))
+        code = tryparse(Int, String(key))
+        isnothing(code) || (status_labels[code] = _as_string(value, "unknown"))
+    end
+    isempty(status_labels) && (status_labels = copy(_REACH_STATUS_LABEL_BY_CODE))
+    samples = [_deserialize_branch_reachability_sample(_jsonish_dict(sample))
+               for sample in get(data, "samples", Any[])]
+    return BranchReachabilityResult(
+        _as_string(get(data, "systemName", ""), ""),
+        Symbol(_as_string(get(data, "paramName", "p"), "p")),
+        _as_int(get(data, "paramIndex", 1), 1),
+        Int[_as_int(value, 0) for value in get(data, "linkedParamIndices", Any[])],
+        Float64[_as_float(value) for value in get(data, "baseParams", Any[])],
+        Float64[_as_float(value) for value in get(data, "xGrid", Any[])],
+        Float64[_as_float(value) for value in get(data, "yGrid", Any[])],
+        _as_int(get(data, "xIndex", 1), 1),
+        _as_int(get(data, "yIndex", 2), 2),
+        Float64[_as_float(value) for value in get(data, "icTemplate", Any[])],
+        _as_int(get(data, "maxPeriod", 0), 0),
+        _as_float(get(data, "precision", 1e-4), 1e-4),
+        divergence_cutoff,
+        _as_float(get(data, "paramTolerance", 1e-6), 1e-6),
+        _as_float(get(data, "matchTolerance", 1e-3), 1e-3),
+        _as_float(get(data, "ambiguityRatio", 0.5), 0.5),
+        _as_float(get(data, "stabilityTol", 1e-7), 1e-7),
+        String[_as_string(value, "") for value in get(data, "branchIds", Any[])],
+        Int[_as_int(value, 0) for value in get(data, "branchPeriods", Any[])],
+        samples,
+        status_labels,
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+    )
+end
+
+const _REGIME_BOUNDARY_FORMAT = "regime-boundary-v1"
+const _TOLERANCE_MAP_FORMAT = "tolerance-map-v1"
+
+# Special-float aware matrix (de)serialization: unlike the reachability helpers, the T2.4 margins
+# distinguish Inf (no boundary on this line) from NaN (invalid cell), so non-finite values are
+# encoded as explicit tokens rather than collapsed to `nothing`.
+_encode_special_float(x::Real) =
+    isfinite(x) ? Float64(x) : (isnan(x) ? "nan" : (x > 0 ? "inf" : "-inf"))
+
+function _decode_special_float(value)
+    value isa AbstractString || return _as_float(value, NaN)
+    token = lowercase(strip(String(value)))
+    token == "nan" && return NaN
+    token == "inf" && return Inf
+    token in ("-inf", "-infinity") && return -Inf
+    token == "infinity" && return Inf
+    return _as_float(value, NaN)
+end
+
+_serialize_special_float_matrix(m::AbstractMatrix{<:Real}) =
+    [[_encode_special_float(value) for value in view(m, i, :)] for i in axes(m, 1)]
+
+_deserialize_special_float_matrix(raw, label::AbstractString) =
+    _deserialize_robust_chaos_matrix(raw, Float64, _decode_special_float, label)
+
+_serialize_tolerance(t::UniformTolerance) =
+    Dict{String, Any}("kind" => "uniform", "scale" => t.half_width)
+_serialize_tolerance(t::GaussianTolerance) =
+    Dict{String, Any}("kind" => "gaussian", "scale" => t.std)
+
+function _deserialize_tolerance(data)::AbstractTolerance
+    dict = _jsonish_dict(data)
+    kind = lowercase(_as_string(get(dict, "kind", "uniform"), "uniform"))
+    scale = _as_float(get(dict, "scale", 0.0), 0.0)
+    kind == "gaussian" && return GaussianTolerance(scale)
+    return UniformTolerance(scale)
+end
+
+function _serialize_regime_boundary_result(result::RegimeBoundaryResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _REGIME_BOUNDARY_FORMAT,
+        "systemName" => result.system_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "aGrid" => copy(result.a_grid),
+        "bGrid" => copy(result.b_grid),
+        "labels" => _serialize_reach_int_matrix(result.labels),
+        "resolved" => _serialize_reach_int_matrix(Int.(result.resolved)),
+        "valid" => _serialize_reach_int_matrix(Int.(result.valid)),
+        "boundaryMask" => _serialize_reach_int_matrix(Int.(result.boundary_mask)),
+        "boundaryKind" => _serialize_reach_int_matrix(result.boundary_kind),
+        "distance" => _serialize_special_float_matrix(result.distance),
+        "distanceA" => _serialize_special_float_matrix(result.distance_a),
+        "distanceB" => _serialize_special_float_matrix(result.distance_b),
+        "edgeCensored" => _serialize_reach_int_matrix(Int.(result.edge_censored)),
+        "edgePolicy" => String(result.edge_policy),
+        "statusEvidence" => result.status_evidence,
+        "convention" => result.convention,
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_regime_boundary_result(data::AbstractDict)::RegimeBoundaryResult
+    format = _as_string(get(data, "format", ""), "")
+    format == _REGIME_BOUNDARY_FORMAT || error(
+        "Unsupported regime-boundary format '$format'; expected '$(_REGIME_BOUNDARY_FORMAT)'.")
+    param_names_raw = get(data, "paramNames", Any["a", "b"])
+    pnames = (Symbol(_as_string(param_names_raw[1], "a")), Symbol(_as_string(param_names_raw[2], "b")))
+    resolved = _deserialize_robust_chaos_matrix(
+        get(data, "resolved", Any[]), Bool, value -> _as_int(value, 0) != 0, "regime resolved mask")
+    valid = _deserialize_robust_chaos_matrix(
+        get(data, "valid", Any[]), Bool, value -> _as_int(value, 0) != 0, "regime valid mask")
+    boundary_mask = _deserialize_robust_chaos_matrix(
+        get(data, "boundaryMask", Any[]), Bool, value -> _as_int(value, 0) != 0, "regime boundary mask")
+    edge_censored = _deserialize_robust_chaos_matrix(
+        get(data, "edgeCensored", Any[]), Bool, value -> _as_int(value, 0) != 0, "regime edge-censored mask")
+    return RegimeBoundaryResult(
+        _as_string(get(data, "systemName", ""), ""),
+        pnames,
+        Float64[_as_float(value) for value in get(data, "aGrid", Any[])],
+        Float64[_as_float(value) for value in get(data, "bGrid", Any[])],
+        _deserialize_robust_chaos_matrix(
+            get(data, "labels", Any[]), Int, value -> _as_int(value, 0), "regime labels"),
+        resolved,
+        valid,
+        boundary_mask,
+        _deserialize_robust_chaos_matrix(
+            get(data, "boundaryKind", Any[]), Int, value -> _as_int(value, 0), "regime boundary kind"),
+        _deserialize_special_float_matrix(get(data, "distance", Any[]), "regime distance"),
+        _deserialize_special_float_matrix(get(data, "distanceA", Any[]), "regime distance a"),
+        _deserialize_special_float_matrix(get(data, "distanceB", Any[]), "regime distance b"),
+        edge_censored,
+        Symbol(_as_string(get(data, "edgePolicy", "censored"), "censored")),
+        _as_bool(get(data, "statusEvidence", false), false),
+        _as_string(get(data, "convention", ""), ""),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+    )
+end
+
+function _serialize_tolerance_map_result(result::ToleranceMapResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _TOLERANCE_MAP_FORMAT,
+        "systemName" => result.system_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "aGrid" => copy(result.a_grid),
+        "bGrid" => copy(result.b_grid),
+        "regimeLabels" => copy(result.regime_labels),
+        "regimeProbability" => Dict{String, Any}(
+            string(label) => _serialize_special_float_matrix(matrix)
+            for (label, matrix) in result.regime_probability),
+        "nominalRegime" => _serialize_reach_int_matrix(result.nominal_regime),
+        "nominalResolved" => _serialize_reach_int_matrix(Int.(result.nominal_resolved)),
+        "nominalProbability" => _serialize_special_float_matrix(result.nominal_probability),
+        "dominantRegime" => _serialize_reach_int_matrix(result.dominant_regime),
+        "dominantProbability" => _serialize_special_float_matrix(result.dominant_probability),
+        "unknownProbability" => _serialize_special_float_matrix(result.unknown_probability),
+        "outOfDomainProbability" => _serialize_special_float_matrix(result.out_of_domain_probability),
+        "entropy" => _serialize_special_float_matrix(result.entropy),
+        "nominalStandardError" => _serialize_special_float_matrix(result.nominal_standard_error),
+        "nominalCiLower" => _serialize_special_float_matrix(result.nominal_ci_lower),
+        "nominalCiUpper" => _serialize_special_float_matrix(result.nominal_ci_upper),
+        "nSamples" => result.n_samples,
+        "nEffective" => result.n_effective,
+        "toleranceA" => _serialize_tolerance(result.tolerance_a),
+        "toleranceB" => _serialize_tolerance(result.tolerance_b),
+        "seed" => string(result.seed),
+        "statusEvidence" => result.status_evidence,
+        "convention" => result.convention,
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_tolerance_map_result(data::AbstractDict)::ToleranceMapResult
+    format = _as_string(get(data, "format", ""), "")
+    format == _TOLERANCE_MAP_FORMAT || error(
+        "Unsupported tolerance-map format '$format'; expected '$(_TOLERANCE_MAP_FORMAT)'.")
+    param_names_raw = get(data, "paramNames", Any["a", "b"])
+    pnames = (Symbol(_as_string(param_names_raw[1], "a")), Symbol(_as_string(param_names_raw[2], "b")))
+    regime_labels = Int[_as_int(value, 0) for value in get(data, "regimeLabels", Any[])]
+    regime_probability = Dict{Int, Matrix{Float64}}()
+    for (key, value) in _jsonish_dict(get(data, "regimeProbability", Dict{String, Any}()))
+        label = tryparse(Int, String(key))
+        isnothing(label) && continue
+        regime_probability[label] = _deserialize_special_float_matrix(value, "tolerance regime probability")
+    end
+    seed_raw = get(data, "seed", "0")
+    seed = seed_raw isa Integer ? UInt64(seed_raw) :
+           something(tryparse(UInt64, String(seed_raw)), UInt64(0))
+    return ToleranceMapResult(
+        _as_string(get(data, "systemName", ""), ""),
+        pnames,
+        Float64[_as_float(value) for value in get(data, "aGrid", Any[])],
+        Float64[_as_float(value) for value in get(data, "bGrid", Any[])],
+        regime_labels,
+        regime_probability,
+        _deserialize_robust_chaos_matrix(
+            get(data, "nominalRegime", Any[]), Int, value -> _as_int(value, 0), "tolerance nominal regime"),
+        _deserialize_robust_chaos_matrix(
+            get(data, "nominalResolved", Any[]), Bool, value -> _as_int(value, 0) != 0, "tolerance nominal resolved"),
+        _deserialize_special_float_matrix(get(data, "nominalProbability", Any[]), "tolerance nominal probability"),
+        _deserialize_robust_chaos_matrix(
+            get(data, "dominantRegime", Any[]), Int, value -> _as_int(value, 0), "tolerance dominant regime"),
+        _deserialize_special_float_matrix(get(data, "dominantProbability", Any[]), "tolerance dominant probability"),
+        _deserialize_special_float_matrix(get(data, "unknownProbability", Any[]), "tolerance unknown probability"),
+        _deserialize_special_float_matrix(get(data, "outOfDomainProbability", Any[]), "tolerance out-of-domain probability"),
+        _deserialize_special_float_matrix(get(data, "entropy", Any[]), "tolerance entropy"),
+        _deserialize_special_float_matrix(get(data, "nominalStandardError", Any[]), "tolerance nominal standard error"),
+        _deserialize_special_float_matrix(get(data, "nominalCiLower", Any[]), "tolerance nominal CI lower"),
+        _deserialize_special_float_matrix(get(data, "nominalCiUpper", Any[]), "tolerance nominal CI upper"),
+        _as_int(get(data, "nSamples", 0), 0),
+        _as_int(get(data, "nEffective", 0), 0),
+        _deserialize_tolerance(get(data, "toleranceA", Dict{String, Any}())),
+        _deserialize_tolerance(get(data, "toleranceB", Dict{String, Any}())),
+        seed,
+        _as_bool(get(data, "statusEvidence", false), false),
+        _as_string(get(data, "convention", ""), ""),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+    )
+end
+
 # --- Public serialization API ---
 # The JSON-plain wire format for the library's public result types; external persistence layers
 # build on these. The per-field sub-helpers above stay private — only these entry points are public.
@@ -1017,6 +1333,18 @@ const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certifica
 const serialize_robust_chaos_evidence = _serialize_robust_chaos_evidence
 """    deserialize_robust_chaos_evidence(data::AbstractDict) -> RobustChaosEvidence"""
 const deserialize_robust_chaos_evidence = _deserialize_robust_chaos_evidence
+"""    serialize_branch_reachability_result(result::BranchReachabilityResult) -> Dict — versioned JSON-plain form (format "branch-reachability-v1")."""
+const serialize_branch_reachability_result = _serialize_branch_reachability_result
+"""    deserialize_branch_reachability_result(data::AbstractDict) -> BranchReachabilityResult"""
+const deserialize_branch_reachability_result = _deserialize_branch_reachability_result
+"""    serialize_regime_boundary_result(result::RegimeBoundaryResult) -> Dict — versioned JSON-plain form (format "regime-boundary-v1"; Inf/NaN margins preserved distinctly)."""
+const serialize_regime_boundary_result = _serialize_regime_boundary_result
+"""    deserialize_regime_boundary_result(data::AbstractDict) -> RegimeBoundaryResult"""
+const deserialize_regime_boundary_result = _deserialize_regime_boundary_result
+"""    serialize_tolerance_map_result(result::ToleranceMapResult) -> Dict — versioned JSON-plain form (format "tolerance-map-v1"; per-regime probability matrices keyed by label)."""
+const serialize_tolerance_map_result = _serialize_tolerance_map_result
+"""    deserialize_tolerance_map_result(data::AbstractDict) -> ToleranceMapResult"""
+const deserialize_tolerance_map_result = _deserialize_tolerance_map_result
 """    serialize_map_normal_form(normal_form::MapNormalForm) -> Dict — versioned JSON-plain form."""
 const serialize_map_normal_form = _serialize_map_normal_form
 """    deserialize_map_normal_form(data::AbstractDict) -> MapNormalForm"""
