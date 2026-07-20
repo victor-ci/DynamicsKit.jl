@@ -37,6 +37,7 @@ include("systems/colpitts.jl")
 include("systems/ikeda.jl")
 include("systems/rossler.jl")
 include("systems/memristive_diode_bridge.jl")
+include("systems/switching_map.jl")            # switching map generator (AffineModeSpec, SwitchingCircuitDescription)
 
 # Utilities (before analysis, as analysis uses config)
 include("utils/config.jl")
@@ -75,6 +76,7 @@ export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEv
 export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapNormalForm, MapSpecialPoint
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
 export BorderCollisionClassification, BorderCollisionPoint
+export AffineModeSpec, SwitchingCircuitDescription
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -83,6 +85,9 @@ export state_dim, switching_events
 export henon_map, vilnius_oscillator, buck_converter, buck_voltage_mode, boost_converter
 export colpitts_simple_oscillator, colpitts_exponential_oscillator, colpitts_dynamic_beta_oscillator
 export ikeda_map, rossler_oscillator, memristive_diode_bridge
+
+# Exports — switching map generator
+export switching_map, buck_converter_description, boost_converter_description
 
 # Exports — parameter mapping
 export inject_param, build_sweep_params, build_basins_params, basins_ic_template

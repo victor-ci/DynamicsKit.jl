@@ -859,3 +859,62 @@ duffing = ContinuousODE(duffing!, 2, section, [:mu], "Duffing";
     default_params=[0.2],
 )
 ```
+
+## Switching-map generator (piecewise-linear circuits)
+
+`switching_map` constructs a 2-D `DiscreteMap` from a `SwitchingCircuitDescription` — an ordered
+list of `AffineModeSpec` values plus a clock period — without hand-deriving the period-advance map:
+
+```julia
+using DynamicsKit, StaticArrays
+
+# ── Built-in descriptions ─────────────────────────────────────────────────────
+sys_buck  = switching_map(buck_converter_description())   # identical to buck_converter()
+sys_boost = switching_map(boost_converter_description())  # identical to boost_converter()
+
+# ── Custom two-mode affine circuit ────────────────────────────────────────────
+# Diagonal A in each mode; equilibria known analytically.
+A1 = SMatrix{2,2}(-1.0, 0.0, 0.0, -2.0)   # mode 1: diag(-1,-2)
+b1 = SVector(1.0, 2.0)                      # equilibrium (1,1)
+A2 = SMatrix{2,2}(-2.0, 0.0, 0.0, -1.0)   # mode 2: diag(-2,-1)
+b2 = SVector(2.0, 1.0)                      # equilibrium (1,1)
+T  = 0.5
+
+# Mode 1 runs for 0.3 s then mode 2 consumes the rest.
+mode1 = AffineModeSpec(A1, b1; duration=(x, p) -> 0.3)
+mode2 = AffineModeSpec(A2, b2)   # final mode: duration = nothing
+
+desc = SwitchingCircuitDescription((mode1, mode2), T;
+    param_names=[:dummy], name="Custom 2-mode circuit")
+sys  = switching_map(desc)
+```
+
+`AffineModeSpec` accepts constant or parameter-dependent `A` and `b`:
+
+```julia
+# Parameter-dependent: R = p[3], C fixed
+A_off = p -> SMatrix{2,2}(-1/(p[3]*C), -1/L, 1/C, 0.0)
+b_off = p -> SVector(0.0, E/L)
+mode_off = AffineModeSpec(A_off, b_off)
+```
+
+The optional `boundary` keyword enforces an exact switching condition at the end of an intermediate
+mode — for example, forcing the inductor current to `Iref`:
+
+```julia
+mode_on = AffineModeSpec(A, b_on;
+    duration = (x, p) -> L * (p[1] - x[2]) / (p[2] - x[1]),
+    boundary = (x_flow, p) -> SVector(x_flow[1], p[1]))  # keep V, set I = Iref
+```
+
+The generated map is **ForwardDiff-compatible** away from switching borders:
+
+```julia
+using ForwardDiff
+x0 = SVector(5.0, 0.5); p0 = [0.8, 10.0]
+Jx = ForwardDiff.jacobian(x -> sys_buck.f(x, p0), x0)
+Jp = ForwardDiff.jacobian(p -> sys_buck.f(x0, p),  p0)
+```
+
+**Scope:** 2-D state (voltage, current). Handles under-, over-, and critically-damped circuit
+matrices uniformly, and singular `A` matrices (boost ON stage, one zero eigenvalue).

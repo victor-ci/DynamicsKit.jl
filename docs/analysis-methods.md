@@ -667,3 +667,42 @@ Border-collision classification status codes (`BorderCollisionClassification.sta
 Border-collision scenarios (`BorderCollisionClassification.scenario`): `persistence`,
 `nonsmooth_fold`, `persistence_with_companion_cycle`,
 `nonsmooth_fold_with_companion_cycle`, or `undetermined` (any non-`ok` status).
+
+## Switching-map generator
+
+Constructs a `DiscreteMap` directly from a piecewise-linear (affine state-space) circuit
+description, eliminating the manual derivation step used for the hand-coded buck and boost
+converters.
+
+```julia
+AffineModeSpec(A, b; duration=nothing, boundary=nothing, events=SwitchingEvent[])
+SwitchingCircuitDescription(modes, period; param_names=Symbol[], name="Switching Circuit")
+switching_map(desc::SwitchingCircuitDescription; name=nothing) -> DiscreteMap
+buck_converter_description(; L=2.2e-6, T=1/0.5e6) -> SwitchingCircuitDescription
+boost_converter_description(; L=1e-3, C=12e-6, T=100e-6) -> SwitchingCircuitDescription
+```
+
+An `AffineModeSpec` describes one operating mode: `A` and `b` are either constant `SMatrix{2,2}` /
+`SVector{2}` values or parameter-dependent callables; `duration` is a callable `(x, p) -> Real` for
+intermediate modes (`nothing` = final mode, consumes remaining period); `boundary` is an optional
+`(x_flow, p) -> SVector{2}` that overrides the state at the end of the mode (used to enforce exact
+switching conditions such as the buck comparator trip `I = Iref`).
+
+`SwitchingCircuitDescription` holds an ordered list of `AffineModeSpec` values and the clock period
+(constant `Float64` or callable `p -> Real`).
+
+`switching_map` generates the period-advance map: each intermediate mode runs for its (clamped)
+duration; the final mode consumes the remaining period. The map is ForwardDiff-compatible away from
+switching borders. Switching events from all modes are forwarded to the `DiscreteMap`.
+
+`buck_converter_description()` and `boost_converter_description()` return descriptions that reproduce
+the hand-coded `buck_converter()` / `boost_converter()` to floating-point rounding for all
+operating states where the switching time `tₙ ≥ 0`. (The original buck uses un-clamped negative `tₙ`
+for `I > Iref`, a convention not replicated by the generator's clamped duration model.)
+
+**Flow formula.** Each mode uses the exact affine ODE solution via the `ψ₀`/`ψ₁` decomposition
+`exp(Aτ) = e^{aτ}·(ψ₀·I + ψ₁·(A − aI))` where `a = tr(A)/2` and the discriminant `disc = a²−det(A)`
+selects under-damped (`disc < 0`, ψ values trigonometric), over-damped (`disc > 0`, hyperbolic), or
+critically-damped (`disc ≈ 0`, ψ₀=1, ψ₁=τ). For singular `A` (`det ≈ 0`, boost ON stage), the
+Duhamel integral is used directly: `x(τ) = exp(Aτ)·x + (τ·I + coeff·A)·b` where
+`coeff = (e^{λ₂τ} − 1 − λ₂τ)/λ₂²`, `λ₂ = tr A`.
