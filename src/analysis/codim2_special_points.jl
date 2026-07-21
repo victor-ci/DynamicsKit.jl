@@ -57,8 +57,8 @@ function _c2sp_sample_params(result::Codim2ContinuationResult, j::Int,
                               base::Vector{Float64},
                               pidx::Int, linked1::Vector{Int},
                               sidx::Int, linked2::Vector{Int})
-    pv = _inject_param(base, pidx, result.primary_values[j], linked1)
-    return _inject_param(pv, sidx, result.secondary_values[j], linked2)
+    pv = inject_param(base, pidx, result.primary_values[j], linked1)
+    return inject_param(pv, sidx, result.secondary_values[j], linked2)
 end
 
 # ---- interpolation helper ------------------------------------------------

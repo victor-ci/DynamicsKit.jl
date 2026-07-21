@@ -222,9 +222,9 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
     b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
     x0 = isnothing(initial_point) ? zeros(SVector{sys.dim, Float64}) : SVector{sys.dim}(initial_point)
     storage = _lyapunov_field_storage(cells, length(a_vals), length(b_vals))
-    param_template = _map_param_template(config)
-    a_indices = _map_a_write_indices(config)
-    b_indices = _map_b_write_indices(config)
+    param_template = map_param_template(config)
+    a_indices = map_a_write_indices(config)
+    b_indices = map_b_write_indices(config)
     transient = _map_lyapunov_transient(config)
     iterations = _map_lyapunov_iterations(config)
 
@@ -235,7 +235,7 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
             i = ((idx - 1) % length(a_vals)) + 1
             j = ((idx - 1) ÷ length(a_vals)) + 1
             (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
-            params = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+            params = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             estimate = _estimate_discrete_map_largest_lyapunov(
                 sys,
                 params,
@@ -277,9 +277,9 @@ function lyapunov_field(sys::ContinuousODE, config::BifurcationMapConfig;
     b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
     u0 = _resolve_initial_state(sys, initial_point)
     storage = _lyapunov_field_storage(cells, length(a_vals), length(b_vals))
-    param_template = _map_param_template(config)
-    a_indices = _map_a_write_indices(config)
-    b_indices = _map_b_write_indices(config)
+    param_template = map_param_template(config)
+    a_indices = map_a_write_indices(config)
+    b_indices = map_b_write_indices(config)
     transient = _map_lyapunov_transient(config)
     iterations = _map_lyapunov_iterations(config)
 
@@ -290,7 +290,7 @@ function lyapunov_field(sys::ContinuousODE, config::BifurcationMapConfig;
             i = ((idx - 1) % length(a_vals)) + 1
             j = ((idx - 1) ÷ length(a_vals)) + 1
             (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
-            params = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+            params = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             estimate = _estimate_continuous_poincare_largest_lyapunov(
                 sys,
                 params,

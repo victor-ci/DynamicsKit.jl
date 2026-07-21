@@ -6,7 +6,7 @@ BifurcationKit assesses stability and special points with the equilibrium conven
 `Re(λ) < 0` on the residual `F = Π^p(x) − x`. For a map fixed point the multiplier is
 `μ = λ + 1`, so a period-doubling (`μ → −1`, `λ → −2`) never crosses the imaginary axis
 and is missed, while folds (`μ → +1`, `λ → 0`) are caught. This module locates both from
-map-native test functions built on the return-map multipliers:
+test functions built on the return-map multipliers:
 
 - fold:  `φ_fold(p) = ∏ᵢ (μᵢ − 1) = det(J_map − I)`  — changes sign as a real multiplier crosses +1,
 - flip:  `φ_flip(p) = ∏ᵢ (μᵢ + 1) = det(J_map + I)`  — changes sign as a real multiplier crosses −1,
@@ -134,7 +134,7 @@ function _refine_map_special(sys::DynamicalSystem, kind::Symbol,
         (t_mid == t_lo || t_mid == t_hi) && break
         p_mid = (1 - t_mid) * p_lo + t_mid * p_hi
         x_seed = (1 - t_mid) .* x_lo .+ t_mid .* x_hi
-        local_params = _inject_param(base, param_index, p_mid, linked)
+        local_params = inject_param(base, param_index, p_mid, linked)
         xstar, mult, ok = _map_resolve_point(sys, x_seed, local_params, period;
                                              tol=tol, max_iter=max_iter, fd_step=fd_step,
                                              mult_kwargs=mult_kwargs)
@@ -178,7 +178,7 @@ end
 
 Locate period-doubling (`:pd`), fold (`:fold`), and Neimark-Sacker (`:ns`) special
 points on a continued map or
-Poincaré return-map `branch`, using map-native multiplier test functions instead of
+Poincaré return-map `branch`, using multiplier test functions instead of
 BifurcationKit's equilibrium-convention detection (which misses map period-doublings).
 
 # Keyword arguments
@@ -268,7 +268,7 @@ function _map_special_points_impl(sys, branch, points, base_params, linked_param
     for i in 1:n
         params[i] = Float64(points[i].param)
         states[i] = _branch_point_state(points[i])
-        local_params = _inject_param(base, param_index, params[i], linked)
+        local_params = inject_param(base, param_index, params[i], linked)
         mults[i] = _map_special_multipliers(
             sys, states[i], local_params, period; fd_step=fd_step, mult_kwargs...)
     end
@@ -306,7 +306,7 @@ function _map_special_points_impl(sys, branch, points, base_params, linked_param
 
                 p_mid = 0.5 * (params[i] + params[i + 1])
                 x_mid_seed = 0.5 .* (states[i] .+ states[i + 1])
-                local_params = _inject_param(base, param_index, p_mid, linked)
+                local_params = inject_param(base, param_index, p_mid, linked)
                 _, midpoint_mult, midpoint_ok = _map_resolve_point(
                     sys, x_mid_seed, local_params, period;
                     tol=tol, max_iter=max_iter, fd_step=fd_step,
@@ -372,7 +372,7 @@ function _map_special_points_impl(sys, branch, points, base_params, linked_param
     attach_normal_forms || return unique_specials
 
     return map(unique_specials) do special
-        local_params = _inject_param(base, param_index, special.param, linked)
+        local_params = inject_param(base, param_index, special.param, linked)
         normal_form = map_normal_form(
             sys, special, local_params; normal_form_fd_step=normal_form_fd_step,
             solver=solver, reltol=reltol, abstol=abstol, tmax=tmax,

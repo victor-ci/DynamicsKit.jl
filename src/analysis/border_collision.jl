@@ -665,7 +665,7 @@ function _bcb_refine_crossing(sys::DiscreteMap, event::SwitchingEvent, comp::Int
         (t_mid == t_lo || t_mid == t_hi) && break
         p_mid = (1 - t_mid) * p_lo + t_mid * p_hi
         seed = (1 - t_mid) .* x_lo .+ t_mid .* x_hi
-        local_params = _inject_param(base, param_index, p_mid, linked)
+        local_params = inject_param(base, param_index, p_mid, linked)
         orbit = _bcb_resolve_cycle(sys, seed, local_params, period;
                                    tol=tol, max_iter=max_iter, fd_step=fd_step)
         isempty(orbit) && break
@@ -742,7 +742,7 @@ function border_collision_points(sys::DiscreteMap, branch::BranchResult, base_pa
     orbits = Vector{Vector{Vector{Float64}}}(undef, n)
     for i in 1:n
         params[i] = Float64(points[i].param)
-        local_params = _inject_param(base, param_index, params[i], linked)
+        local_params = inject_param(base, param_index, params[i], linked)
         orbits[i] = _branch_point_orbit(sys, points[i], period, local_params)
     end
 
@@ -752,14 +752,14 @@ function border_collision_points(sys::DiscreteMap, branch::BranchResult, base_pa
         for i in 1:n
             isempty(orbits[i]) && continue
             ncomp = length(_bcb_guard_components(event, orbits[i][1],
-                _inject_param(base, param_index, params[i], linked)))
+                inject_param(base, param_index, params[i], linked)))
             break
         end
         for comp in 1:ncomp
             phi = fill(NaN, n)
             for i in 1:n
                 isempty(orbits[i]) && continue
-                local_params = _inject_param(base, param_index, params[i], linked)
+                local_params = inject_param(base, param_index, params[i], linked)
                 phi[i] = _bcb_nearest_border_value(orbits[i], event, comp, local_params)
             end
             for i in 1:(n - 1)
@@ -774,7 +774,7 @@ function border_collision_points(sys::DiscreteMap, branch::BranchResult, base_pa
                     max_iter=max_iter, fd_step=fd_step)
                 refined === nothing && continue
                 p_star, orbit_star = refined
-                local_params = _inject_param(base, param_index, p_star, linked)
+                local_params = inject_param(base, param_index, p_star, linked)
                 span = params[i + 1] - params[i]
                 transversality = span == 0 ? nothing : (phi[i + 1] - phi[i]) / span
                 located = _bcb_locate_colliding(sys, orbit_star, local_params, event_list, border_tol)

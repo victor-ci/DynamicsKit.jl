@@ -44,8 +44,8 @@ function basins_of_attraction(sys::DiscreteMap, config::BasinsConfig;
     points_to_drop = config.iterations - orbit_len
 
     # Build parameter vector
-    p = _build_basins_params(config)
-    base_ic = _basins_ic_template(sys, config)
+    p = build_basins_params(config)
+    base_ic = basins_ic_template(sys, config)
 
     Threads.@threads for i in 1:nx
         for j in 1:ny
@@ -112,8 +112,8 @@ function basins_of_attraction(sys::ContinuousODE, config::BasinsConfig;
     ))
     points_to_drop = max(config.iterations - crossings_needed, 0)
 
-    p = _build_basins_params(config)
-    base_ic = collect(Float64, _basins_ic_template(sys, config))
+    p = build_basins_params(config)
+    base_ic = collect(Float64, basins_ic_template(sys, config))
     periodicity = _basins_periodicity(cells, nx, ny)
 
     Threads.@threads for i in 1:nx
@@ -157,4 +157,3 @@ function basins_of_attraction(sys::ContinuousODE, config::BasinsConfig;
         collect(Float64, base_ic)
     )
 end
-

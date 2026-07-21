@@ -68,7 +68,7 @@ function continuation_branch_diagnostics(sys::DynamicalSystem,
         pt = points[idx]
         p_value = Float64(pt.param)
         push!(param_values, p_value)
-        local_params = _inject_param(base, param_index, p_value, linked)
+        local_params = inject_param(base, param_index, p_value, linked)
         state = _branch_point_state(pt)
         if include_switching_events
             push!(switching_states, collect(Float64, state))
@@ -502,4 +502,3 @@ end
 
 """Extract the recorded branch points as a concrete vector."""
 _branch_points(result::BranchResult) = collect(result.branch.branch)
-

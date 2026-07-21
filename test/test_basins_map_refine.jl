@@ -130,7 +130,7 @@ end
             base_params = [10.0, 20.0, 30.0, 40.0]
         )
 
-        p = DynamicsKit._build_map_params(config, 0.25, 0.75)
+        p = build_map_params(config, 0.25, 0.75)
         @test p == [0.25, 0.25, 0.75, 0.75]
 
         empty_link_config = BifurcationMapConfig(
@@ -139,7 +139,7 @@ end
             a_index = 1, b_index = 2,
             base_params = [10.0, 20.0, 30.0]
         )
-        @test DynamicsKit._build_map_params(empty_link_config, 1.5, 2.5) == [1.5, 2.5, 30.0]
+        @test build_map_params(empty_link_config, 1.5, 2.5) == [1.5, 2.5, 30.0]
 
         padded_config = BifurcationMapConfig(
             a_min = 0.0, a_max = 1.0,
@@ -147,7 +147,7 @@ end
             a_index = 1, b_index = 3,
             base_params = [10.0]
         )
-        @test DynamicsKit._build_map_params(padded_config, 1.5, 2.5) == [1.5, 0.0, 2.5]
+        @test build_map_params(padded_config, 1.5, 2.5) == [1.5, 0.0, 2.5]
     end
 
     @testset "Map parameter buffers reset base values between cells" begin
@@ -157,17 +157,17 @@ end
             a_index = 1, b_index = 2,
             base_params = [10.0, 20.0, 30.0]
         )
-        template = DynamicsKit._map_param_template(config)
+        template = map_param_template(config)
         buffer = fill(-1.0, length(template))
-        a_indices = DynamicsKit._map_a_write_indices(config)
-        b_indices = DynamicsKit._map_b_write_indices(config)
+        a_indices = map_a_write_indices(config)
+        b_indices = map_b_write_indices(config)
 
-        params = DynamicsKit._map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.25, 0.75)
+        params = map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.25, 0.75)
         @test params === buffer
         @test params == [0.25, 0.75, 30.0]
 
         buffer[3] = 999.0
-        params = DynamicsKit._map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.5, 1.5)
+        params = map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.5, 1.5)
         @test params === buffer
         @test params == [0.5, 1.5, 30.0]
     end

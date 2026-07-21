@@ -65,7 +65,7 @@ function _atlas_recon_sample(sys::DiscreteMap,
                               min_crossing_time::Float64=1e-6)
     max_period = _atlas_recon_max_period(periods)
     iterations = _atlas_discrete_recon_iterations(bf_config, periods)
-    local_params = _inject_param(base_params, bf_config.param_index, param_value, bf_config.linked_param_indices)
+    local_params = inject_param(base_params, bf_config.param_index, param_value, bf_config.linked_param_indices)
     orbit = _sample_discrete_orbit(
         sys,
         local_params;
@@ -91,7 +91,7 @@ function _atlas_recon_sample(sys::ContinuousODE,
     max_period = _atlas_recon_max_period(periods)
     crossings = _atlas_continuous_recon_crossings(periods)
     transient = _atlas_continuous_recon_transient(bf_config)
-    local_params = _inject_param(base_params, bf_config.param_index, param_value, bf_config.linked_param_indices)
+    local_params = inject_param(base_params, bf_config.param_index, param_value, bf_config.linked_param_indices)
     orbit = _sample_continuous_poincare_orbit(
         sys,
         local_params;
@@ -762,4 +762,3 @@ function _segment_period_windows(samples::Vector{AtlasReconSample}, atlas_config
     ordered = sort(windows; by=window -> (-window.priority_score, window.period, window.param_min))
     return first(ordered, min(length(ordered), atlas_config.max_total_windows))
 end
-

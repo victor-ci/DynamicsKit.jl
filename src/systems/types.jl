@@ -101,8 +101,8 @@ A continuous-time ODE system `du/dt = f(u, p, t)` with a Poincaré section.
 - `param_names`: Names of bifurcation parameters
 - `name`: Human-readable system name
 - `tspan_hint`: Suggested integration time span for one return to section
-- `default_initial_state`: Native default state used by brute-force and skeleton searches
-- `default_params`: Native default parameter vector used when callers omit `params`
+- `default_initial_state`: Default state used by brute-force and skeleton searches
+- `default_params`: Default parameter vector used when callers omit `params`
 - `switching_events`: Optional guard functions for nonsmooth borders/grazing events
 """
 struct ContinuousODE{F,S<:PoincareSection} <: DynamicalSystem
@@ -580,6 +580,96 @@ struct OrbitBranchResult
     system_name::String
     param_name::Symbol
     method::Symbol
+    timestamp::DateTime
+end
+
+"""
+    HomoclinicOrbitRecord
+
+One normalized orbit sampled from a homoclinic continuation branch. `states`
+is a `dim × length(t)` matrix. The branch index ties the stored trajectory back
+to the full parameter locus without retaining backend-specific BVP objects.
+"""
+struct HomoclinicOrbitRecord
+    branch_index::Int
+    t::Vector{Float64}
+    states::Matrix{Float64}
+    saddle::Vector{Float64}
+    primary_param::Float64
+    secondary_param::Float64
+    return_time::Float64
+    epsilon_start::Float64
+    epsilon_end::Float64
+end
+
+"""
+    HomoclinicSpecialPoint
+
+Typed event detected along a connecting-orbit locus. `kind` uses the standard
+AUTO/HomCont test-function codes in lowercase (`:nns`, `:sh`, `:bt`, `:ofu`,
+`:ifs`, and related values); `label` provides a stable human-readable
+description. `status` records whether the test function was `:available`,
+`:unavailable` (the geometry cannot support that codimension — e.g. an
+inclination flip needs at least two stable or two unstable eigenvalues), or
+`:degenerate`. `quality` is a bounded numerical-confidence indicator in `[0, 1]`
+derived from how cleanly the test function crossed zero.
+"""
+struct HomoclinicSpecialPoint
+    kind::Symbol
+    label::String
+    branch_index::Int
+    primary_param::Float64
+    secondary_param::Float64
+    test_value::Float64
+    status::Symbol
+    quality::Float64
+end
+
+"""
+    HomoclinicBranchResult
+
+Plain-data connecting-orbit continuation result (homoclinic, heteroclinic, or
+homoclinic-to-saddle-cycle). The full two-parameter locus and saddle
+diagnostics are retained columnarly; bounded `orbits` preserve selected
+trajectories for inspection.
+
+Numerical provenance is explicit: `residuals` is the converged projection
+boundary-value residual norm at each locus sample, `corrector_paths` records
+whether the primary Newton corrector or the damped-pseudoinverse fallback
+produced each point, `connection_kind` is `:homoclinic`, `:heteroclinic`, or
+`:saddle_cycle`, and `target_saddles` stores the target equilibrium (equal to
+`saddles` for a homoclinic connection). `test_statuses` preserves the
+`:available`, `:unavailable`, or `:degenerate` status of every test function at
+every locus sample. `diagnostics` carries free-form provenance (mesh size,
+epsilon policy, seed origin, fallback counts, warnings). `source_period` and
+`source_index` identify a collocation source orbit; both are zero for an explicit
+seed. `source_primary_value` is always the primary parameter of the corrected
+seed point, independent of continuation direction.
+"""
+struct HomoclinicBranchResult
+    primary_values::Vector{Float64}
+    secondary_values::Vector{Float64}
+    return_times::Vector{Float64}
+    epsilon_start_values::Vector{Float64}
+    epsilon_end_values::Vector{Float64}
+    saddles::Matrix{Float64}
+    target_saddles::Matrix{Float64}
+    test_functions::Dict{Symbol, Vector{Float64}}
+    test_statuses::Dict{Symbol, Vector{Symbol}}
+    special_points::Vector{HomoclinicSpecialPoint}
+    orbits::Vector{HomoclinicOrbitRecord}
+    residuals::Vector{Float64}
+    corrector_paths::Vector{Symbol}
+    connection_kind::Symbol
+    source_period::Int
+    source_index::Int
+    source_primary_value::Float64
+    base_params::Vector{Float64}
+    primary_param_index::Int
+    secondary_param_index::Int
+    system_name::String
+    param_names::Tuple{Symbol, Symbol}
+    diagnostics::Dict{String, Any}
     timestamp::DateTime
 end
 

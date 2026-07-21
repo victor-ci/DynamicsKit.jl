@@ -21,7 +21,7 @@ function brute_force_diagram(sys::DiscreteMap, config::BruteForceConfig;
 
     Threads.@threads for i in eachindex(param_values)
         a = param_values[i]
-        p = _build_params(config, a)
+        p = build_sweep_params(config, a)
         point = x0
         local_points = SVector{sys.dim, Float64}[]
 
@@ -77,7 +77,7 @@ function brute_force_diagram(sys::ContinuousODE, config::BruteForceConfig;
 
     Threads.@threads for i in eachindex(param_values)
         a = param_values[i]
-        p = _build_params(config, a)
+        p = build_sweep_params(config, a)
         all_points[i] = _collect_poincare_points(
             sys,
             p;
@@ -447,4 +447,3 @@ end
 # ═══════════════════════════════════════════════════════════════════════════════
 # Basins of Attraction
 # ═══════════════════════════════════════════════════════════════════════════════
-

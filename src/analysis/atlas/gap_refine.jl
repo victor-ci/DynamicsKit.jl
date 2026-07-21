@@ -132,7 +132,7 @@ function _atlas_branch_switching_skeleton(sys::DiscreteMap,
                                           atlas_config::AtlasConfig;
                                           kwargs...)
     lo, hi, seed_points = _atlas_branch_switching_seed_box(seed_state, atlas_config)
-    local_params = _inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
     seeds = find_periodic_skeleton(
         sys,
         [period],
@@ -165,7 +165,7 @@ function _atlas_branch_switching_skeleton(sys::ContinuousODE,
                                           min_crossing_time::Float64=1e-6,
                                           kwargs...)
     lo, hi, seed_points = _atlas_branch_switching_seed_box(seed_state, atlas_config)
-    local_params = _inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
     seeds = find_periodic_skeleton(
         sys,
         [period],
@@ -275,7 +275,7 @@ function _atlas_probe_branch_switch(sys::DynamicalSystem,
         )
     end
 
-    local_params = _inject_param(base_params, cont_config.param_index, special.param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, special.param, cont_config.linked_param_indices)
     branches = BranchResult[]
     continuation_attempts = Dict{String, Any}[]
     for (seed_idx, seed) in enumerate(skeleton_seeds)

@@ -136,7 +136,7 @@ function continuation_branch(sys::DiscreteMap, config::ContinuationConfig;
 
     # F(x, p) = 0 at fixed points: f(x,p) - x = 0
     F = (x, p) -> begin
-        pv = _inject_param(params, config.param_index, p.p, config.linked_param_indices)
+        pv = inject_param(params, config.param_index, p.p, config.linked_param_indices)
         Array(sys.f(SVector{dim}(x), pv)) .- x
     end
 
@@ -292,7 +292,7 @@ function continuation_branch(sys::DiscreteMap, config::ContinuationConfig, perio
 
     # F^period(x, p) - x = 0
     F = (x, p) -> begin
-        pv = _inject_param(params, config.param_index, p.p, config.linked_param_indices)
+        pv = inject_param(params, config.param_index, p.p, config.linked_param_indices)
         sv = SVector{dim}(x)
         for _ in 1:period
             sv = sys.f(sv, pv)
@@ -313,7 +313,7 @@ end
                         initial_point=nothing, params=Float64[], record=nothing, kwargs...) -> BranchResult
 
 Compute a continuation branch for a continuous-time system by continuing fixed points of its
-Poincaré return map. If `initial_point` is omitted, a seed is found automatically via the native
+Poincaré return map. If `initial_point` is omitted, a seed is found automatically via the
 periodic skeleton search at `params[config.param_index]`.
 """
 function continuation_branch(sys::ContinuousODE, config::ContinuationConfig;
@@ -382,7 +382,7 @@ function continuation_branch(sys::ContinuousODE, config::ContinuationConfig, per
     )
 
     F = (x, p) -> begin
-        pv = _inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
+        pv = inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
         next_point, found = _poincare_projected(
             sys,
             x,
@@ -400,7 +400,7 @@ function continuation_branch(sys::ContinuousODE, config::ContinuationConfig, per
 
     J = if config.ode_jacobian_method == :variational
         (x, p) -> begin
-            pv = _inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
+            pv = inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
             map_jacobian, found = _poincare_projected_jacobian_variational(
                 sys,
                 x,

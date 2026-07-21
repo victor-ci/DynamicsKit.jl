@@ -27,7 +27,7 @@ function _process_discrete_map_tile!(periodicity::AbstractMatrix{Int},
     for (local_row, i) in enumerate(tile.a_range)
         js = isodd(local_row) ? tile.b_range : reverse(tile.b_range)
         for j in js
-            p = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+            p = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             transient = seed_mode == :neighbor_accelerated && !first_cell ? neighbor_transient : points_to_drop
             result = _detect_discrete_map_period(sys, p, seed, transient, config.max_period, config.precision, config.divergence_cutoff)
             _record_map_detection!(
@@ -91,7 +91,7 @@ function _process_continuous_map_tile!(periodicity::AbstractMatrix{Int},
     for (local_row, i) in enumerate(tile.a_range)
         js = isodd(local_row) ? tile.b_range : reverse(tile.b_range)
         for j in js
-            p = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+            p = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             transient = seed_mode == :neighbor_accelerated && !first_cell ? neighbor_transient : points_to_drop
             result = _detect_continuous_poincare_period(
                 sys,
@@ -695,7 +695,7 @@ function _map_adaptive_refinement_diagnostics(sys::DynamicalSystem,
             budget_exhausted[] = true
             return nothing
         end
-        params = _map_params_from_template(param_template, a_indices, b_indices, Float64(a), Float64(b))
+        params = map_params_from_template(param_template, a_indices, b_indices, Float64(a), Float64(b))
         detection = _map_adaptive_detection(
             sys,
             config,
@@ -853,9 +853,9 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
     switching_diagnostics = has_switching_events ? [Dict{String, Any}() for _ in 1:na, _ in 1:nb] : nothing
     multistability_storage = multistability_enabled ? _map_multistability_storage(na, nb) : nothing
 
-    param_template = _map_param_template(config)
-    a_indices = _map_a_write_indices(config)
-    b_indices = _map_b_write_indices(config)
+    param_template = map_param_template(config)
+    a_indices = map_a_write_indices(config)
+    b_indices = map_b_write_indices(config)
 
     reset_count = 0
     invalid_reset_count = 0
@@ -869,7 +869,7 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
                 i = ((idx - 1) % na) + 1
                 j = ((idx - 1) ÷ na) + 1
                 (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded (cached) cells
-                p = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+                p = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
                 detection = if multistability_enabled
                     seed_results = [
                         _detect_discrete_map_period(sys, p, seed, points_to_drop, config.max_period, config.precision, config.divergence_cutoff)
@@ -1064,9 +1064,9 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
     crossing_summary = _map_crossing_summary_storage(na, nb, config.max_period + 1)
     multistability_storage = multistability_enabled ? _map_multistability_storage(na, nb) : nothing
 
-    param_template = _map_param_template(config)
-    a_indices = _map_a_write_indices(config)
-    b_indices = _map_b_write_indices(config)
+    param_template = map_param_template(config)
+    a_indices = map_a_write_indices(config)
+    b_indices = map_b_write_indices(config)
 
     reset_count = 0
     invalid_reset_count = 0
@@ -1080,7 +1080,7 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
                 i = ((idx - 1) % na) + 1
                 j = ((idx - 1) ÷ na) + 1
                 (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded (cached) cells
-                p = _map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+                p = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
                 result = if multistability_enabled
                     seed_results = [
                         _detect_continuous_poincare_period(

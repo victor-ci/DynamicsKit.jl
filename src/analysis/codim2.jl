@@ -272,8 +272,8 @@ function codim2_curve(sys::DynamicalSystem,
 
     run_slice! = function(idx::Int)
         secondary_value = second_values[idx]
-        slice_params = _inject_param(base_params, config.second_param_index, secondary_value, config.second_linked_param_indices)
-        slice_params = _inject_param(slice_params, continuation.param_index, slice_seed_values[idx], continuation.linked_param_indices)
+        slice_params = inject_param(base_params, config.second_param_index, secondary_value, config.second_linked_param_indices)
+        slice_params = inject_param(slice_params, continuation.param_index, slice_seed_values[idx], continuation.linked_param_indices)
         local_continuation = continuation
         local_continuation = Setfield.@set local_continuation.p_min = slice_min_values[idx]
         local_continuation = Setfield.@set local_continuation.p_max = slice_max_values[idx]
@@ -648,7 +648,7 @@ function _codim2_defining_curve(sys::DynamicalSystem,
 
     # --- Anchor slice: locate one point on the locus with the slice machinery.
     p2_seed = _codim2_anchor_second(config)
-    slice_params = _inject_param(base_params, config.second_param_index, p2_seed, config.second_linked_param_indices)
+    slice_params = inject_param(base_params, config.second_param_index, p2_seed, config.second_linked_param_indices)
     anchor_branch = continuation_branch(sys, primary, period;
                                         initial_point=initial_point, params=slice_params, kwargs...)
     candidates = _codim2_defining_anchor_candidates(sys, anchor_branch, slice_params, config, kind)
@@ -663,7 +663,7 @@ function _codim2_defining_curve(sys::DynamicalSystem,
     scored = Tuple{Float64, Float64, Vector{Float64}, Any}[]
     for candidate in sort(candidates)
         x_candidate = _codim2_state_near_param(anchor_branch, candidate, dim)
-        pv_candidate = _inject_param(slice_params, primary.param_index, candidate, primary.linked_param_indices)
+        pv_candidate = inject_param(slice_params, primary.param_index, candidate, primary.linked_param_indices)
         Jm_candidate = map_jacobian(x_candidate, pv_candidate)
         isnothing(Jm_candidate) && continue
         if kind === :ns
@@ -809,8 +809,8 @@ function _codim2_defining_curve(sys::DynamicalSystem,
     if config.curve_diagnostics
         multipliers = Vector{Vector{ComplexF64}}(undef, n)
         diagnose_sample! = function(j::Int)
-            pv = _inject_param(base_params, primary.param_index, primary_values[j], primary.linked_param_indices)
-            pv = _inject_param(pv, config.second_param_index, secondary_values[j], config.second_linked_param_indices)
+            pv = inject_param(base_params, primary.param_index, primary_values[j], primary.linked_param_indices)
+            pv = inject_param(pv, config.second_param_index, secondary_values[j], config.second_linked_param_indices)
             x = states[:, j]
             value = apply(x, pv)
             fixed_point_residuals[j] = isnothing(value) ? NaN : norm(value .- x)

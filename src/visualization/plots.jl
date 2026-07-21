@@ -172,7 +172,7 @@ function _branch_stability_flags(sys::DynamicalSystem, br::BranchResult,
     period = max(br.period, 1)
     flags = Vector{Bool}(undef, length(branch_points))
     for (i, pt) in enumerate(branch_points)
-        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        local_params = inject_param(base_params, param_index, pt.param, linked_param_indices)
         state = _branch_point_state(pt, proj_dim)
         flags[i] = try
             first(_map_stability(sys, state, local_params, period;
@@ -274,7 +274,7 @@ function _branch_plot_traces(sys::DiscreteMap, br::BranchResult;
     has_previous = false
 
     for pt in branch_points
-        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        local_params = inject_param(base_params, param_index, pt.param, linked_param_indices)
         current = _branch_point_state(pt, dim)
         for phase in 1:period
             orbit[phase] .= current
@@ -332,7 +332,7 @@ function _branch_plot_traces(sys::ContinuousODE, br::BranchResult;
     has_previous = false
 
     for pt in branch_points
-        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        local_params = inject_param(base_params, param_index, pt.param, linked_param_indices)
         current = _branch_point_state(pt, proj_dim)
         valid = true
         for phase in 1:period

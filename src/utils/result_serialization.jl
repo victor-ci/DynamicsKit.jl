@@ -1456,3 +1456,367 @@ end
 const serialize_codim2_special_point = _serialize_codim2_special_point
 """    deserialize_codim2_special_point(data::AbstractDict) -> Codim2SpecialPoint"""
 const deserialize_codim2_special_point = _deserialize_codim2_special_point
+
+# ---- Homoclinic continuation serialization --------------------------------
+
+const _HOMOCLINIC_BRANCH_FORMAT = "homoclinic-branch-v1"
+const _HOMOCLINIC_CONNECTION_KINDS = (:homoclinic, :heteroclinic, :saddle_cycle)
+const _HOMOCLINIC_POINT_STATUSES = (:available, :unavailable, :degenerate)
+
+function _serialize_homoclinic_special_point(point::HomoclinicSpecialPoint)
+    haskey(_HOMOCLINIC_EVENT_LABELS, point.kind) || error(
+        "Unsupported homoclinic special-point kind $(repr(point.kind)).")
+    point.branch_index >= 1 || error("Homoclinic special-point branch index must be >= 1.")
+    all(isfinite, (point.primary_param, point.secondary_param, point.test_value)) || error(
+        "Homoclinic special-point values must be finite.")
+    point.status in _HOMOCLINIC_POINT_STATUSES || error(
+        "Unsupported homoclinic special-point status $(repr(point.status)).")
+    (isfinite(point.quality) && 0.0 <= point.quality <= 1.0) || error(
+        "Homoclinic special-point quality must lie in [0, 1].")
+    return Dict{String, Any}(
+        "kind" => String(point.kind),
+        "label" => point.label,
+        "branchIndex" => point.branch_index,
+        "primaryParam" => point.primary_param,
+        "secondaryParam" => point.secondary_param,
+        "testValue" => point.test_value,
+        "status" => String(point.status),
+        "quality" => point.quality,
+    )
+end
+
+function _deserialize_homoclinic_special_point(data)
+    dict = _jsonish_dict(data)
+    kind = Symbol(lowercase(_as_string(get(dict, "kind", ""), "")))
+    haskey(_HOMOCLINIC_EVENT_LABELS, kind) || error(
+        "Unsupported serialized homoclinic special-point kind $(repr(kind)).")
+    branch_index = _as_int(get(dict, "branchIndex", 0), 0)
+    branch_index >= 1 || error("Serialized homoclinic special-point branchIndex must be >= 1.")
+    primary = _as_float(get(dict, "primaryParam", NaN), NaN)
+    secondary = _as_float(get(dict, "secondaryParam", NaN), NaN)
+    test_value = _as_float(get(dict, "testValue", NaN), NaN)
+    all(isfinite, (primary, secondary, test_value)) || error(
+        "Serialized homoclinic special-point values must be finite.")
+    status = Symbol(lowercase(_as_string(get(dict, "status", ""), "")))
+    status in _HOMOCLINIC_POINT_STATUSES || error(
+        "Unsupported serialized homoclinic special-point status $(repr(status)).")
+    quality = _as_float(get(dict, "quality", NaN), NaN)
+    (isfinite(quality) && 0.0 <= quality <= 1.0) || error(
+        "Serialized homoclinic special-point quality must lie in [0, 1].")
+    return HomoclinicSpecialPoint(
+        kind,
+        _as_string(get(dict, "label", homoclinic_special_point_label(kind)),
+                   homoclinic_special_point_label(kind)),
+        branch_index,
+        primary,
+        secondary,
+        test_value,
+        status,
+        quality,
+    )
+end
+
+function _serialize_homoclinic_orbit(orbit::HomoclinicOrbitRecord)
+    orbit.branch_index >= 1 || error("Homoclinic orbit branch index must be >= 1.")
+    length(orbit.t) == size(orbit.states, 2) || error(
+        "Homoclinic orbit time/state sample counts do not match.")
+    length(orbit.saddle) == size(orbit.states, 1) || error(
+        "Homoclinic orbit saddle dimension does not match the state dimension.")
+    all(isfinite, orbit.t) && all(isfinite, orbit.states) && all(isfinite, orbit.saddle) ||
+        error("Homoclinic orbit samples must be finite.")
+    all(isfinite, (
+        orbit.primary_param, orbit.secondary_param, orbit.return_time,
+        orbit.epsilon_start, orbit.epsilon_end,
+    )) || error("Homoclinic orbit metadata must be finite.")
+    return Dict{String, Any}(
+        "branchIndex" => orbit.branch_index,
+        "t" => copy(orbit.t),
+        "states" => [collect(Float64, row) for row in eachrow(orbit.states)],
+        "saddle" => copy(orbit.saddle),
+        "primaryParam" => orbit.primary_param,
+        "secondaryParam" => orbit.secondary_param,
+        "returnTime" => orbit.return_time,
+        "epsilonStart" => orbit.epsilon_start,
+        "epsilonEnd" => orbit.epsilon_end,
+    )
+end
+
+function _deserialize_homoclinic_orbit(data)
+    dict = _jsonish_dict(data)
+    branch_index = _as_int(get(dict, "branchIndex", 0), 0)
+    branch_index >= 1 || error("Serialized homoclinic orbit branchIndex must be >= 1.")
+    t = Float64[_as_float(value, NaN) for value in get(dict, "t", Any[])]
+    states = _deserialize_robust_chaos_matrix(
+        get(dict, "states", Any[]), Float64, value -> _as_float(value, NaN),
+        "homoclinic orbit states")
+    saddle = Float64[_as_float(value, NaN) for value in get(dict, "saddle", Any[])]
+    length(t) == size(states, 2) || error(
+        "Serialized homoclinic orbit time/state sample counts do not match.")
+    length(saddle) == size(states, 1) || error(
+        "Serialized homoclinic orbit saddle dimension does not match the state dimension.")
+    all(isfinite, t) && all(isfinite, states) && all(isfinite, saddle) || error(
+        "Serialized homoclinic orbit samples must be finite.")
+    values = (
+        _as_float(get(dict, "primaryParam", NaN), NaN),
+        _as_float(get(dict, "secondaryParam", NaN), NaN),
+        _as_float(get(dict, "returnTime", NaN), NaN),
+        _as_float(get(dict, "epsilonStart", NaN), NaN),
+        _as_float(get(dict, "epsilonEnd", NaN), NaN),
+    )
+    all(isfinite, values) || error("Serialized homoclinic orbit metadata must be finite.")
+    return HomoclinicOrbitRecord(
+        branch_index, t, states, saddle, values...)
+end
+
+function _validate_homoclinic_result(result::HomoclinicBranchResult)
+    count = length(result.primary_values)
+    count > 0 || error("Homoclinic branch result must contain at least one locus sample.")
+    for values in (
+        result.secondary_values, result.return_times, result.epsilon_start_values,
+        result.epsilon_end_values,
+    )
+        length(values) == count || error("Homoclinic branch column lengths do not match.")
+        all(isfinite, values) || error("Homoclinic branch columns must be finite.")
+    end
+    all(isfinite, result.primary_values) || error(
+        "Homoclinic branch primary values must be finite.")
+    size(result.saddles, 2) == count || error(
+        "Homoclinic saddle sample count does not match the locus.")
+    all(isfinite, result.saddles) || error("Homoclinic saddle samples must be finite.")
+    size(result.target_saddles, 2) == count || error(
+        "Homoclinic target-saddle sample count does not match the locus.")
+    size(result.target_saddles, 1) == size(result.saddles, 1) || error(
+        "Homoclinic target-saddle dimension does not match the source saddle.")
+    all(isfinite, result.target_saddles) || error(
+        "Homoclinic target-saddle samples must be finite.")
+    length(result.residuals) == count || error(
+        "Homoclinic residual count does not match the locus.")
+    all(r -> isfinite(r) && r >= 0, result.residuals) || error(
+        "Homoclinic residuals must be finite and non-negative.")
+    length(result.corrector_paths) == count || error(
+        "Homoclinic corrector-path count does not match the locus.")
+    result.connection_kind in _HOMOCLINIC_CONNECTION_KINDS || error(
+        "Unsupported homoclinic connection kind $(repr(result.connection_kind)).")
+    for (kind, values) in result.test_functions
+        haskey(_HOMOCLINIC_EVENT_LABELS, kind) || error(
+            "Unsupported homoclinic test-function kind $(repr(kind)).")
+        length(values) == count || error(
+            "Homoclinic test-function column $kind does not match the locus.")
+    end
+    for (kind, statuses) in result.test_statuses
+        haskey(_HOMOCLINIC_EVENT_LABELS, kind) || error(
+            "Unsupported homoclinic test-status kind $(repr(kind)).")
+        length(statuses) == count || error(
+            "Homoclinic test-status column $kind does not match the locus.")
+        all(s -> s in _HOMOCLINIC_POINT_STATUSES, statuses) || error(
+            "Homoclinic test-status column $kind contains unsupported status values.")
+    end
+    keys(result.test_statuses) == keys(result.test_functions) || error(
+        "Homoclinic test-status keys must match the test-function keys.")
+    result.source_period >= 0 || error("Homoclinic source period must be >= 0.")
+    result.source_index >= 0 || error("Homoclinic source index must be >= 0.")
+    ((result.source_period == 0) == (result.source_index == 0)) || error(
+        "Homoclinic source period and index must either both be zero or both be positive.")
+    isfinite(result.source_primary_value) || error(
+        "Homoclinic source primary value must be finite.")
+    all(isfinite, result.base_params) || error("Homoclinic base parameters must be finite.")
+    result.primary_param_index >= 1 && result.secondary_param_index >= 1 ||
+        error("Homoclinic parameter indices must be >= 1.")
+    result.primary_param_index <= length(result.base_params) &&
+        result.secondary_param_index <= length(result.base_params) || error(
+            "Homoclinic parameter indices must lie inside the base parameter vector.")
+    result.primary_param_index != result.secondary_param_index || count == 1 || error(
+        "Homoclinic primary and secondary parameter indices must differ.")
+    all(point -> point.branch_index <= count, result.special_points) || error(
+        "Homoclinic special-point branch indices must lie inside the locus.")
+    all(orbit -> orbit.branch_index <= count, result.orbits) || error(
+        "Homoclinic stored-orbit branch indices must lie inside the locus.")
+    return result
+end
+
+function _serialize_homoclinic_branch_result(result::HomoclinicBranchResult)
+    _validate_homoclinic_result(result)
+    return Dict{String, Any}(
+        "format" => _HOMOCLINIC_BRANCH_FORMAT,
+        "primaryValues" => copy(result.primary_values),
+        "secondaryValues" => copy(result.secondary_values),
+        "returnTimes" => copy(result.return_times),
+        "epsilonStartValues" => copy(result.epsilon_start_values),
+        "epsilonEndValues" => copy(result.epsilon_end_values),
+        "saddles" => [collect(Float64, row) for row in eachrow(result.saddles)],
+        "targetSaddles" => [collect(Float64, row) for row in eachrow(result.target_saddles)],
+        "testFunctions" => Dict(
+            String(kind) => [_encode_special_float(value) for value in values]
+            for (kind, values) in result.test_functions),
+        "testStatuses" => Dict(
+            String(kind) => String.(values)
+            for (kind, values) in result.test_statuses),
+        "specialPoints" => [_serialize_homoclinic_special_point(point)
+                            for point in result.special_points],
+        "orbits" => [_serialize_homoclinic_orbit(orbit) for orbit in result.orbits],
+        "residuals" => [_encode_special_float(value) for value in result.residuals],
+        "correctorPaths" => String[String(path) for path in result.corrector_paths],
+        "connectionKind" => String(result.connection_kind),
+        "sourcePeriod" => result.source_period,
+        "sourceIndex" => result.source_index,
+        "sourcePrimaryValue" => result.source_primary_value,
+        "baseParams" => copy(result.base_params),
+        "primaryParamIndex" => result.primary_param_index,
+        "secondaryParamIndex" => result.secondary_param_index,
+        "systemName" => result.system_name,
+        "paramNames" => String[String(result.param_names[1]), String(result.param_names[2])],
+        "diagnostics" => _serialize_homoclinic_diagnostics(result.diagnostics),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+# Diagnostics is a free-form provenance bag; keep serialization lossless for the
+# JSON-plain scalar/collection values the continuation driver stores, and stringify
+# anything exotic so a round-trip never fails on an unexpected entry.
+function _serialize_homoclinic_diagnostics(diagnostics::AbstractDict)
+    out = Dict{String, Any}()
+    for (key, value) in diagnostics
+        out[String(key)] = _jsonish_plain(value)
+    end
+    return out
+end
+
+const _JSONISH_TYPE_TAG = "__dynamicskit_type__"
+
+_jsonish_plain(value::Union{Nothing, Bool, Integer, AbstractString}) = value
+function _jsonish_plain(value::Real)
+    encoded = _encode_special_float(value)
+    return encoded isa AbstractString ?
+           Dict{String, Any}(_JSONISH_TYPE_TAG => "special_float", "value" => encoded) :
+           encoded
+end
+_jsonish_plain(value::Symbol) = String(value)
+_jsonish_plain(value::AbstractVector) = [_jsonish_plain(v) for v in value]
+function _jsonish_plain(value::AbstractDict)
+    encoded = Dict{String, Any}(String(k) => _jsonish_plain(v) for (k, v) in value)
+    return haskey(encoded, _JSONISH_TYPE_TAG) ?
+           Dict{String, Any}(_JSONISH_TYPE_TAG => "dict", "value" => encoded) :
+           encoded
+end
+_jsonish_plain(value) = string(value)
+
+# Inverse of `_jsonish_plain`. Tagged dictionaries distinguish encoded
+# non-finite numbers from legitimate strings such as "nan" and "inf".
+_jsonish_decode(value::AbstractString) = String(value)
+_jsonish_decode(value::AbstractVector) = [_jsonish_decode(v) for v in value]
+_jsonish_decode_dict_entries(value::AbstractDict) =
+    Dict{String, Any}(String(k) => _jsonish_decode(v) for (k, v) in value)
+function _jsonish_decode(value::AbstractDict)
+    tag = get(value, _JSONISH_TYPE_TAG, nothing)
+    if tag == "special_float"
+        token = get(value, "value", nothing)
+        token isa AbstractString || error(
+            "Encoded special-float diagnostic is missing its string value.")
+        lowercase(String(token)) in ("nan", "inf", "-inf") || error(
+            "Unsupported encoded special-float diagnostic $(repr(token)).")
+        return _decode_special_float(token)
+    elseif tag == "dict"
+        inner = get(value, "value", nothing)
+        inner isa AbstractDict || error(
+            "Encoded diagnostic dictionary is missing its dictionary value.")
+        return _jsonish_decode_dict_entries(inner)
+    end
+    return _jsonish_decode_dict_entries(value)
+end
+_jsonish_decode(value) = value   # Bool, Int, Nothing, already-numeric values
+
+function _required_homoclinic_field(data::AbstractDict, key::AbstractString)
+    haskey(data, key) || error(
+        "Serialized homoclinic branch is missing required key '$key'.")
+    return data[key]
+end
+
+function _deserialize_homoclinic_branch_result(data::AbstractDict)
+    format = _as_string(get(data, "format", ""), "")
+    format == _HOMOCLINIC_BRANCH_FORMAT || error(
+        "Unsupported homoclinic branch format '$format'; expected '$(_HOMOCLINIC_BRANCH_FORMAT)'.")
+    primary = Float64[_as_float(value, NaN) for value in
+                      _required_homoclinic_field(data, "primaryValues")]
+    tests = Dict{Symbol, Vector{Float64}}()
+    for (key, values) in _jsonish_dict(
+            _required_homoclinic_field(data, "testFunctions"))
+        tests[Symbol(lowercase(String(key)))] =
+            Float64[_decode_special_float(value) for value in values]
+    end
+    param_names = _required_homoclinic_field(data, "paramNames")
+    length(param_names) == 2 || error(
+        "Serialized homoclinic branch paramNames must contain two entries.")
+    saddles = _deserialize_robust_chaos_matrix(
+        _required_homoclinic_field(data, "saddles"),
+        Float64, value -> _as_float(value, NaN),
+        "homoclinic saddles")
+    target_saddles = _deserialize_robust_chaos_matrix(
+        _required_homoclinic_field(data, "targetSaddles"),
+        Float64, value -> _as_float(value, NaN),
+        "homoclinic target saddles")
+    residuals = Float64[_decode_special_float(value) for value in
+                        _required_homoclinic_field(data, "residuals")]
+    corrector_paths = Symbol[
+        Symbol(_as_string(value, "")) for value in
+        _required_homoclinic_field(data, "correctorPaths")]
+    connection_kind = Symbol(lowercase(_as_string(
+        _required_homoclinic_field(data, "connectionKind"), "")))
+    # Recursively decode special-float tokens (nan/inf/-inf) and nested structures
+    # inside diagnostics. _jsonish_plain encodes floats as strings on serialization;
+    # _jsonish_decode inverts that encoding so the round-trip is lossless.
+    diagnostics = Dict{String, Any}(
+        String(k) => _jsonish_decode(v)
+        for (k, v) in _jsonish_dict(
+            _required_homoclinic_field(data, "diagnostics")))
+    _valid_status(s) = s in (:available, :unavailable, :degenerate)
+    raw_statuses = _jsonish_dict(
+        _required_homoclinic_field(data, "testStatuses"))
+    test_statuses = Dict{Symbol, Vector{Symbol}}(
+        Symbol(lowercase(String(k))) =>
+            Symbol[let s = Symbol(_as_string(sv, ""))
+                       _valid_status(s) || error(
+                           "Unsupported serialized homoclinic test status $(repr(s)).")
+                       s
+                   end
+                   for sv in v]
+        for (k, v) in raw_statuses)
+    result = HomoclinicBranchResult(
+        primary,
+        Float64[_as_float(value, NaN) for value in
+                _required_homoclinic_field(data, "secondaryValues")],
+        Float64[_as_float(value, NaN) for value in
+                _required_homoclinic_field(data, "returnTimes")],
+        Float64[_as_float(value, NaN) for value in
+                _required_homoclinic_field(data, "epsilonStartValues")],
+        Float64[_as_float(value, NaN) for value in
+                _required_homoclinic_field(data, "epsilonEndValues")],
+        saddles,
+        target_saddles,
+        tests,
+        test_statuses,
+        [_deserialize_homoclinic_special_point(point)
+         for point in _required_homoclinic_field(data, "specialPoints")],
+        [_deserialize_homoclinic_orbit(orbit) for orbit in
+         _required_homoclinic_field(data, "orbits")],
+        residuals,
+        corrector_paths,
+        connection_kind,
+        _as_int(_required_homoclinic_field(data, "sourcePeriod"), -1),
+        _as_int(_required_homoclinic_field(data, "sourceIndex"), -1),
+        _as_float(_required_homoclinic_field(data, "sourcePrimaryValue"), NaN),
+        Float64[_as_float(value, NaN) for value in
+                _required_homoclinic_field(data, "baseParams")],
+        _as_int(_required_homoclinic_field(data, "primaryParamIndex"), 0),
+        _as_int(_required_homoclinic_field(data, "secondaryParamIndex"), 0),
+        _as_string(_required_homoclinic_field(data, "systemName"), ""),
+        (Symbol(_as_string(param_names[1], "p1")), Symbol(_as_string(param_names[2], "p2"))),
+        diagnostics,
+        _deserialize_timestamp(_required_homoclinic_field(data, "timestamp")),
+    )
+    return _validate_homoclinic_result(result)
+end
+
+"""    serialize_homoclinic_branch_result(result::HomoclinicBranchResult) -> Dict — versioned JSON-plain form."""
+const serialize_homoclinic_branch_result = _serialize_homoclinic_branch_result
+"""    deserialize_homoclinic_branch_result(data::AbstractDict) -> HomoclinicBranchResult"""
+const deserialize_homoclinic_branch_result = _deserialize_homoclinic_branch_result

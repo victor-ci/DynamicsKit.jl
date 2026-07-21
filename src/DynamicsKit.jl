@@ -54,6 +54,7 @@ include("analysis/spectrum.jl")
 include("analysis/phase_portrait.jl")
 include("analysis/continuation.jl")
 include("analysis/collocation.jl")
+include("analysis/homoclinic.jl")
 include("analysis/codim2.jl")
 include("analysis/skeleton.jl")
 include("analysis/normal_forms.jl")
@@ -74,7 +75,7 @@ include("visualization/plots.jl")
 
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
-export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, MapNormalForm, MapSpecialPoint, Codim2SpecialPoint
+export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, HomoclinicOrbitRecord, HomoclinicSpecialPoint, HomoclinicBranchResult, MapNormalForm, MapSpecialPoint, Codim2SpecialPoint
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
 export BorderCollisionClassification, BorderCollisionPoint
 export AffineModeSpec, SwitchingCircuitDescription
@@ -130,6 +131,9 @@ export select_ode_solver, collect_trajectory_seed_points
 export brute_force_diagram, continuation_branch, continuation_branches, continuation_branch_diagnostics, continuation_atlas, atlas_branches, find_periodic_skeleton
 export continuation_orbit_collocation
 export orbit_branch_parameters, orbit_branch_periods, orbit_branch_orbit, orbit_branch_amplitude, orbit_branch_multipliers, orbit_branch_stability
+export homoclinic_orbit_continuation
+export connecting_orbit_continuation, heteroclinic_orbit_continuation, saddle_cycle_homoclinic_continuation
+export homoclinic_orbit, homoclinic_special_point_label
 export map_normal_form, map_special_points, codim2_special_points
 export border_collision_classify, border_collision_at_cycle, border_collision_points
 export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
@@ -143,7 +147,7 @@ export CombinedBranchResult
 export Codim2ContinuationResult
 
 # Exports — config
-export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
+export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, ConnectingOrbitConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
 export RobustChaosConfig
 export BranchReachabilityConfig
 export RegimeBoundaryConfig, ToleranceConfig
@@ -167,6 +171,7 @@ export serialize_map_special_point, deserialize_map_special_point
 export serialize_border_collision_classification, deserialize_border_collision_classification
 export serialize_border_collision_point, deserialize_border_collision_point
 export serialize_codim2_special_point, deserialize_codim2_special_point
+export serialize_homoclinic_branch_result, deserialize_homoclinic_branch_result
 
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum

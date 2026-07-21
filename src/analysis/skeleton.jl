@@ -72,7 +72,7 @@ function find_periodic_skeleton(sys::DiscreteMap, periods::AbstractVector{Int},
     lo = isnothing(search_min) ? fill(-3.0, dim) : collect(search_min)
     hi = isnothing(search_max) ? fill(3.0, dim) : collect(search_max)
 
-    pv = _inject_param(params, param_index, param_value, linked_param_indices)
+    pv = inject_param(params, param_index, param_value, linked_param_indices)
 
     # Generate initial points from preferred seeds plus a fallback grid.
     initial_points = _discrete_skeleton_initial_points(lo, hi, n_initial; seed_points=seed_points)
@@ -179,7 +179,7 @@ function find_periodic_skeleton(sys::ContinuousODE, periods::AbstractVector{Int}
     end
 
     base_params = _resolve_continuous_params(sys, params)
-    base_params = _inject_param(base_params, param_index, param_value, linked_param_indices)
+    base_params = inject_param(base_params, param_index, param_value, linked_param_indices)
 
     lo, hi = if isnothing(search_min) || isnothing(search_max)
         _estimate_section_bounds(
@@ -482,4 +482,3 @@ function _is_unique(point, found_points, tol)
     end
     return true
 end
-

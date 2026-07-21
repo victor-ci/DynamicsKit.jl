@@ -19,7 +19,7 @@ function _recover_window_branches(sys::DiscreteMap,
         seed_data.search_max,
         atlas_config
     )
-    local_params = _inject_param(base_params, cont_config.param_index, seed_data.skeleton_param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, seed_data.skeleton_param, cont_config.linked_param_indices)
     seeds = find_periodic_skeleton(
         sys,
         [window.period],
@@ -409,7 +409,7 @@ function _atlas_branch_local_params(sys::DynamicalSystem,
                                     base_params::Vector{Float64},
                                     linked_param_indices::Vector{Int})
     param_index = _atlas_branch_param_index(sys, branch)
-    return _inject_param(base_params, param_index, Float64(point.param), linked_param_indices)
+    return inject_param(base_params, param_index, Float64(point.param), linked_param_indices)
 end
 
 """Return phase-expanded orbit points for a discrete-map continuation point."""
@@ -880,4 +880,3 @@ end
 function _atlas_window_coverage_fraction(window::AtlasWindow, branch_records::Vector{AtlasBranchRecord})
     return _atlas_interval_coverage_fraction(window.param_min, window.param_max, branch_records, window.id, window.period)
 end
-

@@ -142,7 +142,7 @@ Locates period-doubling (`:pd`), fold (`:fold`), and Neimark-Sacker (`:ns`) spec
 Poincaré return-map branch. BifurcationKit assesses special points with the equilibrium
 convention `Re(λ) < 0` on the residual `F = Π^p(x) − x`; since a map multiplier is
 `μ = λ + 1`, a period-doubling (`μ → −1`) never crosses the imaginary axis and is **missed**
-(folds, `μ → +1`, are caught). This routine instead uses map-native test functions on the
+(folds, `μ → +1`, are caught). This routine instead uses test functions on the
 return-map multipliers,
 
 - fold: `∏ᵢ(μᵢ − 1) = det(J − I)`,

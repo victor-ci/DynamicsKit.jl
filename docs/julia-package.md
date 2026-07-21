@@ -289,6 +289,154 @@ on the stiff memristive diode bridge the collocation branch — which return-map
 automatic seeder does not converge on — agrees with an independent shooting Newton solve
 to ~1e-4 in both the fixed point and the multipliers.
 
+## Connecting-orbit continuation (homoclinic / heteroclinic / saddle-cycle)
+
+`homoclinic_orbit_continuation`, `heteroclinic_orbit_continuation`, and
+`saddle_cycle_homoclinic_continuation` continue connecting orbits with a
+projection boundary-value solver. Everything — the typed configuration, the
+numerics, the normalized result, event labels, provenance, and versioned
+serialization — lives inside DynamicsKit; there is no optional plugin and no
+external package to install. `connecting_orbit_continuation` is the generalized
+entry point.
+
+### Numerical formulation
+
+The truncated orbit is discretized on a uniform trapezoidal mesh of `n_mesh`
+intervals in rescaled time. The unknown vector packs the mesh states, the source
+saddle (and, for a heteroclinic connection, the target saddle), the truncation
+time, and the two continuation parameters:
+
+```
+z = [ vec(U) ; xs ; (xt) ; T ; α ; β ]
+```
+
+The residual combines the trapezoidal ODE conditions
+`U_{i+1} − U_i − (T/2M)(f(U_i,p) + f(U_{i+1},p))`, the saddle equation(s)
+`f(xs,p) = 0`, projection boundary conditions that force the start endpoint into
+the unstable subspace and the end endpoint into the stable subspace of the
+saddle(s), and two distance conditions pinning the endpoints at their
+seed-derived offsets. The stable/unstable projectors are computed with a real
+Schur decomposition, frozen to `Float64`, and refreshed from the current iterate
+between Newton steps (`eigen`/`schur` cannot be differentiated through
+`ForwardDiff.Dual` matrices). The corrector is a line-searched Gauss-Newton
+primary path with a damped Levenberg-Marquardt / pseudo-inverse fallback; the
+path taken (`:newton` or `:fallback`) is recorded per locus sample, and the
+curve is traced by pseudo-arclength continuation. The geometry is validated up
+front: a connecting curve must leave exactly one free direction
+(`k = Nz − Nm = 1`), so incompatible manifold dimensions are rejected with an
+explicit error rather than silently mis-solved.
+
+```julia
+using DynamicsKit
+
+result = homoclinic_orbit_continuation(
+    sys,
+    ConnectingOrbitConfig(
+        continuation=ContinuationConfig(p_min=-1.6, p_max=-0.6, param_index=1, ds=0.05),
+        n_mesh=80,
+        test_inclination_flip=true,
+        bothside=true,
+    );
+    primary_param_index=2,
+    orbit_guess=seed_states,        # dim × K matrix or callable τ∈[0,1] -> state
+    saddle_guess=[1.0, 0.0],
+    truncation_time=24.0,
+)
+
+result.primary_values      # the free parameter solved to stay on the connection
+result.secondary_values    # the parameter marched along the locus
+result.residuals           # converged BVP residual norm at each sample
+result.corrector_paths     # :newton or :fallback per sample
+result.special_points      # typed test-function events
+orbit = homoclinic_orbit(result, result.orbits[1].branch_index)
+wire = serialize_homoclinic_branch_result(result)
+```
+
+The secondary parameter (`continuation.param_index`) is the one marched along the
+curve; the `primary_param_index` is the second free parameter that adjusts to
+keep the connection closed. A seed can come from an explicit orbit/saddle guess
+or from the long-period endpoint of an `OrbitBranchResult`
+(`homoclinic_orbit_continuation(sys, source, config)`).
+
+Heteroclinic connections take distinct source and target saddle guesses:
+
+```julia
+result = heteroclinic_orbit_continuation(
+    sys, ConnectingOrbitConfig(continuation=cont, kind=:heteroclinic, n_mesh=80);
+    primary_param_index=1, source_saddle=[1.0, 0.0], target_saddle=[0.0, 0.0],
+    orbit_guess=front_states, truncation_time=32.0,
+)
+```
+
+For a homoclinic seed, `saddle_guess` may be omitted; the solver then starts its
+saddle correction from the slowest sampled state of `orbit_guess`.
+
+Homoclinic connections to a saddle periodic orbit take one period of cycle
+samples. The monodromy matrix is built from the variational equation with the
+same trapezoidal rule as the corrector, its Floquet multipliers classify the
+stable/unstable/center (trivial) subspaces, the geometry is validated (the cycle
+must be a genuine saddle with a single trivial multiplier), and the truncated
+orbit's endpoints are pinned to the Floquet subspaces at a reference
+cross-section:
+
+```julia
+result = saddle_cycle_homoclinic_continuation(
+    sys, ConnectingOrbitConfig(continuation=cont, kind=:saddle_cycle, n_mesh=60);
+    cycle_states=one_period_samples, cycle_period=Tc,
+    orbit_guess=seed_states, truncation_time=16.0,
+)
+result.diagnostics["floquet_multipliers_re"]   # Floquet data recorded as provenance
+```
+
+### Test functions and flip classification
+
+At each locus sample the saddle spectrum yields the standard HomCont eigenvalue
+test functions (`:nns` neutral saddle, `:sh` Shilnikov, `:bt` Bogdanov-Takens,
+`:nsf`/`:nff` neutral saddle-focus/focus-focus, and related codes). For
+homoclinic connections with a rich enough spectrum, real adjoint / variational
+transport of the leading unstable direction along the orbit — compared against
+the weak stable left eigenvector — gives the inclination-flip test functions
+(`:ifs`, `:ifu`); the orbit-flip functions (`:ofs`, `:ofu`) come from the
+alignment of the endpoint approach with the strong stable/unstable direction.
+Inclination-flip functions require at least two eigenvalues on the relevant side
+to separate weak and strong directions; when the spectrum cannot support the
+test it is reported `:unavailable` (with a `NaN` value) rather than fabricated,
+and complex (focus) spectra are reported `:degenerate`. Sign crossings of the
+available functions become typed `HomoclinicSpecialPoint`s carrying a `status`
+and a bounded `quality` derived from how cleanly the function crossed zero.
+
+`HomoclinicBranchResult` stores the full two-parameter locus, source and target
+saddle coordinates, return-time and boundary-distance columns, the test-function
+columns and their per-sample `test_statuses`, typed special points, per-sample
+residuals and corrector paths, the
+`connection_kind` (`:homoclinic`, `:heteroclinic`, or `:saddle_cycle`),
+free-form `diagnostics` provenance, and a bounded subset of normalized
+trajectories. Serialization is versioned: `serialize_homoclinic_branch_result`
+writes `homoclinic-branch-v1`, and `deserialize_homoclinic_branch_result`
+validates and restores that format.
+
+### Validation and scope
+
+The formulation is validated against analytic fixtures. The equilibrium
+homoclinic of `ẋ = y, ẏ = β1 + x² + β2·y` (exact loop `x = 1 − 3 sech²(t/√2)` at
+β1 = −1, locus β2 = 0) is recovered with a converged BVP residual below `1e-7`,
+the solved parameter staying on β2 = 0 to `1e-6`, and the saddle tracked at
+`(√(−β1), 0)`. The Nagumo heteroclinic front follows the exact wave-speed law
+`c = (1 − 2a)/√2` to better than `5e-3` along the continued locus. The adjoint
+transport matches the analytic fundamental matrix `exp(AT)` to `1e-4` on a linear
+field, and the saddle-cycle monodromy reproduces the analytic Floquet multipliers
+`{1, e^{-2T}, e^{λT}}` to `1e-2`.
+
+Scope and limitations: the two-parameter continuation traces codimension-one
+connecting curves (`k = 1`); higher-codimension geometries are rejected
+explicitly. The saddle-cycle solver owns the monodromy/Floquet numerics, strict
+geometry validation, and a single phase-pinned projection correction with the
+Floquet data recorded in `diagnostics`; full two-parameter continuation of
+cycle-to-cycle homoclinics and automatic phase-condition continuation are not
+claimed. Inclination-flip test functions are computed and classified where the
+spectrum supports them and reported unavailable otherwise; they are not forced to
+produce a number when the geometry is degenerate.
+
 ## Branch diagnostics
 
 Use diagnostics to inspect numerical trustworthiness and stability:

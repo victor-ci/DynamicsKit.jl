@@ -98,7 +98,7 @@ Continuous ODE oscillator with a Poincare-section workflow. Supports phase portr
 
 Typical uses:
 
-- ODE continuation on a native Poincare map;
+- ODE continuation on a Poincare map;
 - adaptive atlas discovery;
 - phase-portrait inspection;
 - paired time-tail / FFT spectra at fixed parameter points;

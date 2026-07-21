@@ -356,7 +356,7 @@ function _estimate_section_bounds(sys::ContinuousODE, param_value::Float64, para
                                   crossings::Int=40,
                                   padding::Float64=0.15,
                                   min_half_width::Float64=0.5)
-    local_params = _inject_param(params, param_index, param_value, linked_param_indices)
+    local_params = inject_param(params, param_index, param_value, linked_param_indices)
     sample = _collect_poincare_points(
         sys,
         local_params;
@@ -485,7 +485,7 @@ function _collect_trajectory_seed_points(sys::ContinuousODE, param_value::Float6
                                          abstol::Float64=1e-8,
                                          tmax::Union{Nothing, Float64}=nothing,
                                          min_crossing_time::Float64=1e-6)
-    local_params = _inject_param(params, param_index, param_value, linked_param_indices)
+    local_params = inject_param(params, param_index, param_value, linked_param_indices)
     return _collect_poincare_points(
         sys,
         local_params;
@@ -664,7 +664,7 @@ function _branch_points_with_recomputed_stability(sys::DynamicalSystem,
             require_state && error("Cannot recompute branch stability for $(branch.system_name) period-$(branch.period) point $idx: recorded state fields x1..x$projected_dim are incomplete.")
             return point
         end
-        local_params = _inject_param(base, param_index, Float64(point.param), linked_param_indices)
+        local_params = inject_param(base, param_index, Float64(point.param), linked_param_indices)
         state = _branch_point_state(point, projected_dim)
         try
             stable, _ = _map_stability(sys, state, local_params, period; kwargs...)

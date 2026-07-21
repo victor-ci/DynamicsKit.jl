@@ -207,6 +207,87 @@ of the return map.
 end
 
 """
+    ConnectingOrbitConfig
+
+Configuration for continuing a connecting orbit with the projection
+boundary-condition method. Covers homoclinic connections to an equilibrium,
+heteroclinic connections between two saddles, and homoclinic connections to a
+saddle periodic orbit.
+
+The orbit is discretized on a uniform trapezoidal mesh of `n_mesh` intervals in
+rescaled time; the saddle equilibria (or the saddle cycle's Floquet data) are
+solved alongside the orbit and the endpoints are pinned to the linear
+stable/unstable subspaces by projection boundary conditions. A damped
+pseudo-inverse fallback corrector (`use_fallback`) rescues predictor points
+where the primary Newton corrector stalls, and its use is recorded in the
+result provenance.
+
+# Fields
+- `continuation`: Secondary-axis continuation settings (`param_index`,
+  `p_min`/`p_max`, `ds`/`dsmax`/`dsmin`, `max_steps`, `newton_tol`,
+  `newton_max_iter`). `param_index` selects the free secondary parameter.
+- `kind`: `:homoclinic`, `:heteroclinic`, or `:saddle_cycle`.
+- `n_mesh`: Number of trapezoidal mesh intervals for the truncated orbit.
+- `max_return_time`: Cap on the truncation time `T`.
+- `detect_events`: Evaluate the standard HomCont eigenvalue test functions and
+  record sign-crossing special points along the locus.
+- `test_orbit_flip` / `test_inclination_flip`: Also evaluate the orbit-flip and
+  adjoint-transport inclination-flip test functions. Inclination-flip test
+  functions are only available when the relevant manifold has at least two
+  stable (or two unstable) eigenvalues; otherwise they are reported with an
+  `:unavailable` status rather than a fabricated value.
+- `use_fallback`: Enable the damped pseudo-inverse fallback corrector.
+- `fallback_max_iter`: Iteration budget for the fallback corrector.
+- `projector_refresh`: Recompute the frozen stable/unstable projectors every
+  `projector_refresh` Newton iterations during correction (`1` = every iteration,
+  default). Higher values freeze projectors for more iterations; this can speed
+  up costly corrections at the risk of slower convergence if the saddle moves
+  significantly between refreshes. Projectors are frozen to `Float64` because
+  `eigen`/`schur` cannot differentiate through `ForwardDiff.Dual` matrices.
+- `orbit_save_stride` / `max_saved_orbits`: Bounded retention of normalized
+  trajectories along the locus.
+- `bothside`: Continue in both secondary-parameter directions from the seed.
+- `source_index`: Which stored orbit of a source `OrbitBranchResult` seeds the
+  connection (`0` selects the long-period endpoint).
+- `provenance`: Free-form provenance string stored in the result diagnostics.
+- `epsilon_start` / `epsilon_end`: Endpoint distance from the source/target
+  saddle (equilibrium) or reference phase point (saddle-cycle). The BVP
+  boundary condition pins `|u(0) - xs|` to `epsilon_start` and
+  `|u(T) - xt|` to `epsilon_end`. `NaN` (the default) means derive the radius
+  from the seed orbit's natural endpoint distance; use an explicit positive
+  value to override it. Zero and negative values are rejected.
+"""
+@with_kw struct ConnectingOrbitConfig
+    continuation::ContinuationConfig
+    kind::Symbol = :homoclinic
+    n_mesh::Int = 120
+    epsilon_start::Float64 = NaN
+    epsilon_end::Float64 = NaN
+    max_return_time::Float64 = Inf
+    detect_events::Bool = true
+    test_orbit_flip::Bool = true
+    test_inclination_flip::Bool = true
+    use_fallback::Bool = true
+    fallback_max_iter::Int = 150
+    projector_refresh::Int = 1
+    orbit_save_stride::Int = 10
+    max_saved_orbits::Int = 25
+    bothside::Bool = false
+    source_index::Int = 0
+    provenance::String = ""
+    @assert kind in (:homoclinic, :heteroclinic, :saddle_cycle) "ConnectingOrbitConfig.kind must be :homoclinic, :heteroclinic, or :saddle_cycle"
+    @assert n_mesh >= 10 "ConnectingOrbitConfig.n_mesh must be >= 10"
+    @assert isnan(epsilon_start) || (isfinite(epsilon_start) && epsilon_start > 0.0) "ConnectingOrbitConfig.epsilon_start must be a positive finite value or NaN (derive from seed)"
+    @assert isnan(epsilon_end) || (isfinite(epsilon_end) && epsilon_end > 0.0) "ConnectingOrbitConfig.epsilon_end must be a positive finite value or NaN (derive from seed)"
+    @assert (isfinite(max_return_time) || max_return_time == Inf) && max_return_time > 0.0 "ConnectingOrbitConfig.max_return_time must be positive and finite or Inf"
+    @assert fallback_max_iter >= 1 "ConnectingOrbitConfig.fallback_max_iter must be >= 1"
+    @assert projector_refresh >= 1 "ConnectingOrbitConfig.projector_refresh must be >= 1"
+    @assert source_index >= 0 "ConnectingOrbitConfig.source_index must be >= 0 (0 selects the source endpoint)"
+    @assert orbit_save_stride >= 1 "ConnectingOrbitConfig.orbit_save_stride must be >= 1"
+    @assert max_saved_orbits >= 2 "ConnectingOrbitConfig.max_saved_orbits must be >= 2"
+end
+
+"""
     ReseedConfig
 
 Controls automatic re-seeding when a continuation direction terminates prematurely in the
