@@ -910,6 +910,143 @@ confidence, Lyapunov estimates, multistability, adaptive refinement, and neighbo
 metadata (e.g. `bifurcation_map` via the lower-level `DynamicsKit._bifurcation_map`, which returns
 `(result, diagnostics)`).
 
+## Optional GPU acceleration
+
+`bifurcation_map`, `lyapunov_field`, and `basins_of_attraction` accept a `backend::ComputeBackend`
+keyword (default `CPUBackend()`, i.e. the existing threaded pure-Julia sweep — passing it explicitly
+carries no extra overhead). `AutoBackend()` uses a GPU if one is loaded and available, otherwise runs on
+the CPU; it never errors due to device unavailability. `GPUBackend(vendor::Symbol)` (or the
+`gpu_backend(vendor)` convenience constructor) explicitly requests a vendor (e.g. `:cuda`, `:amdgpu`) —
+unlike `AutoBackend`, an unavailable or ineligible explicit request always raises a clear
+`ArgumentError` rather than silently falling back to the CPU. Query availability with
+`gpu_backend_available(vendor)` / `available_gpu_backends()`.
+
+```julia
+using DynamicsKit
+map = bifurcation_map(henon_map(), BifurcationMapConfig(...); backend=auto_backend())
+map.compute_backend   # :cpu, or the GPU vendor that actually ran the sweep
+```
+
+GPU eligibility for the **`DiscreteMap`** sweeps (the embarrassingly parallel,
+cell-independent case):
+
+- `BifurcationMapConfig(reuse_neighbor_seeds=false, ...)` (the `:fixed` seed mode) — the neighbour-seeded
+  modes are traversal-dependent (each cell's initial condition is the previous cell's final state in
+  serpentine order), so they are not cell-independent and stay CPU-only.
+- No switching events, no `multistability_initial_points`, no `a_linked_param_indices` /
+  `b_linked_param_indices` — these require per-cell `Dict`/multi-seed bookkeeping not (yet) written in a
+  GPU-safe non-allocating form.
+- `basins_of_attraction(sys::DiscreteMap, ...)` has none of the above restrictions (always eligible).
+
+**`ContinuousODE` sweeps are also GPU-accelerated** (`bifurcation_map`, `basins_of_attraction`) via
+DiffEqGPU's `EnsembleGPUKernel`; see "Continuous-time (`ContinuousODE`) GPU sweeps" below for the
+additional eligibility rules (GPU out-of-place RHS, Lyapunov disabled, precision floor) and the narrow
+continuous-Lyapunov exclusion.
+
+An explicit `GPUBackend` on an ineligible call raises a clear `ArgumentError` naming the unmet
+requirement; `AutoBackend` silently runs on the CPU instead. The `cells=` sweep-cache hook (`MapCellGrid`
+/ `LyapunovCellGrid` / `BasinsCellGrid`) works the same way regardless of backend: pre-seeded/known cells
+are skipped and the grid is written back in place.
+
+**Vendor packages are weak dependencies (package extensions).** Loading `DynamicsKit` alone never pulls
+in a GPU stack; `] add CUDA` / `] add AMDGPU` and `using CUDA` (etc.) in the same session is what makes
+that vendor available. `DynamicsKit` ships extensions for the FP64-capable vendors — `DynamicsKitCUDAExt`
+(`:cuda`) and `DynamicsKitAMDGPUExt` (`:amdgpu`) — which register the vendor as available whenever its
+package reports a functional device (`CUDA.functional()` / `AMDGPU.functional()`) and hand back the
+matching `KernelAbstractions` backend (`CUDA.CUDABackend()` / `AMDGPU.ROCBackend()`) used by *both* the
+discrete `KernelAbstractions` kernels and the continuous DiffEqGPU `EnsembleGPUKernel` path. These
+extensions are dormant until the vendor package is loaded, and no accelerated run was validated against
+real CUDA/AMDGPU hardware in this release (the device-gated parity tests skip when no device is present),
+so treat those paths as ready-but-unvalidated until exercised on hardware. The kernels are written
+against the vendor-agnostic `KernelAbstractions.jl` / `DiffEqGPU.jl` (lightweight, CPU-capable
+dependencies with no GPU stack of their own), so a new vendor is a small extension following
+`ext/DynamicsKitCUDAExt.jl`'s pattern, not a rewrite of the kernels.
+
+**Apple/Metal is a recognized vendor that is permanently disqualified, not just "not installed".** Metal
+GPUs have no double-precision (Float64) hardware support at all (Metal Shading Language has no `double`
+type), and this library's period/Lyapunov closure tolerances are specified and validated in Float64;
+silently downgrading to Float32 would change classification results near regime boundaries, which is
+exactly the misleading/"scientifically weak" GPU toggle this feature must not ship. `using Metal` loads
+`DynamicsKitMetalExt`, so `:metal` appears in the probed vendor set, but `gpu_backend_available(:metal)`
+always reports `false` and an explicit `gpu_backend(:metal)` request raises an `ArgumentError` naming
+this exact reason — never a silent CPU fallback and never a silent precision downgrade.
+
+### Continuous-time (`ContinuousODE`) GPU sweeps
+
+`bifurcation_map` and `basins_of_attraction` for `sys::ContinuousODE` are GPU-accelerated through
+DiffEqGPU's `EnsembleGPUKernel`, running the **same** adaptive Poincaré-return method the CPU path uses
+— GPU `Tsit5` adaptive integration, a directional section `ContinuousCallback` (`RightRootFind`),
+warmup/min-crossing handling, termination after the required crossings, and Float64 closure-based
+period detection — distributed over an ensemble of independent per-cell trajectories. It is **not** a
+fixed-step or Float32 reimplementation. The branchy, variable-length detector is made kernel-uniform by
+carrying a fixed-capacity *augmented state* per trajectory whose extra slots are the running detector
+registers (crossing count, base point, min-closure error/period/threshold, detected period, status,
+last-crossing point); the directional callback runs the exact CPU `on_crossing!` logic on those slots
+and calls `terminate!` per trajectory. The physical result read back from the terminal augmented state
+flows through the *same* recorders as the CPU sweep, so the two agree beyond integration tolerance.
+
+Continuous GPU eligibility, in addition to the same structural rules as the discrete map
+(`bifurcation_map`: fixed-seed, no switching/multistability/linked params) requires:
+
+- **A GPU out-of-place StaticArray right-hand side on the system** (`has_continuous_gpu_rhs`). Built-in
+  continuous systems (Rössler, Vilnius, the Colpitts family, the memristive diode bridge) provide a
+  native out-of-place `(u::SVector, p, t) -> SVector` alongside their in-place RHS — the in-place form
+  stays the zero-overhead CPU hot-loop path; the out-of-place form is what `EnsembleGPUKernel` requires.
+  Imported/user systems that supply only an in-place RHS are GPU-ineligible (never silently downgraded).
+- **Lyapunov diagnostics disabled** for `bifurcation_map` (see the Lyapunov exclusion below).
+- **A closure `precision` no tighter than the GPU section-crossing localization floor**
+  (`100·eps(Float32) ≈ 1.19e-5`). DiffEqGPU localizes the Poincaré crossing with this fixed root-find
+  tolerance (from `convert(GPUContinuousCallback, ::ContinuousCallback)`); a closure tolerance tighter
+  than the localization itself cannot be guaranteed to match the CPU path, so such calls are rejected
+  (explicit `GPUBackend`) or fall back to the CPU (`AutoBackend`) — never run with a silently weaker
+  localization. The value is recorded on GPU-computed diagnostics as `gpuRootfindAbstol`, and the
+  configured `precision`/solver as `closurePrecision` / `gpuSolver` provenance.
+
+Scientific parity: classifications are **exact** on robustly-classified fixtures (e.g. Rössler's
+period-doubling cascade) and match across a full representative grid given an adequate transient. In
+deep-chaos cells a *near-threshold* closure (period ≈ `max_period`) can flip between a marginal period
+and aperiodic because the exact integer period there is itself sensitive to integrator-path differences
+between CPU `Tsit5` and GPU `Tsit5`; this is inherent sensitive dependence, not a GPU defect, and shrinks
+as the transient grows.
+
+**The continuous Lyapunov field/diagram is deliberately *not* GPU-accelerated**, and an explicit
+`GPUBackend` for `lyapunov_field(sys::ContinuousODE, ...)` raises a specific `ArgumentError` (auto/CPU
+run on the CPU). This is a *narrow* exclusion with a concrete technical reason, not a blanket
+"no ContinuousODE GPU": the continuous Lyapunov exponent is a **coupled two-trajectory** Benettin
+computation — a reference and a perturbed trajectory each integrated to their *own* next Poincaré
+crossing, with per-return renormalization and reprojection of the separation onto the section — whereas
+`EnsembleGPUKernel` is built for *independent* trajectories. The two trajectories reach the section at
+different times and must be resynchronized/renormalized sequentially between returns, which the
+single-time-axis ensemble event model does not express; a faithful version would need a bespoke coupled
+GPU integrator (outside DiffEqGPU's provided APIs) or a variational/Jacobian reformulation (a *different*
+method that would not reproduce the CPU finite-difference exponent values). Until one is validated, the
+faithful CPU path is authoritative.
+
+**`ContinuousODE` continuation** (`continuation_branch`, `continuation_atlas`, ...) is likewise not
+GPU-accelerated: pseudo-arclength path-following is inherently sequential (each point depends on the
+previous one), so there is no cell-independent work to distribute; `BifurcationKit.jl` itself supports
+GPU-resident state arrays for large PDE-discretization problems, which does not apply to this library's
+small ODE/map state vectors. The Monte-Carlo tolerance/regime-boundary fields
+(`tolerance_regime_map`, `regime_boundary_distances`) are also CPU-only: they classify already-computed
+grid samples by nearest-cell lookup into a `Dict`-keyed, runtime-discovered set of regime labels, so the
+per-sample cost is dominated by branching/hash lookups rather than floating-point throughput, and the
+output layout is not GPU-kernel-representable without a larger data-structure rewrite than the modest
+gain would justify — advertising ODE acceleration there would be misleading.
+
+### Supported vs ineligible GPU matrix
+
+| Analysis (system) | GPU | Notes |
+| --- | --- | --- |
+| `bifurcation_map` (`DiscreteMap`) | ✅ | fixed-seed, no switching/multistability/linked params |
+| `lyapunov_field` (`DiscreteMap`) | ✅ | no linked params |
+| `basins_of_attraction` (`DiscreteMap`) | ✅ | always eligible |
+| `bifurcation_map` (`ContinuousODE`) | ✅ | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5` |
+| `basins_of_attraction` (`ContinuousODE`) | ✅ | GPU RHS, `precision ≥ 1.19e-5` |
+| `brute_force_diagram` (`ContinuousODE`) | ❌ | fixed-capacity buffer validated (parity ~1e-9) but the large `SVector` state a typical diagram needs blows up GPU-kernel compile time — CPU-only |
+| `lyapunov_field` (`ContinuousODE`) | ❌ | coupled two-trajectory Benettin — not an independent ensemble |
+| continuation / atlas | ❌ | inherently sequential (no cell-independent work) |
+| `tolerance_regime_map` / `regime_boundary_distances` | ❌ | post-processing classification, not ODE integration |
+
 ## Phase portrait
 
 ```julia

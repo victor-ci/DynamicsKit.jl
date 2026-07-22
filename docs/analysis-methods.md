@@ -505,6 +505,8 @@ basins_of_attraction(sys, BasinsConfig(...); kwargs...)
 
 Basins sweep initial conditions at a fixed parameter value. The output matrix stores detected periods, using `0` for no finite period found.
 
+This sweep optionally runs on a GPU via `backend=` — for `sys::DiscreteMap` always, and for `sys::ContinuousODE` when the system has a GPU out-of-place RHS and `precision` is not below the section-crossing localization floor. See "Optional GPU acceleration" in `docs/julia-package.md`.
+
 Configuration highlights:
 
 | Field | Meaning |
@@ -656,6 +658,8 @@ Advanced fields:
 | `adaptive_refinement_min_confidence`, `adaptive_refinement_confidence_delta` | Confidence triggers |
 
 If Lyapunov diagnostics were enabled, call `lyapunov_field(result)` to extract the co-computed `LyapunovFieldResult` without re-running the map.
+
+This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The continuous Lyapunov field stays CPU-only (coupled two-trajectory method). See "Optional GPU acceleration" in `docs/julia-package.md`.
 
 ## Power spectrum
 

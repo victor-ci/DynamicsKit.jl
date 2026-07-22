@@ -626,21 +626,22 @@ end
 
     @testset "Lyapunov classification of collapsed and contracting cells" begin
         cls = DynamicsKit._map_lyapunov_classification
-        aperiodic = (period = 0, status = :aperiodic_or_high_period)
+        BE = DynamicsKit
+        aperiodic_period, aperiodic_status = 0, BE._map_status_code(:aperiodic_or_high_period)
 
         # A collapsed trajectory pair returns the sentinel exponent -Inf; it is the
         # extreme of a confidently negative exponent (regular/contracting regime) and
         # must not fall through to :unresolved on the isfinite check.
-        @test cls(aperiodic, -Inf, :collapsed, 1e-2) == :periodic
+        @test cls(aperiodic_period, aperiodic_status, -Inf, BE._map_lyapunov_estimation_status_code(:collapsed), 1e-2) == BE._map_lyapunov_status_code(:periodic)
         # Confidently negative finite exponent ⟹ regular/periodic-like, not :unresolved.
-        @test cls(aperiodic, -0.5, :ok, 1e-2) == :periodic
+        @test cls(aperiodic_period, aperiodic_status, -0.5, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:periodic)
         # Positive and near-zero exponents classify as before.
-        @test cls(aperiodic, 0.4, :ok, 1e-2) == :chaotic_candidate
-        @test cls(aperiodic, 0.0, :ok, 1e-2) == :quasiperiodic_neutral_candidate
+        @test cls(aperiodic_period, aperiodic_status, 0.4, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:chaotic_candidate)
+        @test cls(aperiodic_period, aperiodic_status, 0.0, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:quasiperiodic_neutral_candidate)
         # A detector-resolved finite period short-circuits to :periodic.
-        @test cls((period = 3, status = :periodic), NaN, :ok, 1e-2) == :periodic
+        @test cls(3, BE._map_status_code(:periodic), NaN, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:periodic)
         # A non-aperiodic detection without a usable estimate stays :unresolved.
-        @test cls((period = 0, status = :diverged), NaN, :diverged, 1e-2) == :unresolved
+        @test cls(0, BE._map_status_code(:diverged), NaN, BE._map_lyapunov_estimation_status_code(:diverged), 1e-2) == BE._map_lyapunov_status_code(:unresolved)
     end
 
     @testset "Bifurcation map switching-event diagnostics" begin

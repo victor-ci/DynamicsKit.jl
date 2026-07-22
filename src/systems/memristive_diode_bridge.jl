@@ -98,10 +98,29 @@ function memristive_diode_bridge(; c::Float64=6.02e-6, k::Float64=0.05)
         projection = [1, 3],          # keep x and z; y reset to 0 on the section
         template = [0.0, 0.0, 0.0]
     )
+    # Out-of-place StaticArray form of the same right-hand side (all the same domain guards) for
+    # the GPU ensemble path; native second form, not a wrapper (see ContinuousODE `f_svector`).
+    f_oop = function(u::SVector{S, T}, p, t) where {S, T}
+        x = u[1]; y = u[2]; z = u[3]
+        a  = p[1]
+        cp = length(p) >= 2 ? p[2] : c
+        kp = length(p) >= 3 ? p[3] : k
+        w = y - x
+        g = tanh(w)
+        cz = max(cp + z, 1e-12)
+        aw = abs(w)
+        logcosh = aw + log1p(exp(-2 * aw)) - log(2)
+        return SVector{S, T}(
+            cz * g,
+            kp * y - (kp + 1) * x - cz * g,
+            a * (log(cp) + logcosh - log(cz)),
+        )
+    end
     ContinuousODE(
         f!, 3, section, [:a, :c, :k], "Memristive Diode Bridge";
         tspan_hint = 50.0,            # one Poincaré return ≈ 26-30 in dimensionless τ
         default_initial_state = [0.0, 0.01, 0.0],
-        default_params = [0.005, c, k]
+        default_params = [0.005, c, k],
+        f_svector = f_oop
     )
 end

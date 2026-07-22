@@ -55,7 +55,6 @@ function _process_discrete_map_tile!(periodicity::AbstractMatrix{Int},
             end
         end
     end
-
     return (resets=reset_count, invalid_resets=invalid_reset_count)
 end
 
@@ -147,11 +146,185 @@ function _process_continuous_map_tile!(periodicity::AbstractMatrix{Int},
     return (resets=reset_count, invalid_resets=invalid_reset_count)
 end
 
+"""
+Per-chunk body of the fixed-seed CPU sweep for `_bifurcation_map(::ContinuousODE, ...)`, called once
+per `Threads.@threads` task from a dedicated function barrier. Each call gets its own local
+`param_buffer`: a plain function local is never boxed across separate invocations, unlike a variable
+that is merely assigned inside a `Threads.@threads` loop body sharing a lexical scope with a sibling
+branch's assignment to a same-named variable (see the GPU-host branch immediately above the call site,
+which now uses a distinctly-named buffer for exactly this reason).
+"""
+function _process_continuous_map_fixed_chunk!(periodicity::AbstractMatrix{Int},
+                                               status_codes::AbstractMatrix{Int},
+                                               closure_errors::AbstractMatrix{Float64},
+                                               closure_candidate_periods::AbstractMatrix{Int},
+                                               observed_points::AbstractMatrix{Int},
+                                               closure_confidence::AbstractMatrix{Float64},
+                                               crossing_summary,
+                                               lyapunov_storage,
+                                               multistability_storage,
+                                               sys::ContinuousODE,
+                                               config::BifurcationMapConfig,
+                                               param_template::Vector{Float64},
+                                               a_indices::Vector{Int},
+                                               b_indices::Vector{Int},
+                                               a_vals::Vector{Float64},
+                                               b_vals::Vector{Float64},
+                                               na::Int,
+                                               u0::Vector{Float64},
+                                               points_to_drop::Int,
+                                               solver,
+                                               reltol::Float64,
+                                               abstol::Float64,
+                                               multistability_enabled::Bool,
+                                               multistability_seeds,
+                                               cells,   # Union{Nothing, MapCellGrid}; untyped here since MapCellGrid is declared later in this file
+                                               chunk::UnitRange{Int})
+    param_buffer = copy(param_template)
+    for idx in chunk
+        i = ((idx - 1) % na) + 1
+        j = ((idx - 1) ÷ na) + 1
+        (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded (cached) cells
+        p = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+        result = if multistability_enabled
+            seed_results = [
+                _detect_continuous_poincare_period(
+                    sys,
+                    p;
+                    initial_point=seed,
+                    transient=points_to_drop,
+                    max_period=config.max_period,
+                    precision=config.precision,
+                    solver=solver,
+                    reltol=reltol,
+                    abstol=abstol,
+                    projected=true,
+                    divergence_cutoff=config.divergence_cutoff,
+                    min_crossing_time=config.min_crossing_time,
+                    return_crossing_diagnostics=false
+                )
+                for seed in multistability_seeds
+            ]
+            summary = _summarize_map_multistability(seed_results)
+            _record_map_multistability!(multistability_storage, i, j, summary)
+            summary.selected
+        else
+            _detect_continuous_poincare_period(
+                sys,
+                p;
+                initial_point=u0,
+                transient=points_to_drop,
+                max_period=config.max_period,
+                precision=config.precision,
+                solver=solver,
+                reltol=reltol,
+                abstol=abstol,
+                projected=true,
+                divergence_cutoff=config.divergence_cutoff,
+                min_crossing_time=config.min_crossing_time,
+                return_crossing_diagnostics=false
+            )
+        end
+        _record_map_detection!(
+            periodicity,
+            status_codes,
+            closure_errors,
+            closure_candidate_periods,
+            observed_points,
+            closure_confidence,
+            i,
+            j,
+            result
+        )
+        _record_map_crossing_summary!(crossing_summary, i, j, result)
+        _record_continuous_map_lyapunov!(
+            lyapunov_storage,
+            sys,
+            config,
+            p,
+            i,
+            j,
+            result;
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol
+        )
+        cells !== nothing && (cells.known[i, j] = true)
+    end
+    return nothing
+end
+
 _state_exceeds_cutoff(state, cutoff::Float64) = _map_state_status(state, cutoff) != :ok
 
 function _closure_period(base, candidate, period::Int, precision::Float64, base_norm::Float64)
     closure = _closure_measure(base, candidate, precision, base_norm)
     return closure.error < closure.threshold ? period : 0
+end
+
+"""
+Non-allocating numeric core of discrete-map period detection: transient-then-closure search, shared
+verbatim by the CPU sweep and the GPU kernel (`gpu_kernels.jl`) so the two never drift apart. Takes the
+bare map function `f` (not `sys`) and returns only plain numbers/`SVector` — no `Dict`, `String`, or
+`Symbol`, and no heap allocation — so the whole return value is `isbits` and safe to call from inside a
+`KernelAbstractions.@kernel`. `status` is an integer code in `_MAP_STATUS_CODE_BY_SYMBOL`'s space;
+convert to the public `Symbol` with `_map_status_symbol` at a CPU host boundary.
+"""
+@inline function _detect_discrete_map_period_core(f::F,
+                                                   params,
+                                                   x0::SVector{D, Float64},
+                                                   transient::Int,
+                                                   max_period::Int,
+                                                   precision::Float64,
+                                                   divergence_cutoff::Float64) where {F, D}
+    max_period <= 0 && return (period=0, status=6, min_closure_error=Inf,   # 6 = :invalid_state
+                               closure_candidate_period=0, observed_points=0, closure_confidence=0.0,
+                               final_point=x0)
+
+    point = x0
+    for _ in 1:transient
+        point = f(point, params)
+        state_code = _map_state_status_code(point, divergence_cutoff)
+        state_code != _STATE_CODE_OK && return (period=0, status=_map_status_code_from_state_code(state_code), min_closure_error=Inf,
+                                   closure_candidate_period=0, observed_points=0, closure_confidence=0.0,
+                                   final_point=point)
+    end
+
+    base = f(point, params)
+    state_code = _map_state_status_code(base, divergence_cutoff)
+    state_code != _STATE_CODE_OK && return (period=0, status=_map_status_code_from_state_code(state_code), min_closure_error=Inf,
+                               closure_candidate_period=0, observed_points=0, closure_confidence=0.0,
+                               final_point=base)
+    base_norm = norm(base)
+    point = base
+    min_error = Inf
+    min_period = 0
+    min_threshold = Inf
+    for period in 1:max_period
+        point = f(point, params)
+        state_code = _map_state_status_code(point, divergence_cutoff)
+        if state_code != _STATE_CODE_OK
+            return (period=0, status=_map_status_code_from_state_code(state_code), min_closure_error=min_error,
+                    closure_candidate_period=min_period, observed_points=period,
+                    closure_confidence=_map_detection_confidence(min_error, min_threshold),
+                    final_point=point)
+        end
+        closure = _closure_measure(base, point, precision, base_norm)
+        if closure.error < min_error
+            min_error = closure.error
+            min_period = period
+            min_threshold = closure.threshold
+        end
+        if closure.error < closure.threshold
+            return (period=period, status=1, min_closure_error=min_error,   # 1 = :periodic
+                    closure_candidate_period=min_period, observed_points=period + 1,
+                    closure_confidence=_map_detection_confidence(min_error, min_threshold),
+                    final_point=point)
+        end
+    end
+    return (period=0, status=2, min_closure_error=min_error,   # 2 = :aperiodic_or_high_period
+            closure_candidate_period=min_period, observed_points=max_period + 1,
+            closure_confidence=_map_detection_confidence(min_error, min_threshold),
+            final_point=point)
 end
 
 function _detect_discrete_map_period(sys::DiscreteMap,
@@ -162,8 +335,16 @@ function _detect_discrete_map_period(sys::DiscreteMap,
                                      precision::Float64,
                                      divergence_cutoff::Float64) where {D}
     has_switching_events = !isempty(switching_events(sys))
+    if !has_switching_events
+        core = _detect_discrete_map_period_core(sys.f, params, initial_point, transient, max_period, precision, divergence_cutoff)
+        return merge(
+            _period_detection_result(core.period, _map_status_symbol(core.status), core.min_closure_error, core.closure_candidate_period, core.observed_points, core.closure_confidence),
+            (final_point=core.final_point, switching_diagnostics=Dict{String, Any}())
+        )
+    end
+
     switching_samples = Vector{Vector{Float64}}()
-    switching_diag() = has_switching_events ? switching_event_diagnostics(sys, switching_samples, params) : Dict{String, Any}()
+    switching_diag() = switching_event_diagnostics(sys, switching_samples, params)
     max_period <= 0 && return merge(
         _period_detection_result(0, :invalid_state, Inf, 0, 0, Inf),
         (final_point=initial_point, switching_diagnostics=switching_diag())
@@ -177,15 +358,13 @@ function _detect_discrete_map_period(sys::DiscreteMap,
             _period_detection_result(0, status, Inf, 0, 0, Inf),
             (
                 final_point=point,
-                switching_diagnostics=has_switching_events ?
-                    switching_event_diagnostics(sys, [collect(Float64, point)], params) :
-                    Dict{String, Any}()
+                switching_diagnostics=switching_event_diagnostics(sys, [collect(Float64, point)], params)
             )
         )
     end
 
     base = sys.f(point, params)
-    has_switching_events && push!(switching_samples, collect(Float64, base))
+    push!(switching_samples, collect(Float64, base))
     status = _map_state_status(base, divergence_cutoff)
     status != :ok && return merge(
         _period_detection_result(0, status, Inf, 0, 0, Inf),
@@ -198,7 +377,7 @@ function _detect_discrete_map_period(sys::DiscreteMap,
     min_threshold = Inf
     for period in 1:max_period
         point = sys.f(point, params)
-        has_switching_events && push!(switching_samples, collect(Float64, point))
+        push!(switching_samples, collect(Float64, point))
         status = _map_state_status(point, divergence_cutoff)
         status != :ok && return merge(
             _period_detection_result(0, status, min_error, min_period, period, min_threshold),
@@ -808,7 +987,8 @@ end
 
 function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
                           initial_point::Union{Nothing, AbstractVector}=nothing,
-                          cells::Union{Nothing, MapCellGrid}=nothing)
+                          cells::Union{Nothing, MapCellGrid}=nothing,
+                          backend::ComputeBackend=CPUBackend())
     a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
     b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
     na, nb = length(a_vals), length(b_vals)
@@ -861,7 +1041,46 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
     invalid_reset_count = 0
     tile_diagnostics = Any[]
 
-    if seed_mode == :fixed
+    map_gpu_eligible = seed_mode == :fixed &&
+        !multistability_enabled &&
+        !has_switching_events &&
+        isempty(config.a_linked_param_indices) &&
+        isempty(config.b_linked_param_indices)
+    ka_backend, compute_backend_used = _resolve_gpu_backend(
+        backend, map_gpu_eligible, "bifurcation_map",
+        "fixed-seed traversal (reuse_neighbor_seeds=false), no switching events, no " *
+        "multistability_initial_points, and no linked parameter indices (a_linked_param_indices / b_linked_param_indices)"
+    )
+
+    if seed_mode == :fixed && ka_backend !== nothing
+        a_vals_dev = _gpu_upload(ka_backend, a_vals)
+        b_vals_dev = _gpu_upload(ka_backend, b_vals)
+        template_sv = SVector{length(param_template), Float64}(param_template)
+        a_index = only(a_indices)
+        b_index = only(b_indices)
+        if lyapunov_storage === nothing
+            _gpu_run_2d_sweep!(
+                ka_backend, na, nb,
+                (periodicity, status_codes, closure_errors, closure_candidate_periods, observed_points, closure_confidence),
+                _bifurcation_map_gpu_kernel!, cells,
+                a_vals_dev, b_vals_dev,
+                sys.f, template_sv, a_index, b_index, x0, points_to_drop, config.max_period,
+                config.precision, config.divergence_cutoff
+            )
+        else
+            _gpu_run_2d_sweep!(
+                ka_backend, na, nb,
+                (periodicity, status_codes, closure_errors, closure_candidate_periods, observed_points, closure_confidence,
+                 lyapunov_storage.exponents, lyapunov_storage.status_codes, lyapunov_storage.estimation_status_codes, lyapunov_storage.sample_counts),
+                _bifurcation_map_gpu_kernel_lyapunov!, cells,
+                a_vals_dev, b_vals_dev,
+                sys.f, template_sv, a_index, b_index, x0, points_to_drop, config.max_period,
+                config.precision, config.divergence_cutoff,
+                _map_lyapunov_transient(config), _map_lyapunov_iterations(config),
+                config.lyapunov_perturbation, config.lyapunov_neutral_tolerance
+            )
+        end
+    elseif seed_mode == :fixed
         chunks = _balanced_index_chunks(na * nb, Threads.nthreads())
         Threads.@threads for chunk_idx in eachindex(chunks)
             param_buffer = copy(param_template)
@@ -967,9 +1186,9 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
 
     param_names = (sys.param_names[config.a_index], sys.param_names[config.b_index])
     timestamp = now()
-    lyapunov = _map_lyapunov_result(lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp)
+    lyapunov = _map_lyapunov_result(lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp; compute_backend=compute_backend_used)
     result = BifurcationMapResult(a_vals, b_vals, periodicity, config.max_period,
-                                  sys.name, param_names, timestamp, lyapunov)
+                                  sys.name, param_names, timestamp; lyapunov=lyapunov, compute_backend=compute_backend_used)
     diagnostics = _map_neighbor_seed_diagnostics(
         config;
         full_transient=points_to_drop,
@@ -980,6 +1199,7 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
         tile_count=seed_mode == :fixed ? 0 : _map_tile_count(config, na, nb, seed_mode),
         tile_diagnostics=tile_diagnostics
     )
+    diagnostics["computeBackend"] = String(compute_backend_used)
     diagnostics["status"] = _map_classification_diagnostics(
         status_codes,
         closure_errors,
@@ -1023,7 +1243,8 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
                           solver=Tsit5(),
                           reltol::Float64=1e-8,
                           abstol::Float64=1e-8,
-                          cells::Union{Nothing, MapCellGrid}=nothing)
+                          cells::Union{Nothing, MapCellGrid}=nothing,
+                          backend::ComputeBackend=CPUBackend())
     a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
     b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
     na, nb = length(a_vals), length(b_vals)
@@ -1072,80 +1293,85 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
     invalid_reset_count = 0
     tile_diagnostics = Any[]
 
-    if seed_mode == :fixed
-        chunks = _balanced_index_chunks(na * nb, Threads.nthreads())
-        Threads.@threads for chunk_idx in eachindex(chunks)
-            param_buffer = copy(param_template)
-            for idx in chunks[chunk_idx]
-                i = ((idx - 1) % na) + 1
-                j = ((idx - 1) ÷ na) + 1
-                (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded (cached) cells
-                p = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
-                result = if multistability_enabled
-                    seed_results = [
-                        _detect_continuous_poincare_period(
-                            sys,
-                            p;
-                            initial_point=seed,
-                            transient=points_to_drop,
-                            max_period=config.max_period,
-                            precision=config.precision,
-                            solver=solver,
-                            reltol=reltol,
-                            abstol=abstol,
-                            projected=true,
-                            divergence_cutoff=config.divergence_cutoff,
-                            min_crossing_time=config.min_crossing_time,
-                            return_crossing_diagnostics=false
-                        )
-                        for seed in multistability_seeds
-                    ]
-                    summary = _summarize_map_multistability(seed_results)
-                    _record_map_multistability!(multistability_storage, i, j, summary)
-                    summary.selected
-                else
-                    _detect_continuous_poincare_period(
-                        sys,
-                        p;
-                        initial_point=u0,
-                        transient=points_to_drop,
-                        max_period=config.max_period,
-                        precision=config.precision,
-                        solver=solver,
-                        reltol=reltol,
-                        abstol=abstol,
-                        projected=true,
-                        divergence_cutoff=config.divergence_cutoff,
-                        min_crossing_time=config.min_crossing_time,
-                        return_crossing_diagnostics=false
-                    )
-                end
-                _record_map_detection!(
-                    periodicity,
-                    status_codes,
-                    closure_errors,
-                    closure_candidate_periods,
-                    observed_points,
-                    closure_confidence,
-                    i,
-                    j,
-                    result
-                )
+    has_switching_events = !isempty(switching_events(sys))
+    continuous_map_gpu_eligible = seed_mode == :fixed &&
+        !multistability_enabled &&
+        !has_switching_events &&
+        !_map_lyapunov_enabled(config) &&
+        isempty(config.a_linked_param_indices) &&
+        isempty(config.b_linked_param_indices)
+    ka_backend, compute_backend_used = _resolve_continuous_gpu_backend(
+        backend, sys, continuous_map_gpu_eligible, config.precision,
+        "bifurcation_map (ContinuousODE)",
+        "fixed-seed traversal (reuse_neighbor_seeds=false), no switching events, no " *
+        "multistability_initial_points, no linked parameter indices, and Lyapunov diagnostics disabled " *
+        "(the continuous Lyapunov field is a coupled-trajectory computation not offered on the GPU here)"
+    )
+
+    if seed_mode == :fixed && ka_backend !== nothing
+        cells_to_do = Tuple{Int, Int}[]
+        for j in 1:nb, i in 1:na
+            (cells !== nothing && cells.known[i, j]) && continue
+            push!(cells_to_do, (i, j))
+        end
+        if !isempty(cells_to_do)
+            # Named distinctly from the CPU fixed-seed branch's per-chunk `param_buffer` (in
+            # `_process_continuous_map_fixed_chunk!`) so the two are never the same lexical binding —
+            # sharing a name across this branch and a `Threads.@threads` closure below would make Julia
+            # box the variable into a single `Core.Box` shared by every worker task.
+            gpu_param_buffer = copy(param_template)
+            u0_list = [copy(u0) for _ in cells_to_do]
+            p_list = [copy(map_params_from_buffer!(gpu_param_buffer, param_template, a_indices, b_indices,
+                                                   a_vals[i], b_vals[j])) for (i, j) in cells_to_do]
+            warmed = _continuous_gpu_warmup_states(sys, u0_list, p_list;
+                solver=solver, reltol=reltol, abstol=abstol, min_crossing_time=config.min_crossing_time)
+            results = _continuous_poincare_gpu_sweep(sys, warmed, p_list, ka_backend;
+                transient=points_to_drop, max_period=config.max_period, precision=config.precision,
+                reltol=reltol, abstol=abstol, min_crossing_time=config.min_crossing_time,
+                divergence_cutoff=config.divergence_cutoff)
+            for (k, (i, j)) in enumerate(cells_to_do)
+                result = results[k]
+                _record_map_detection!(periodicity, status_codes, closure_errors,
+                                       closure_candidate_periods, observed_points, closure_confidence,
+                                       i, j, result)
                 _record_map_crossing_summary!(crossing_summary, i, j, result)
-                _record_continuous_map_lyapunov!(
-                    lyapunov_storage,
-                    sys,
-                    config,
-                    p,
-                    i,
-                    j,
-                    result;
-                    solver=solver,
-                    reltol=reltol,
-                    abstol=abstol
-                )
                 cells !== nothing && (cells.known[i, j] = true)
             end
+        end
+    elseif seed_mode == :fixed
+        chunks = _balanced_index_chunks(na * nb, Threads.nthreads())
+        # Each chunk is processed by a dedicated function barrier (`_process_continuous_map_fixed_chunk!`)
+        # so every `Threads.@threads` task gets its own unboxed local `param_buffer`; see that function's
+        # docstring for why sharing a lexical `param_buffer` here previously caused a threaded data race.
+        Threads.@threads for chunk_idx in eachindex(chunks)
+            _process_continuous_map_fixed_chunk!(
+                periodicity,
+                status_codes,
+                closure_errors,
+                closure_candidate_periods,
+                observed_points,
+                closure_confidence,
+                crossing_summary,
+                lyapunov_storage,
+                multistability_storage,
+                sys,
+                config,
+                param_template,
+                a_indices,
+                b_indices,
+                a_vals,
+                b_vals,
+                na,
+                u0,
+                points_to_drop,
+                solver,
+                reltol,
+                abstol,
+                multistability_enabled,
+                multistability_seeds,
+                cells,
+                chunks[chunk_idx]
+            )
         end
     else
         tile_sizes = _map_effective_tile_sizes(config, na, nb, seed_mode)
@@ -1222,9 +1448,9 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
 
     param_names = (sys.param_names[config.a_index], sys.param_names[config.b_index])
     timestamp = now()
-    lyapunov = _map_lyapunov_result(lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp)
+    lyapunov = _map_lyapunov_result(lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp; compute_backend=compute_backend_used)
     result = BifurcationMapResult(a_vals, b_vals, periodicity, config.max_period,
-                                  sys.name, param_names, timestamp, lyapunov)
+                                  sys.name, param_names, timestamp; lyapunov=lyapunov, compute_backend=compute_backend_used)
     diagnostics = _map_neighbor_seed_diagnostics(
         config;
         full_transient=points_to_drop,
@@ -1235,6 +1461,8 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
         tile_count=seed_mode == :fixed ? 0 : _map_tile_count(config, na, nb, seed_mode),
         tile_diagnostics=tile_diagnostics
     )
+    diagnostics["computeBackend"] = String(compute_backend_used)
+    ka_backend === nothing || _record_continuous_gpu_provenance!(diagnostics, config)
     diagnostics["status"] = _map_classification_diagnostics(
         status_codes,
         closure_errors,
@@ -1278,38 +1506,56 @@ end
 
 """
     bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
-                    initial_point=nothing) -> BifurcationMapResult
+                    initial_point=nothing, backend=CPUBackend()) -> BifurcationMapResult
 
 Generate a 2D bifurcation map by sweeping two parameters simultaneously.
 For each (a, b) grid point, the map is iterated from `initial_point` and the
 periodicity of the resulting attractor is determined.
+
+`backend` optionally runs the fixed-seed sweep (`reuse_neighbor_seeds=false`, no switching events, no
+`multistability_initial_points`, no linked parameter indices) on a GPU; see [`ComputeBackend`](@ref).
+The result's `compute_backend` field records what actually ran (`:cpu` unless a GPU was used).
 """
 function bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
-                         initial_point::Union{Nothing, AbstractVector}=nothing)
-    result, _ = _bifurcation_map(sys, config; initial_point=initial_point)
+                         initial_point::Union{Nothing, AbstractVector}=nothing,
+                         backend::ComputeBackend=CPUBackend())
+    result, _ = _bifurcation_map(sys, config; initial_point=initial_point, backend=backend)
     return result
 end
 
 """
     bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
-                    initial_point=nothing, solver=Tsit5(), reltol=1e-8, abstol=1e-8)
-                    -> BifurcationMapResult
+                    initial_point=nothing, solver=Tsit5(), reltol=1e-8, abstol=1e-8,
+                    backend=CPUBackend()) -> BifurcationMapResult
 
 Generate a 2D bifurcation map for a continuous-time system by sweeping two parameters
 and detecting the periodicity of the resulting Poincaré map orbit.
+
+`backend` optionally runs the fixed-seed sweep on a GPU via DiffEqGPU's `EnsembleGPUKernel` — the
+*same* adaptive Poincaré-return method (GPU `Tsit5`, directional section `ContinuousCallback`,
+Float64 closure-based period detection), distributed over an ensemble of independent per-cell
+trajectories. Eligibility: `reuse_neighbor_seeds=false`, no switching events, no
+`multistability_initial_points`, no linked parameter indices, Lyapunov diagnostics disabled, the
+system carries a GPU out-of-place RHS (built-in continuous systems do), and `precision` is no tighter
+than the GPU section-crossing localization floor. `AutoBackend()` runs on the GPU when available and
+falls back to the CPU otherwise; an explicit `GPUBackend` on an ineligible call raises a clear
+`ArgumentError`. The result's `compute_backend` field records what actually ran. See
+[`ComputeBackend`](@ref) and "Optional GPU acceleration" in `docs/julia-package.md`.
 """
 function bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
                          initial_point::Union{Nothing, AbstractVector}=nothing,
                          solver=Tsit5(),
                          reltol::Float64=1e-8,
-                         abstol::Float64=1e-8)
+                         abstol::Float64=1e-8,
+                         backend::ComputeBackend=CPUBackend())
     result, _ = _bifurcation_map(
         sys,
         config;
         initial_point=initial_point,
         solver=solver,
         reltol=reltol,
-        abstol=abstol
+        abstol=abstol,
+        backend=backend
     )
     return result
 end

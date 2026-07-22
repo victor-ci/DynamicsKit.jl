@@ -25,6 +25,8 @@ using Setfield
 using Accessors
 using UUIDs
 using Random
+using KernelAbstractions
+using DiffEqGPU
 
 # Type system
 include("systems/types.jl")
@@ -47,6 +49,7 @@ include("utils/coercion.jl")               # value coercion + JSON-plain helpers
 # Analysis
 include("analysis/parameter_mapping.jl")   # shared param-vector mapping (before sweeps)
 include("analysis/solvers.jl")             # public ODE solver selection
+include("analysis/compute_backend.jl")     # optional GPU backend selection (before the sweeps that accept it)
 include("analysis/brute_force.jl")
 include("analysis/lyapunov.jl")
 include("analysis/lyapunov_spectrum.jl")
@@ -98,6 +101,11 @@ export map_params_from_template, map_params_from_buffer!, build_map_params
 
 # Exports — sweep cache hook: in/out per-cell grids
 export MapCellGrid, LyapunovCellGrid, BasinsCellGrid
+
+# Exports — optional GPU compute backend selection (bifurcation_map / lyapunov_field / basins_of_attraction)
+export ComputeBackend, CPUBackend, AutoBackend, GPUBackend
+export cpu_backend, auto_backend, gpu_backend, gpu_vendor
+export gpu_backend_available, available_gpu_backends
 
 # Exports — analysis kernels. The orbit-sampling, period-detection and Lyapunov-estimation
 # kernels are public for scripted analysis. The 2D-map kernel (`bifurcation_map_kernel`) returns

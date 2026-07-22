@@ -1,11 +1,24 @@
+# Named map-status codes: the single compile-time source of truth for this code space. Every literal
+# comparison against a map-status code (`_gpu_map_status_code`, `_map_status_code_from_state_code`, the
+# Dict below) is built from these constants instead of repeating bare integers, so the code space can
+# only drift by editing this block — the isbits `Int`/`@inline` hot paths reachable from `@kernel`
+# bodies (`gpu_kernels.jl`) are unaffected: these are still plain `Int` constants, not `Symbol`s.
+const _MAP_STATUS_UNKNOWN = 0
+const _MAP_STATUS_PERIODIC = 1
+const _MAP_STATUS_APERIODIC_OR_HIGH_PERIOD = 2
+const _MAP_STATUS_DIVERGED = 3
+const _MAP_STATUS_INSUFFICIENT_CROSSINGS = 4
+const _MAP_STATUS_INTEGRATION_FAILED = 5
+const _MAP_STATUS_INVALID_STATE = 6
+
 const _MAP_STATUS_CODE_BY_SYMBOL = Dict{Symbol, Int}(
-    :unknown => 0,
-    :periodic => 1,
-    :aperiodic_or_high_period => 2,
-    :diverged => 3,
-    :insufficient_crossings => 4,
-    :integration_failed => 5,
-    :invalid_state => 6
+    :unknown => _MAP_STATUS_UNKNOWN,
+    :periodic => _MAP_STATUS_PERIODIC,
+    :aperiodic_or_high_period => _MAP_STATUS_APERIODIC_OR_HIGH_PERIOD,
+    :diverged => _MAP_STATUS_DIVERGED,
+    :insufficient_crossings => _MAP_STATUS_INSUFFICIENT_CROSSINGS,
+    :integration_failed => _MAP_STATUS_INTEGRATION_FAILED,
+    :invalid_state => _MAP_STATUS_INVALID_STATE
 )
 
 const _MAP_STATUS_LABEL_BY_CODE = Dict{Int, String}(
@@ -14,6 +27,22 @@ const _MAP_STATUS_LABEL_BY_CODE = Dict{Int, String}(
 
 _map_status_code(status::Symbol) = get(_MAP_STATUS_CODE_BY_SYMBOL, status, _MAP_STATUS_CODE_BY_SYMBOL[:unknown])
 _map_status_label(code::Integer) = get(_MAP_STATUS_LABEL_BY_CODE, Int(code), "unknown")
+_map_status_symbol(code::Integer) = Symbol(_map_status_label(code))
+
+# Dict-free mirror of `_map_status_code`, kept in lockstep with `_MAP_STATUS_CODE_BY_SYMBOL` (both are
+# built from the same named constants above) and asserted equal to it by test for every known status.
+# `Symbol` is not `isbits` and must not flow through GPU-kernel-compiled code (see `gpu_kernels.jl`), so
+# the numeric cores below never build one — this conversion is only needed at a CPU host boundary that
+# still has a `Symbol` status in hand.
+@inline function _gpu_map_status_code(status::Symbol)
+    status === :periodic && return _MAP_STATUS_PERIODIC
+    status === :aperiodic_or_high_period && return _MAP_STATUS_APERIODIC_OR_HIGH_PERIOD
+    status === :diverged && return _MAP_STATUS_DIVERGED
+    status === :insufficient_crossings && return _MAP_STATUS_INSUFFICIENT_CROSSINGS
+    status === :integration_failed && return _MAP_STATUS_INTEGRATION_FAILED
+    status === :invalid_state && return _MAP_STATUS_INVALID_STATE
+    return _MAP_STATUS_UNKNOWN
+end
 
 function _map_seed_semantics_label(seed_mode::Symbol)
     seed_mode == :fixed && return "fixed_initial_condition"
@@ -22,9 +51,42 @@ function _map_seed_semantics_label(seed_mode::Symbol)
     return "unknown"
 end
 
+# GPU-safe (isbits) state-status codes: the *only* representation the numeric cores below use
+# internally for "is this state still usable" (as opposed to the public per-cell map-status codes in
+# `_MAP_STATUS_CODE_BY_SYMBOL`, which have a different, larger code space). `Symbol` is not `isbits`
+# (see `isbits(:ok) === false`) and GPUCompiler requires device-reachable values/return types to be
+# `isbits`; even though `KernelAbstractions.CPU()` tolerates a boxed `Symbol` happily, a real GPU vendor
+# backend is not guaranteed to. Every function reachable from a `@kernel` body (`_detect_discrete_map_period_core`,
+# `_estimate_discrete_map_largest_lyapunov_core`, `_map_lyapunov_classification`, `_lyapunov_point_classification`)
+# is built on these codes end-to-end; conversion to/from the public `Symbol` statuses happens only at
+# the CPU host-wrapper boundary (`_detect_discrete_map_period`, `_estimate_discrete_map_largest_lyapunov`, …).
+const _STATE_CODE_OK = 0
+const _STATE_CODE_DIVERGED = 1
+const _STATE_CODE_INVALID = 2
+
+@inline function _map_state_status_code(state, cutoff::Float64)
+    !all(isfinite, state) && return _STATE_CODE_INVALID
+    return isfinite(cutoff) && any(abs(value) > cutoff for value in state) ? _STATE_CODE_DIVERGED : _STATE_CODE_OK
+end
+
+# Translate the 3-value internal state code into the map-status code space (`_MAP_STATUS_CODE_BY_SYMBOL`),
+# used only for a non-`:ok` state.
+@inline _map_status_code_from_state_code(state_code::Int) =
+    state_code == _STATE_CODE_DIVERGED ? _MAP_STATUS_DIVERGED : _MAP_STATUS_INVALID_STATE
+
+# Translate the 3-value internal state code into the Lyapunov estimation-status code space
+# (`_MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL`), used only for a non-`:ok` state.
+@inline _lyapunov_estimation_code_from_state_code(state_code::Int) =
+    state_code == _STATE_CODE_DIVERGED ? _LYAPUNOV_ESTIMATION_STATUS_DIVERGED : _LYAPUNOV_ESTIMATION_STATUS_INVALID_STATE
+
+# CPU-only Symbol view of `_map_state_status_code`, used by every non-GPU-reachable call site (the
+# switching-events branch of `_detect_discrete_map_period`, the continuous-ODE state-termination
+# callback, `lyapunov_spectrum.jl`, and the pure-CPU continuous Lyapunov estimator).
 function _map_state_status(state, cutoff::Float64)
-    !all(isfinite, state) && return :invalid_state
-    return isfinite(cutoff) && any(abs(value) > cutoff for value in state) ? :diverged : :ok
+    code = _map_state_status_code(state, cutoff)
+    code == _STATE_CODE_DIVERGED && return :diverged
+    code == _STATE_CODE_INVALID && return :invalid_state
+    return :ok
 end
 
 function _map_detection_confidence(min_error::Float64, threshold::Float64)
@@ -240,12 +302,33 @@ function _map_classification_diagnostics(status_codes::AbstractMatrix{<:Integer}
     )
 end
 
+const _LYAPUNOV_STATUS_UNCOMPUTED = 0
+const _LYAPUNOV_STATUS_PERIODIC = 1
+const _LYAPUNOV_STATUS_CHAOTIC_CANDIDATE = 2
+const _LYAPUNOV_STATUS_QUASIPERIODIC_NEUTRAL_CANDIDATE = 3
+const _LYAPUNOV_STATUS_UNRESOLVED = 4
+
+const _LYAPUNOV_ESTIMATION_STATUS_NOT_REQUESTED = 0
+const _LYAPUNOV_ESTIMATION_STATUS_OK = 1
+const _LYAPUNOV_ESTIMATION_STATUS_COLLAPSED = 2
+const _LYAPUNOV_ESTIMATION_STATUS_DIVERGED = 3
+const _LYAPUNOV_ESTIMATION_STATUS_INVALID_STATE = 4
+const _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_CROSSINGS = 5
+const _LYAPUNOV_ESTIMATION_STATUS_INTEGRATION_FAILED = 6
+const _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES = 7
+
+# As with `_MAP_STATUS_*` above, these named constants are the single compile-time source of truth for
+# the Lyapunov classification / estimation-status code spaces: the Dicts below, both Dict-free GPU
+# mirrors, and every classifier reachable from a `@kernel` body (`_map_lyapunov_classification` here,
+# `_lyapunov_point_classification` in `lyapunov.jl`) are built from the same constants, so the numeric
+# code space can only drift by editing this block. Still plain `Int` constants — zero overhead on the
+# isbits hot paths.
 const _MAP_LYAPUNOV_STATUS_CODE_BY_SYMBOL = Dict{Symbol, Int}(
-    :uncomputed => 0,
-    :periodic => 1,
-    :chaotic_candidate => 2,
-    :quasiperiodic_neutral_candidate => 3,
-    :unresolved => 4
+    :uncomputed => _LYAPUNOV_STATUS_UNCOMPUTED,
+    :periodic => _LYAPUNOV_STATUS_PERIODIC,
+    :chaotic_candidate => _LYAPUNOV_STATUS_CHAOTIC_CANDIDATE,
+    :quasiperiodic_neutral_candidate => _LYAPUNOV_STATUS_QUASIPERIODIC_NEUTRAL_CANDIDATE,
+    :unresolved => _LYAPUNOV_STATUS_UNRESOLVED
 )
 
 const _MAP_LYAPUNOV_STATUS_LABEL_BY_CODE = Dict{Int, String}(
@@ -253,14 +336,14 @@ const _MAP_LYAPUNOV_STATUS_LABEL_BY_CODE = Dict{Int, String}(
 )
 
 const _MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL = Dict{Symbol, Int}(
-    :not_requested => 0,
-    :ok => 1,
-    :collapsed => 2,
-    :diverged => 3,
-    :invalid_state => 4,
-    :insufficient_crossings => 5,
-    :integration_failed => 6,
-    :insufficient_samples => 7
+    :not_requested => _LYAPUNOV_ESTIMATION_STATUS_NOT_REQUESTED,
+    :ok => _LYAPUNOV_ESTIMATION_STATUS_OK,
+    :collapsed => _LYAPUNOV_ESTIMATION_STATUS_COLLAPSED,
+    :diverged => _LYAPUNOV_ESTIMATION_STATUS_DIVERGED,
+    :invalid_state => _LYAPUNOV_ESTIMATION_STATUS_INVALID_STATE,
+    :insufficient_crossings => _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_CROSSINGS,
+    :integration_failed => _LYAPUNOV_ESTIMATION_STATUS_INTEGRATION_FAILED,
+    :insufficient_samples => _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES
 )
 
 const _MAP_LYAPUNOV_ESTIMATION_STATUS_LABEL_BY_CODE = Dict{Int, String}(
@@ -274,6 +357,31 @@ _map_lyapunov_status_code(status::Symbol) = get(_MAP_LYAPUNOV_STATUS_CODE_BY_SYM
 _map_lyapunov_estimation_status_code(status::Symbol) = get(_MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL, status, _MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL[:insufficient_samples])
 _map_lyapunov_status_label(code::Integer) = get(_MAP_LYAPUNOV_STATUS_LABEL_BY_CODE, Int(code), "unresolved")
 _map_lyapunov_estimation_status_label(code::Integer) = get(_MAP_LYAPUNOV_ESTIMATION_STATUS_LABEL_BY_CODE, Int(code), "insufficient_samples")
+_map_lyapunov_status_symbol(code::Integer) = Symbol(_map_lyapunov_status_label(code))
+_map_lyapunov_estimation_status_symbol(code::Integer) = Symbol(_map_lyapunov_estimation_status_label(code))
+
+# Dict-free mirrors, kept in lockstep with the Dicts above (both built from the same named constants)
+# and asserted equal to them by test for every known status. No longer called from inside a `@kernel`
+# body (the numeric cores below emit these exact codes directly); retained as a standalone
+# Symbol->code utility.
+@inline function _gpu_map_lyapunov_status_code(status::Symbol)
+    status === :periodic && return _LYAPUNOV_STATUS_PERIODIC
+    status === :chaotic_candidate && return _LYAPUNOV_STATUS_CHAOTIC_CANDIDATE
+    status === :quasiperiodic_neutral_candidate && return _LYAPUNOV_STATUS_QUASIPERIODIC_NEUTRAL_CANDIDATE
+    status === :unresolved && return _LYAPUNOV_STATUS_UNRESOLVED
+    return _LYAPUNOV_STATUS_UNCOMPUTED
+end
+
+@inline function _gpu_map_lyapunov_estimation_status_code(status::Symbol)
+    status === :ok && return _LYAPUNOV_ESTIMATION_STATUS_OK
+    status === :collapsed && return _LYAPUNOV_ESTIMATION_STATUS_COLLAPSED
+    status === :diverged && return _LYAPUNOV_ESTIMATION_STATUS_DIVERGED
+    status === :invalid_state && return _LYAPUNOV_ESTIMATION_STATUS_INVALID_STATE
+    status === :insufficient_crossings && return _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_CROSSINGS
+    status === :integration_failed && return _LYAPUNOV_ESTIMATION_STATUS_INTEGRATION_FAILED
+    status === :insufficient_samples && return _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES
+    return _LYAPUNOV_ESTIMATION_STATUS_NOT_REQUESTED
+end
 
 function _map_lyapunov_storage(na::Int, nb::Int)
     return (
@@ -293,28 +401,53 @@ function _matrix_label_counts(codes::AbstractMatrix{<:Integer}, label_fn::Functi
     return counts
 end
 
-function _map_lyapunov_classification(detection, exponent::Float64, estimation_status::Symbol, neutral_tolerance::Float64)
-    Int(detection.period) > 0 && return :periodic
-    detection.status == :aperiodic_or_high_period || return :unresolved
-    estimation_status == :ok || estimation_status == :collapsed || return :unresolved
+"""
+Classify a Lyapunov estimate into a map-cell verdict, purely in terms of the map-status code space
+(`_MAP_STATUS_CODE_BY_SYMBOL`), the Lyapunov estimation-status code space
+(`_MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL`), and the Lyapunov classification code space
+(`_MAP_LYAPUNOV_STATUS_CODE_BY_SYMBOL`, the return value) — no `Symbol` in or out, so this is safe to
+call from inside a `@kernel` body (`gpu_kernels.jl`). CPU-only callers (`_record_map_lyapunov!`)
+convert their `Symbol` statuses to codes with `_map_status_code` / `_map_lyapunov_estimation_status_code`
+before calling this, and use the returned code directly (it already is the final `statusCodes` value).
+"""
+@inline function _map_lyapunov_classification(detection_period::Int, detection_status_code::Int,
+                                              exponent::Float64, estimation_status_code::Int,
+                                              neutral_tolerance::Float64)
+    detection_period > 0 && return _LYAPUNOV_STATUS_PERIODIC
+    detection_status_code == _MAP_STATUS_APERIODIC_OR_HIGH_PERIOD || return _LYAPUNOV_STATUS_UNRESOLVED
+    (estimation_status_code == _LYAPUNOV_ESTIMATION_STATUS_OK ||
+     estimation_status_code == _LYAPUNOV_ESTIMATION_STATUS_COLLAPSED) || return _LYAPUNOV_STATUS_UNRESOLVED
     # A collapsed trajectory pair (perturbation contracted to zero, exponent = -Inf)
     # is the extreme case of a confidently negative largest exponent: a regular,
     # strongly contracting regime that the period detector could not resolve to a
     # finite period. Classify it like any other negative exponent below rather than
     # discarding it as :unresolved on the `isfinite` check.
-    estimation_status == :collapsed && return :periodic
-    isfinite(exponent) || return :unresolved
-    exponent > neutral_tolerance && return :chaotic_candidate
-    abs(exponent) <= neutral_tolerance && return :quasiperiodic_neutral_candidate
+    estimation_status_code == _LYAPUNOV_ESTIMATION_STATUS_COLLAPSED && return _LYAPUNOV_STATUS_PERIODIC
+    isfinite(exponent) || return _LYAPUNOV_STATUS_UNRESOLVED
+    exponent > neutral_tolerance && return _LYAPUNOV_STATUS_CHAOTIC_CANDIDATE
+    abs(exponent) <= neutral_tolerance && return _LYAPUNOV_STATUS_QUASIPERIODIC_NEUTRAL_CANDIDATE
     # exponent < -neutral_tolerance: confidently contracting ⟹ regular/periodic-like
     # dynamics (period above the detector's max_period), not an unresolved cell.
-    return :periodic
+    return _LYAPUNOV_STATUS_PERIODIC
 end
 
 function _lyapunov_estimate_result(exponent::Float64, estimation_status::Symbol, sample_count::Int)
     return (
         exponent=exponent,
         estimation_status=estimation_status,
+        sample_count=sample_count
+    )
+end
+
+# GPU-safe (isbits) counterpart of `_lyapunov_estimate_result`: `estimation_status` is a code in
+# `_MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL`'s space rather than a `Symbol`. This is the shape
+# `_estimate_discrete_map_largest_lyapunov_core` returns (device-safe); the CPU host wrapper
+# `_estimate_discrete_map_largest_lyapunov` converts it back to `_lyapunov_estimate_result`'s
+# `Symbol`-based shape at the boundary.
+function _lyapunov_estimate_result_code(exponent::Float64, estimation_status_code::Int, sample_count::Int)
+    return (
+        exponent=exponent,
+        estimation_status=estimation_status_code,
         sample_count=sample_count
     )
 end
@@ -326,36 +459,43 @@ function _lyapunov_initial_direction(::Val{D}) where {D}
     return SVector{D, Float64}(ntuple(idx -> idx == 1 ? 1.0 : 0.0, D))
 end
 
-function _estimate_discrete_map_largest_lyapunov(sys::DiscreteMap,
-                                                 params::AbstractVector,
-                                                 initial_point::SVector{D, Float64},
-                                                 transient::Int,
-                                                 steps::Int,
-                                                 perturbation::Float64,
-                                                 divergence_cutoff::Float64) where {D}
-    steps > 0 || return _lyapunov_estimate_result(NaN, :insufficient_samples, 0)
+"""
+Non-allocating two-trajectory Lyapunov estimator core, parameterized on the bare map function `f`
+rather than `sys` — shared verbatim by the CPU sweep and the GPU kernel. `Dict`/`String`/`Symbol`-free
+and fully `isbits`-safe, so it is safe to call from inside a `KernelAbstractions.@kernel`; the CPU host
+wrapper `_estimate_discrete_map_largest_lyapunov` converts its integer `estimation_status` code back to
+the public `Symbol` at the boundary.
+"""
+@inline function _estimate_discrete_map_largest_lyapunov_core(f::F,
+                                                               params,
+                                                               initial_point::SVector{D, Float64},
+                                                               transient::Int,
+                                                               steps::Int,
+                                                               perturbation::Float64,
+                                                               divergence_cutoff::Float64) where {F, D}
+    steps > 0 || return _lyapunov_estimate_result_code(NaN, 7, 0)   # :insufficient_samples
 
     point = initial_point
     for _ in 1:transient
-        point = sys.f(point, params)
-        status = _map_state_status(point, divergence_cutoff)
-        status != :ok && return _lyapunov_estimate_result(NaN, status, 0)
+        point = f(point, params)
+        state_code = _map_state_status_code(point, divergence_cutoff)
+        state_code != _STATE_CODE_OK && return _lyapunov_estimate_result_code(NaN, _lyapunov_estimation_code_from_state_code(state_code), 0)
     end
 
     direction = _lyapunov_initial_direction(Val(D))
     perturbed = point + perturbation * direction
-    status = _map_state_status(perturbed, divergence_cutoff)
-    status != :ok && return _lyapunov_estimate_result(NaN, status, 0)
+    state_code = _map_state_status_code(perturbed, divergence_cutoff)
+    state_code != _STATE_CODE_OK && return _lyapunov_estimate_result_code(NaN, _lyapunov_estimation_code_from_state_code(state_code), 0)
 
     log_sum = 0.0
     sample_count = 0
     for _ in 1:steps
-        next_point = sys.f(point, params)
-        next_perturbed = sys.f(perturbed, params)
-        status = _map_state_status(next_point, divergence_cutoff)
-        status != :ok && return _lyapunov_estimate_result(_partial_lyapunov_exponent(log_sum, sample_count), status, sample_count)
-        perturbed_status = _map_state_status(next_perturbed, divergence_cutoff)
-        perturbed_status != :ok && return _lyapunov_estimate_result(_partial_lyapunov_exponent(log_sum, sample_count), perturbed_status, sample_count)
+        next_point = f(point, params)
+        next_perturbed = f(perturbed, params)
+        state_code = _map_state_status_code(next_point, divergence_cutoff)
+        state_code != _STATE_CODE_OK && return _lyapunov_estimate_result_code(_partial_lyapunov_exponent(log_sum, sample_count), _lyapunov_estimation_code_from_state_code(state_code), sample_count)
+        perturbed_state_code = _map_state_status_code(next_perturbed, divergence_cutoff)
+        perturbed_state_code != _STATE_CODE_OK && return _lyapunov_estimate_result_code(_partial_lyapunov_exponent(log_sum, sample_count), _lyapunov_estimation_code_from_state_code(perturbed_state_code), sample_count)
 
         delta = next_perturbed - next_point
         distance = norm(delta)
@@ -366,9 +506,9 @@ function _estimate_discrete_map_largest_lyapunov(sys::DiscreteMap,
         # with an unphysical large-negative term.
         collapse_floor = eps(Float64) * max(norm(next_point), 1.0)
         if !isfinite(distance)
-            return _lyapunov_estimate_result(_partial_lyapunov_exponent(log_sum, sample_count), :invalid_state, sample_count)
+            return _lyapunov_estimate_result_code(_partial_lyapunov_exponent(log_sum, sample_count), 4, sample_count)   # :invalid_state
         elseif distance <= collapse_floor
-            return _lyapunov_estimate_result(-Inf, :collapsed, sample_count + 1)
+            return _lyapunov_estimate_result_code(-Inf, 2, sample_count + 1)   # :collapsed
         end
 
         sample_count += 1
@@ -378,7 +518,18 @@ function _estimate_discrete_map_largest_lyapunov(sys::DiscreteMap,
         perturbed = point + perturbation * direction
     end
 
-    return _lyapunov_estimate_result(log_sum / sample_count, :ok, sample_count)
+    return _lyapunov_estimate_result_code(log_sum / sample_count, 1, sample_count)   # :ok
+end
+
+function _estimate_discrete_map_largest_lyapunov(sys::DiscreteMap,
+                                                 params::AbstractVector,
+                                                 initial_point::SVector{D, Float64},
+                                                 transient::Int,
+                                                 steps::Int,
+                                                 perturbation::Float64,
+                                                 divergence_cutoff::Float64) where {D}
+    core = _estimate_discrete_map_largest_lyapunov_core(sys.f, params, initial_point, transient, steps, perturbation, divergence_cutoff)
+    return _lyapunov_estimate_result(core.exponent, _map_lyapunov_estimation_status_symbol(core.estimation_status), core.sample_count)
 end
 
 function _poincare_diagnostics_status(diagnostics::AbstractDict)
@@ -546,8 +697,9 @@ function _record_map_lyapunov!(storage,
     isnothing(storage) && return nothing
     exponent = Float64(estimate.exponent)
     storage.exponents[i, j] = exponent
-    storage.status_codes[i, j] = _map_lyapunov_status_code(
-        _map_lyapunov_classification(detection, exponent, estimate.estimation_status, neutral_tolerance)
+    storage.status_codes[i, j] = _map_lyapunov_classification(
+        Int(detection.period), _map_status_code(detection.status), exponent,
+        _map_lyapunov_estimation_status_code(estimate.estimation_status), neutral_tolerance
     )
     storage.estimation_status_codes[i, j] = _map_lyapunov_estimation_status_code(estimate.estimation_status)
     storage.sample_counts[i, j] = estimate.sample_count
@@ -631,7 +783,8 @@ function _map_lyapunov_result(storage,
                               config::BifurcationMapConfig,
                               system_name::String,
                               param_names::Tuple{Symbol, Symbol},
-                              timestamp::DateTime)
+                              timestamp::DateTime;
+                              compute_backend::Symbol=:cpu)
     isnothing(storage) && return nothing
     return LyapunovFieldResult(
         a_grid,
@@ -643,7 +796,8 @@ function _map_lyapunov_result(storage,
         config.lyapunov_neutral_tolerance,
         system_name,
         param_names,
-        timestamp
+        timestamp;
+        compute_backend=compute_backend
     )
 end
 
@@ -681,9 +835,11 @@ function _map_crossing_summary_storage(na::Int, nb::Int, crossings_requested::In
         final_times=fill(NaN, na, nb),
         termination_reasons=fill(:unknown, na, nb),
         solver_retcodes=fill(:unknown, na, nb),
-        divergence_callback_activated=falses(na, nb),
-        state_callback_activated=falses(na, nb),
-        populated=falses(na, nb)
+        # Matrix{Bool}, not BitMatrix: cells are written concurrently by distinct threaded tasks, and
+        # BitMatrix packs 64 bools per word, so unrelated cells sharing a word race on read-modify-write.
+        divergence_callback_activated=fill(false, na, nb),
+        state_callback_activated=fill(false, na, nb),
+        populated=fill(false, na, nb)
     )
 end
 

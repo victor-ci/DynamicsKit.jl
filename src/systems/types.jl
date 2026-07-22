@@ -90,12 +90,12 @@ function DiscreteMap(f::F, dim::Int, param_names::Vector{Symbol}, name::String;
 end
 
 """
-    ContinuousODE{F,S} <: DynamicalSystem
+    ContinuousODE{F,S,G} <: DynamicalSystem
 
 A continuous-time ODE system `du/dt = f(u, p, t)` with a Poincaré section.
 
 # Fields
-- `f`: ODE right-hand side `(du, u, p, t) -> nothing` (in-place)
+- `f`: ODE right-hand side `(du, u, p, t) -> nothing` (in-place; the CPU integration path)
 - `dim`: Full state space dimension
 - `section`: Poincaré section definition
 - `param_names`: Names of bifurcation parameters
@@ -104,8 +104,17 @@ A continuous-time ODE system `du/dt = f(u, p, t)` with a Poincaré section.
 - `default_initial_state`: Default state used by brute-force and skeleton searches
 - `default_params`: Default parameter vector used when callers omit `params`
 - `switching_events`: Optional guard functions for nonsmooth borders/grazing events
+- `f_svector`: Optional GPU-compatible out-of-place right-hand side
+  `(u::SVector, p, t) -> SVector` (`nothing` when unavailable). This is a *native* second
+  form, not a wrapper around `f`: the in-place `f` stays the zero-overhead CPU hot-loop path,
+  while `f_svector` is what the GPU ensemble path (`EnsembleGPUKernel`) requires (out-of-place,
+  StaticArray in/out). Built-in continuous systems provide it; user/imported systems that only
+  supply `f` leave it `nothing`, which makes them GPU-ineligible (never silently downgraded).
+
+The extra `G` type parameter keeps `f_svector` concretely typed so it participates in GPU kernel
+specialization; `G === Nothing` marks a system with no GPU right-hand side.
 """
-struct ContinuousODE{F,S<:PoincareSection} <: DynamicalSystem
+struct ContinuousODE{F,S<:PoincareSection,G} <: DynamicalSystem
     f::F
     dim::Int
     section::S
@@ -115,14 +124,16 @@ struct ContinuousODE{F,S<:PoincareSection} <: DynamicalSystem
     default_initial_state::Vector{Float64}
     default_params::Vector{Float64}
     switching_events::Vector{SwitchingEvent}
+    f_svector::G
 end
 
 function ContinuousODE(f::F, dim::Int, section::S, param_names::Vector{Symbol}, name::String;
                        tspan_hint::Float64=20.0,
                        default_initial_state::AbstractVector=zeros(Float64, dim),
                        default_params::AbstractVector=Float64[],
-                       switching_events::AbstractVector{SwitchingEvent}=SwitchingEvent[]) where {F, S<:PoincareSection}
-    ContinuousODE{F,S}(
+                       switching_events::AbstractVector{SwitchingEvent}=SwitchingEvent[],
+                       f_svector::G=nothing) where {F, S<:PoincareSection, G}
+    ContinuousODE{F,S,G}(
         f,
         dim,
         section,
@@ -131,9 +142,25 @@ function ContinuousODE(f::F, dim::Int, section::S, param_names::Vector{Symbol}, 
         tspan_hint,
         collect(Float64, default_initial_state),
         collect(Float64, default_params),
-        collect(SwitchingEvent, switching_events)
+        collect(SwitchingEvent, switching_events),
+        f_svector
     )
 end
+
+"""
+    continuous_gpu_rhs(sys::ContinuousODE)
+
+The system's GPU-compatible out-of-place SVector right-hand side, or `nothing` if it has none.
+"""
+continuous_gpu_rhs(sys::ContinuousODE) = sys.f_svector
+
+"""
+    has_continuous_gpu_rhs(sys::ContinuousODE) -> Bool
+
+Whether `sys` carries a GPU-compatible out-of-place SVector right-hand side (`f_svector`), a
+precondition for GPU-accelerating its Poincaré-map sweeps.
+"""
+has_continuous_gpu_rhs(sys::ContinuousODE) = sys.f_svector !== nothing
 
 state_dim(sys::DiscreteMap) = sys.dim
 state_dim(sys::ContinuousODE) = length(sys.section.projection)
@@ -375,16 +402,23 @@ struct BasinsResult
     x_index::Int
     y_index::Int
     ic_template::Vector{Float64}
+    compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this grid
 end
 
-function BasinsResult(x_grid::Vector{Float64},
-                      y_grid::Vector{Float64},
-                      periodicity::Matrix{Int},
-                      bif_param::Float64,
-                      max_period::Int,
-                      system_name::String,
-                      timestamp::DateTime)
-    return BasinsResult(x_grid, y_grid, periodicity, bif_param, max_period, system_name, timestamp, 1, 2, Float64[])
+function BasinsResult(x_grid::AbstractVector{<:Real},
+                      y_grid::AbstractVector{<:Real},
+                      periodicity::AbstractMatrix{<:Integer},
+                      bif_param::Real,
+                      max_period::Integer,
+                      system_name::AbstractString,
+                      timestamp::DateTime,
+                      x_index::Integer=1,
+                      y_index::Integer=2,
+                      ic_template::AbstractVector{<:Real}=Float64[];
+                      compute_backend::Symbol=:cpu)
+    return BasinsResult(collect(Float64, x_grid), collect(Float64, y_grid), Matrix{Int}(periodicity),
+                        Float64(bif_param), Int(max_period), String(system_name), timestamp,
+                        Int(x_index), Int(y_index), collect(Float64, ic_template), compute_backend)
 end
 
 """
@@ -426,6 +460,22 @@ struct LyapunovFieldResult
     system_name::String
     param_names::Tuple{Symbol, Symbol}
     timestamp::DateTime
+    compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this field
+end
+
+function LyapunovFieldResult(a_grid::Vector{Float64},
+                             b_grid::Vector{Float64},
+                             exponents::Matrix{Float64},
+                             classification_status_codes::Matrix{Int},
+                             estimation_status_codes::Matrix{Int},
+                             sample_counts::Matrix{Int},
+                             neutral_tolerance::Float64,
+                             system_name::String,
+                             param_names::Tuple{Symbol, Symbol},
+                             timestamp::DateTime;
+                             compute_backend::Symbol=:cpu)
+    return LyapunovFieldResult(a_grid, b_grid, exponents, classification_status_codes, estimation_status_codes,
+                               sample_counts, neutral_tolerance, system_name, param_names, timestamp, compute_backend)
 end
 
 """
@@ -443,6 +493,7 @@ struct BifurcationMapResult
     param_names::Tuple{Symbol, Symbol}
     timestamp::DateTime
     lyapunov::Union{Nothing, LyapunovFieldResult}
+    compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this grid
 end
 
 function BifurcationMapResult(a_grid::Vector{Float64},
@@ -451,8 +502,10 @@ function BifurcationMapResult(a_grid::Vector{Float64},
                               max_period::Int,
                               system_name::String,
                               param_names::Tuple{Symbol, Symbol},
-                              timestamp::DateTime)
-    return BifurcationMapResult(a_grid, b_grid, periodicity, max_period, system_name, param_names, timestamp, nothing)
+                              timestamp::DateTime;
+                              lyapunov::Union{Nothing, LyapunovFieldResult}=nothing,
+                              compute_backend::Symbol=:cpu)
+    return BifurcationMapResult(a_grid, b_grid, periodicity, max_period, system_name, param_names, timestamp, lyapunov, compute_backend)
 end
 
 """

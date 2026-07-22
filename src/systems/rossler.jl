@@ -56,6 +56,15 @@ function rossler_oscillator(; a::Float64=0.2, b::Float64=0.2, c::Float64=5.7)
         du[3] = bp + u[3] * (u[1] - cp)
         nothing
     end
+    # Out-of-place StaticArray form of the same right-hand side for the GPU ensemble path
+    # (EnsembleGPUKernel requires out-of-place SVector RHS + StaticArray state). This is a
+    # native second form, not a wrapper: the in-place `f!` above stays the CPU hot-loop path.
+    f_oop = function(u::SVector{S, T}, p, t) where {S, T}
+        ap = p[1]
+        bp = length(p) >= 2 ? p[2] : b
+        cp = length(p) >= 3 ? p[3] : c
+        return SVector{S, T}(-u[2] - u[3], u[1] + ap * u[2], bp + u[3] * (u[1] - cp))
+    end
     section = PoincareSection(
         (u, t, integrator) -> u[2];   # y = 0
         direction = :up,
@@ -66,6 +75,7 @@ function rossler_oscillator(; a::Float64=0.2, b::Float64=0.2, c::Float64=5.7)
         f!, 3, section, [:a, :b, :c], "Rössler";
         tspan_hint = 6.5,             # one Poincaré return ≈ 2π / ω with ω ≈ 1
         default_initial_state = [1.0, 1.0, 1.0],
-        default_params = [a, b, c]
+        default_params = [a, b, c],
+        f_svector = f_oop
     )
 end

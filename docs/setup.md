@@ -6,7 +6,12 @@
 - Git.
 
 The library depends on BifurcationKit.jl, DifferentialEquations.jl, ForwardDiff.jl, StaticArrays.jl,
-JLD2.jl, FFTW.jl, Plots.jl, and supporting utility packages.
+JLD2.jl, FFTW.jl, Plots.jl, KernelAbstractions.jl, DiffEqGPU.jl, and supporting utility packages.
+KernelAbstractions.jl and DiffEqGPU.jl are CPU-capable on their own (no GPU stack of their own) — they
+provide the discrete-map GPU kernels and the continuous-ODE `EnsembleGPUKernel` sweep path respectively.
+Optional GPU *acceleration* for `bifurcation_map` / `lyapunov_field` / `basins_of_attraction`
+additionally requires loading a vendor package (e.g. `CUDA`, `AMDGPU`) as a weak dependency — see
+"Optional GPU acceleration" in `docs/julia-package.md`.
 
 ## Install package dependencies
 

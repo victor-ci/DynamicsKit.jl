@@ -39,6 +39,16 @@ function _colpitts_core!(du, u, C1, C2, R1, RL, V1, V2, L1, V3, ib, ic)
     nothing
 end
 
+"""Out-of-place StaticArray form of `_colpitts_core!` for the GPU ensemble path (native, not a wrapper)."""
+@inline function _colpitts_core_svector(u::SVector{S, T}, C1, C2, R1, RL, V1, V2, L1, V3, ib, ic) where {S, T}
+    vc1 = u[1]; vc2 = u[2]; iL = u[3]
+    return SVector{S, T}(
+        (iL - ic) / C1,
+        ((-V1 + V3 - vc2) / R1 + iL + ib) / C2,
+        (V2 - vc1 + V3 - vc2 - iL * RL) / L1,
+    )
+end
+
 """
     colpitts_simple_oscillator(; kwargs...) -> ContinuousODE
 
@@ -77,11 +87,22 @@ function colpitts_simple_oscillator(;
         _colpitts_core!(du, u, C1p, C2p, R1, RL, V1p, V2p, L1, V3, ib, ic)
     end
 
+    f_oop = function(u::SVector{Sv, Tv}, p, t) where {Sv, Tv}
+        C1p = p[1]; C2p = p[2]
+        betap = max(p[3], eps(Float64))
+        V1p = p[4]; V2p = p[5]
+        vbe = V3 - u[2]
+        ib = vbe <= VTH ? 0.0 : (vbe - VTH) / RON
+        ic = betap * ib
+        return _colpitts_core_svector(u, C1p, C2p, R1, RL, V1p, V2p, L1, V3, ib, ic)
+    end
+
     ContinuousODE(
         f!, 3, _colpitts_section(), [:C1, :C2, :beta, :V1, :V2], "Colpitts (simple)";
         tspan_hint = tspan_hint,
         default_initial_state = [0.0, 0.0, 0.0],
-        default_params = [C1, C2, beta, V1, V2]
+        default_params = [C1, C2, beta, V1, V2],
+        f_svector = f_oop
     )
 end
 
@@ -123,11 +144,22 @@ function colpitts_exponential_oscillator(;
         _colpitts_core!(du, u, C1p, C2p, R1, RL, V1p, V2p, L1, V3, ib, ic)
     end
 
+    f_oop = function(u::SVector{Sv, Tv}, p, t) where {Sv, Tv}
+        C1p = p[1]; C2p = p[2]
+        betap = max(p[3], eps(Float64))
+        V1p = p[4]; V2p = p[5]
+        vbe = V3 - u[2]
+        ic = _colpitts_collector_current(vbe, IS, VT)
+        ib = ic / betap
+        return _colpitts_core_svector(u, C1p, C2p, R1, RL, V1p, V2p, L1, V3, ib, ic)
+    end
+
     ContinuousODE(
         f!, 3, _colpitts_section(), [:C1, :C2, :beta, :V1, :V2], "Colpitts (exponential)";
         tspan_hint = tspan_hint,
         default_initial_state = [0.0, 0.0, 0.0],
-        default_params = [C1, C2, beta, V1, V2]
+        default_params = [C1, C2, beta, V1, V2],
+        f_svector = f_oop
     )
 end
 
@@ -174,10 +206,21 @@ function colpitts_dynamic_beta_oscillator(;
         _colpitts_core!(du, u, C1p, C2p, R1, RL, V1p, V2p, L1, V3, ib, ic)
     end
 
+    f_oop = function(u::SVector{Sv, Tv}, p, t) where {Sv, Tv}
+        C1p = p[1]; C2p = p[2]
+        V1p = p[3]; V2p = p[4]
+        vbe = V3 - u[2]
+        ic = _colpitts_collector_current(vbe, IS, VT)
+        beta_dyn = ic <= 0 ? 0.0 : max(beta_floor, _colpitts_dynamic_beta(ic, beta_a, beta_b, beta_c))
+        ib = ic <= 0 ? 0.0 : ic / beta_dyn
+        return _colpitts_core_svector(u, C1p, C2p, R1, RL, V1p, V2p, L1, V3, ib, ic)
+    end
+
     ContinuousODE(
         f!, 3, _colpitts_section(), [:C1, :C2, :V1, :V2], "Colpitts (dynamic beta)";
         tspan_hint = tspan_hint,
         default_initial_state = [0.0, 0.0, 0.0],
-        default_params = [C1, C2, V1, V2]
+        default_params = [C1, C2, V1, V2],
+        f_svector = f_oop
     )
 end

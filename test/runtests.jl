@@ -33,6 +33,9 @@ const ALL_TEST_FILES = [
     "test_basins_map_refine.jl",
     "test_robust_chaos.jl",
     "test_switching_map.jl",
+    "test_gpu_backend.jl",
+    "test_gpu_continuous.jl",
+    "test_gpu_extensions.jl",
 ]
 
 const TEST_TARGETS = Dict(
@@ -76,6 +79,13 @@ const TEST_TARGETS = Dict(
     "robust_chaos" => ["test_robust_chaos.jl"],
     "switching-map" => ["test_switching_map.jl"],
     "switching_map" => ["test_switching_map.jl"],
+    "gpu-backend" => ["test_gpu_backend.jl"],
+    "gpu_backend" => ["test_gpu_backend.jl"],
+    "gpu-continuous" => ["test_gpu_continuous.jl"],
+    "gpu_continuous" => ["test_gpu_continuous.jl"],
+    "gpu-extensions" => ["test_gpu_extensions.jl"],
+    "gpu_extensions" => ["test_gpu_extensions.jl"],
+    "gpu" => ["test_gpu_backend.jl", "test_gpu_continuous.jl", "test_gpu_extensions.jl"],
 )
 
 function _selected_test_files(args)

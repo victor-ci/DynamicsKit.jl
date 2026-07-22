@@ -905,6 +905,7 @@ function _serialize_robust_chaos_basins(result::BasinsResult)
         "xIndex" => result.x_index,
         "yIndex" => result.y_index,
         "icTemplate" => copy(result.ic_template),
+        "computeBackend" => String(result.compute_backend),
     )
 end
 
@@ -939,7 +940,8 @@ function _deserialize_robust_chaos_basins(data::AbstractDict)
         _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
         _as_int(get(data, "xIndex", 1), 1),
         _as_int(get(data, "yIndex", 2), 2),
-        Float64[_as_float(value) for value in get(data, "icTemplate", Any[])],
+        Float64[_as_float(value) for value in get(data, "icTemplate", Any[])];
+        compute_backend=_compute_backend_symbol(_as_string(get(data, "computeBackend", "cpu"), "cpu")),
     )
 end
 
