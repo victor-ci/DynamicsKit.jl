@@ -1131,6 +1131,7 @@ end
 
 const _REGIME_BOUNDARY_FORMAT = "regime-boundary-v1"
 const _TOLERANCE_MAP_FORMAT = "tolerance-map-v1"
+const _MODE_SEQUENCE_ALIGNMENT_FORMAT = "mode-sequence-alignment-v1"
 
 # Special-float aware matrix (de)serialization: unlike the reachability helpers, margin fields
 # distinguish Inf (no boundary on this line) from NaN (invalid cell), so non-finite values are
@@ -1308,6 +1309,183 @@ function _deserialize_tolerance_map_result(data::AbstractDict)::ToleranceMapResu
     )
 end
 
+function _serialize_mode_sequence(sequence::ModeSequence)
+    return Dict{String, Any}(
+        "parameterName" => String(sequence.parameter_name),
+        "parameterValues" => copy(sequence.parameter_values),
+        "modes" => copy(sequence.modes),
+        "source" => sequence.source,
+        "weights" => copy(sequence.weights),
+    )
+end
+
+function _deserialize_mode_sequence(data)
+    dict = _jsonish_dict(data)
+    parameter_values =
+        Float64[_as_float(value) for value in get(dict, "parameterValues", Any[])]
+    weights = if !haskey(dict, "weights")
+        ones(length(parameter_values))
+    else
+        raw = get(dict, "weights", nothing)
+        raw isa AbstractVector || throw(ArgumentError(
+            "Serialized mode-sequence weights must be an array when present."))
+        Float64[_as_float(value) for value in raw]
+    end
+    return ModeSequence(
+        Symbol(_as_string(get(dict, "parameterName", "parameter"), "parameter")),
+        parameter_values,
+        String[_as_string(value, "") for value in get(dict, "modes", Any[])];
+        source=_as_string(get(dict, "source", "Experiment"), "Experiment"),
+        weights,
+    )
+end
+
+function _serialize_mode_cross_section(cross_section::OperatingMapCrossSection)
+    return Dict{String, Any}(
+        "sequence" => _serialize_mode_sequence(cross_section.sequence),
+        "fixedParameterName" => String(cross_section.fixed_parameter_name),
+        "requestedFixedValue" => cross_section.requested_fixed_value,
+        "selectedFixedValue" => cross_section.selected_fixed_value,
+        "fixedGridIndex" => cross_section.fixed_grid_index,
+        "systemName" => cross_section.system_name,
+        "statusEvidence" => cross_section.status_evidence,
+    )
+end
+
+function _deserialize_mode_cross_section(data)
+    dict = _jsonish_dict(data)
+    return OperatingMapCrossSection(
+        _deserialize_mode_sequence(get(dict, "sequence", Dict{String, Any}())),
+        Symbol(_as_string(get(dict, "fixedParameterName", "fixed"), "fixed")),
+        _as_float(get(dict, "requestedFixedValue", 0.0), 0.0),
+        _as_float(get(dict, "selectedFixedValue", 0.0), 0.0),
+        _as_int(get(dict, "fixedGridIndex", 0), 0),
+        _as_string(get(dict, "systemName", ""), ""),
+        _as_bool(get(dict, "statusEvidence", false), false),
+    )
+end
+
+function _serialize_mode_transition(transition::ModeTransition)
+    return Dict{String, Any}(
+        "leftParameter" => transition.left_parameter,
+        "rightParameter" => transition.right_parameter,
+        "location" => transition.location,
+        "fromMode" => transition.from_mode,
+        "toMode" => transition.to_mode,
+    )
+end
+
+function _deserialize_mode_transition(data)
+    dict = _jsonish_dict(data)
+    return ModeTransition(
+        _as_float(get(dict, "leftParameter", 0.0), 0.0),
+        _as_float(get(dict, "rightParameter", 0.0), 0.0),
+        _as_float(get(dict, "location", 0.0), 0.0),
+        _as_string(get(dict, "fromMode", ""), ""),
+        _as_string(get(dict, "toMode", ""), ""),
+    )
+end
+
+function _optional_float(value)
+    value === nothing && return nothing
+    return _as_float(value)
+end
+
+function _serialize_mode_sequence_alignment(result::ModeSequenceAlignment)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _MODE_SEQUENCE_ALIGNMENT_FORMAT,
+        "experimental" => _serialize_mode_sequence(result.experimental),
+        "predicted" => _serialize_mode_cross_section(result.predicted),
+        "alignedParameterValues" => copy(result.aligned_parameter_values),
+        "predictedModes" => copy(result.predicted_modes),
+        "observationStatuses" => String.(result.observation_statuses),
+        "agreementScore" => result.agreement_score,
+        "coverage" => result.coverage,
+        "overallScore" => result.overall_score,
+        "transitionComparisons" => [
+            Dict{String, Any}(
+                "observed" => _serialize_mode_transition(comparison.observed),
+                "predicted" => comparison.predicted === nothing ? nothing :
+                    _serialize_mode_transition(comparison.predicted),
+                "status" => String(comparison.status),
+                "distance" => comparison.distance,
+            )
+            for comparison in result.transition_comparisons
+        ],
+        "unexpectedTransitions" => _serialize_mode_transition.(result.unexpected_transitions),
+        "transitionPrecision" => result.transition_precision,
+        "transitionRecall" => result.transition_recall,
+        "transitionF1" => result.transition_f1,
+        "config" => Dict{String, Any}(
+            "experimentalScale" => result.config.experimental_scale,
+            "experimentalOffset" => result.config.experimental_offset,
+            "transitionTolerance" => result.config.transition_tolerance,
+            "modeAliases" => copy(result.config.mode_aliases),
+            "unresolvedModes" => copy(result.config.unresolved_modes),
+        ),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_mode_sequence_alignment(raw)::ModeSequenceAlignment
+    data = _jsonish_dict(raw)
+    format = _as_string(get(data, "format", ""), "")
+    format == _MODE_SEQUENCE_ALIGNMENT_FORMAT || throw(ArgumentError(
+        "Unsupported mode-sequence alignment format '$format'; expected '$(_MODE_SEQUENCE_ALIGNMENT_FORMAT)'."))
+    config_data = _jsonish_dict(get(data, "config", Dict{String, Any}()))
+    aliases = Dict{String, String}(
+        String(key) => _as_string(value, "")
+        for (key, value) in _jsonish_dict(get(config_data, "modeAliases", Dict{String, Any}()))
+    )
+    config = ModeAssimilationConfig(
+        experimental_scale=_as_float(get(config_data, "experimentalScale", 1.0), 1.0),
+        experimental_offset=_as_float(get(config_data, "experimentalOffset", 0.0), 0.0),
+        transition_tolerance=_as_float(get(config_data, "transitionTolerance", 0.0), 0.0),
+        mode_aliases=aliases,
+        unresolved_modes=String[
+            _as_string(value, "") for value in
+            get(config_data, "unresolvedModes", Any[])
+        ],
+    )
+    comparisons = ModeTransitionComparison[]
+    for raw in get(data, "transitionComparisons", Any[])
+        comparison = _jsonish_dict(raw)
+        predicted_raw = get(comparison, "predicted", nothing)
+        push!(comparisons, ModeTransitionComparison(
+            _deserialize_mode_transition(get(comparison, "observed", Dict{String, Any}())),
+            predicted_raw === nothing ? nothing : _deserialize_mode_transition(predicted_raw),
+            Symbol(_as_string(get(comparison, "status", "missing"), "missing")),
+            _optional_float(get(comparison, "distance", nothing)),
+        ))
+    end
+    return ModeSequenceAlignment(
+        _deserialize_mode_sequence(get(data, "experimental", Dict{String, Any}())),
+        _deserialize_mode_cross_section(get(data, "predicted", Dict{String, Any}())),
+        Float64[_as_float(value) for value in get(data, "alignedParameterValues", Any[])],
+        Union{Nothing, String}[
+            value === nothing ? nothing : _as_string(value, "")
+            for value in get(data, "predictedModes", Any[])
+        ],
+        Symbol[
+            Symbol(_as_string(value, "unknown"))
+            for value in get(data, "observationStatuses", Any[])
+        ],
+        _optional_float(get(data, "agreementScore", nothing)),
+        _as_float(get(data, "coverage", 0.0), 0.0),
+        _as_float(get(data, "overallScore", 0.0), 0.0),
+        comparisons,
+        ModeTransition[
+            _deserialize_mode_transition(value)
+            for value in get(data, "unexpectedTransitions", Any[])
+        ],
+        _optional_float(get(data, "transitionPrecision", nothing)),
+        _optional_float(get(data, "transitionRecall", nothing)),
+        _optional_float(get(data, "transitionF1", nothing)),
+        config,
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+    )
+end
+
 # --- Public serialization API ---
 # The JSON-plain wire format for the library's public result types; external persistence layers
 # build on these. The per-field sub-helpers above stay private — only these entry points are public.
@@ -1347,6 +1525,10 @@ const deserialize_regime_boundary_result = _deserialize_regime_boundary_result
 const serialize_tolerance_map_result = _serialize_tolerance_map_result
 """    deserialize_tolerance_map_result(data::AbstractDict) -> ToleranceMapResult"""
 const deserialize_tolerance_map_result = _deserialize_tolerance_map_result
+"""    serialize_mode_sequence_alignment(result::ModeSequenceAlignment) -> Dict — versioned JSON-plain mode-assimilation result."""
+const serialize_mode_sequence_alignment = _serialize_mode_sequence_alignment
+"""    deserialize_mode_sequence_alignment(data::AbstractDict) -> ModeSequenceAlignment"""
+const deserialize_mode_sequence_alignment = _deserialize_mode_sequence_alignment
 """    serialize_map_normal_form(normal_form::MapNormalForm) -> Dict — versioned JSON-plain form."""
 const serialize_map_normal_form = _serialize_map_normal_form
 """    deserialize_map_normal_form(data::AbstractDict) -> MapNormalForm"""

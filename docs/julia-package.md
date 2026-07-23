@@ -593,6 +593,43 @@ tolerance_regime_summary(tr)    # (n_regimes, n_effective, mean_nominal_probabil
 
 Regime probabilities + unknown + out-of-domain partition 1 (never renormalized). Both tolerances zero ⇒ deterministic exact collapse (probability `1`, entropy `0`, CI `[1, 1]`, `n_effective = 0`, no RNG). Each cell uses an independent `Xoshiro` stream seeded by a stable `UInt64` mix of `(seed, i, j)`, so `threaded=false` and `threaded=true` give bitwise-identical results regardless of thread count. This is propagation through a finite classified-map surrogate, not model reruns or a tolerance proof. Serialize with `serialize_tolerance_map_result` / `deserialize_tolerance_map_result` (format `"tolerance-map-v1"`).
 
+## Experimental mode-sequence assimilation
+
+`load_mode_sequence_csv` reads measured operating modes along one swept parameter from a strict CSV contract. The default required columns are `parameter` and `mode`; an optional `weight` column supplies positive observation weights. Values must be finite and strictly increasing. Common labels are compared semantically (`P1`, `period 1`, and `1` are equivalent; `chaos`, `aperiodic`, and `UPI-*` share the aperiodic class) while the original labels remain available for plots.
+
+```csv
+parameter,mode,weight
+0.05,P1,1
+0.20,period 1,1
+0.35,UPI-1,0.5
+```
+
+Extract a route from a computed operating map and assimilate the measurements:
+
+```julia
+measured = load_mode_sequence_csv("hardware_modes.csv";
+    parameter_name=:a, source="Hardware")
+
+route = operating_map_cross_section(map_result;
+    varying_parameter=:a,
+    fixed_value=0.07,
+    status_codes=map_status_codes)
+
+alignment = assimilate_mode_sequence(measured, route;
+    config=ModeAssimilationConfig(
+        experimental_scale=1.0,
+        experimental_offset=0.0,
+        transition_tolerance=0.005,
+    ))
+
+mode_assimilation_summary(alignment)
+plot_mode_sequence_alignment(alignment)
+```
+
+The affine map `aligned = experimental_scale * measured + experimental_offset` handles unit conversion and calibrated axis offsets without rewriting the source data. Each observation is reported as matched, mismatched, unresolved prediction, or outside coverage. `agreement_score` uses only comparable observation weight, `coverage` reports the comparable fraction, and `overall_score` conservatively divides matched weight by all uploaded weight.
+
+Mode changes are interval-censored between adjacent measurements. A transition matches only when a computed transition has the same ordered mode pair and falls inside the measured interval expanded by `transition_tolerance`; matching is one-to-one. The result separately reports transition precision, recall, F1, missing measured transitions, and unexpected computed transitions. Interfaces involving unresolved computed modes are excluded rather than treated as physical transitions. `serialize_mode_sequence_alignment` / `deserialize_mode_sequence_alignment` preserve the complete versioned result (`"mode-sequence-alignment-v1"`).
+
 ## Switching-event diagnostics
 
 `switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.

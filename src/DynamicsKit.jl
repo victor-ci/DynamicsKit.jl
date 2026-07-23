@@ -27,6 +27,7 @@ using UUIDs
 using Random
 using KernelAbstractions
 using DiffEqGPU
+using CSV
 
 # Type system
 include("systems/types.jl")
@@ -70,6 +71,7 @@ include("analysis/contract_accessors.jl")   # publish result/diagnostics accesso
 include("analysis/branch_families.jl")      # conservative orbit-geometry family inference
 include("analysis/branch_reachability.jl")  # multistability-aware continuation (basin reachability)
 include("analysis/tolerance_fields.jl")     # parameter-robustness: regime-boundary margins + tolerance maps
+include("analysis/mode_assimilation.jl")    # experimental mode-sequence assimilation against operating-map slices
 include("analysis/robust_chaos.jl")         # robust-chaos certificate (after atlas + kernels/accessors)
 include("utils/result_serialization.jl")    # serialize library result types (atlas cache; after Atlas* types)
 
@@ -130,6 +132,9 @@ export reachability_category_counts, reachability_category_fractions, branch_rea
 export RegimeBoundaryResult, ToleranceMapResult, regime_boundary_distances, tolerance_regime_map
 export regime_boundary_summary, tolerance_regime_summary
 export AbstractTolerance, UniformTolerance, GaussianTolerance
+export ModeSequence, OperatingMapCrossSection, ModeTransition, ModeTransitionComparison, ModeSequenceAlignment
+export ModeAssimilationConfig, load_mode_sequence_csv, operating_map_cross_section
+export mode_sequence_transitions, assimilate_mode_sequence, mode_assimilation_summary
 export map_effective_settings
 export map_status_code, map_status_label
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
@@ -176,6 +181,7 @@ export serialize_robust_chaos_evidence, deserialize_robust_chaos_evidence
 export serialize_branch_reachability_result, deserialize_branch_reachability_result
 export serialize_regime_boundary_result, deserialize_regime_boundary_result
 export serialize_tolerance_map_result, deserialize_tolerance_map_result
+export serialize_mode_sequence_alignment, deserialize_mode_sequence_alignment
 export serialize_map_normal_form, deserialize_map_normal_form
 export serialize_map_special_point, deserialize_map_special_point
 export serialize_border_collision_classification, deserialize_border_collision_classification
@@ -189,6 +195,7 @@ export adaptive_map_summary
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum
 export plot_overlay_heatmap, plot_panel_grid, plot_seed_pair_composite
+export plot_mode_sequence_alignment
 
 # Exports — trace-data helpers (data behind the Plots recipes; consumed by the workbench UI layer)
 export branch_plot_traces, resolve_plot_params, branch_point_state, orbit_phase_alignment_shift
