@@ -1486,6 +1486,260 @@ function _deserialize_mode_sequence_alignment(raw)::ModeSequenceAlignment
     )
 end
 
+const _CHAOS_DESIGN_RESULT_FORMAT = "chaos-design-result-v1"
+
+function _serialize_chaos_design_variable(variable::ChaosDesignVariable)::Dict{String, Any}
+    return Dict{String, Any}(
+        "name" => String(variable.name),
+        "paramIndex" => variable.param_index,
+        "lower" => variable.lower,
+        "upper" => variable.upper,
+    )
+end
+
+function _deserialize_chaos_design_variable(data::AbstractDict)::ChaosDesignVariable
+    for key in ("name", "paramIndex", "lower", "upper")
+        haskey(data, key) || error(
+            "Serialized chaos-design variable requires field $(repr(key)).")
+    end
+    return ChaosDesignVariable(
+        Symbol(_as_string(data["name"], "")),
+        _as_int(data["paramIndex"]),
+        _as_float(data["lower"]),
+        _as_float(data["upper"]),
+    )
+end
+
+function _serialize_chaos_design_target(target::ChaosDesignTarget)::Dict{String, Any}
+    return Dict{String, Any}(
+        "minAmplitude" => target.min_amplitude,
+        "maxAmplitude" => isfinite(target.max_amplitude) ? target.max_amplitude : "Inf",
+        "minSpectralFlatness" => target.min_spectral_flatness,
+        "minRobustnessScore" => target.min_robustness_score,
+    )
+end
+
+function _deserialize_chaos_design_target(data::AbstractDict)::ChaosDesignTarget
+    for key in (
+        "minAmplitude",
+        "maxAmplitude",
+        "minSpectralFlatness",
+        "minRobustnessScore",
+    )
+        haskey(data, key) || error(
+            "Serialized chaos-design target requires field $(repr(key)).")
+    end
+    max_amplitude = data["maxAmplitude"] == "Inf" ? Inf : _as_float(data["maxAmplitude"])
+    return ChaosDesignTarget(
+        min_amplitude=_as_float(data["minAmplitude"]),
+        max_amplitude=max_amplitude,
+        min_spectral_flatness=_as_float(data["minSpectralFlatness"]),
+        min_robustness_score=_as_float(data["minRobustnessScore"]),
+    )
+end
+
+function _serialize_chaos_design_candidate(candidate::ChaosDesignCandidate)::Dict{String, Any}
+    return Dict{String, Any}(
+        "designValues" => copy(candidate.design_values),
+        "certificate" => _serialize_robust_chaos_certificate(candidate.certificate),
+        "signalStatus" => String(candidate.signal_status),
+        "amplitude" => candidate.amplitude,
+        "spectralFlatness" => candidate.spectral_flatness_value,
+        "feasible" => candidate.feasible,
+        "robustScore" => candidate.robust_score,
+        "amplitudeScore" => candidate.amplitude_score,
+        "flatnessScore" => candidate.flatness_score,
+        "objective" => candidate.objective,
+    )
+end
+
+function _deserialize_chaos_design_candidate(data::AbstractDict)::ChaosDesignCandidate
+    for key in (
+        "designValues",
+        "certificate",
+        "signalStatus",
+        "amplitude",
+        "spectralFlatness",
+        "feasible",
+        "robustScore",
+        "amplitudeScore",
+        "flatnessScore",
+        "objective",
+    )
+        haskey(data, key) || error(
+            "Serialized chaos-design candidate requires field $(repr(key)).")
+    end
+    values = Float64[_as_float(value) for value in data["designValues"]]
+    all(isfinite, values) || error(
+        "Serialized chaos-design candidate designValues must all be finite.")
+    status = Symbol(_as_string(data["signalStatus"], ""))
+    status in (:ok, :diverged, :insufficient_samples) || error(
+        "Serialized chaos-design candidate has unsupported signalStatus $(repr(status)).")
+    amplitude = isnothing(data["amplitude"]) ? nothing : _as_float(data["amplitude"])
+    flatness = isnothing(data["spectralFlatness"]) ?
+        nothing : _as_float(data["spectralFlatness"])
+    if status == :ok
+        !isnothing(amplitude) && isfinite(amplitude) && amplitude >= 0.0 || error(
+            "A resolved chaos-design signal requires a finite non-negative amplitude.")
+        !isnothing(flatness) && isfinite(flatness) && 0.0 <= flatness <= 1.0 || error(
+            "A resolved chaos-design signal requires spectralFlatness in [0, 1].")
+    elseif !isnothing(amplitude) || !isnothing(flatness)
+        error("An unresolved chaos-design signal must not carry amplitude or spectralFlatness.")
+    end
+    scores = (
+        _as_float(data["robustScore"]),
+        _as_float(data["amplitudeScore"]),
+        _as_float(data["flatnessScore"]),
+        _as_float(data["objective"]),
+    )
+    all(score -> isfinite(score) && 0.0 <= score <= 1.0, scores) || error(
+        "Serialized chaos-design candidate scores must be finite values in [0, 1].")
+    return ChaosDesignCandidate(
+        values,
+        _deserialize_robust_chaos_certificate(_jsonish_dict(data["certificate"])),
+        status,
+        amplitude,
+        flatness,
+        _as_bool(data["feasible"]),
+        scores...,
+    )
+end
+
+function _serialize_chaos_design_result(result::ChaosDesignResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _CHAOS_DESIGN_RESULT_FORMAT,
+        "systemName" => result.system_name,
+        "operatingBand" => collect(result.operating_band),
+        "operatingParamIndex" => result.operating_param_index,
+        "variables" => [
+            _serialize_chaos_design_variable(variable) for variable in result.variables
+        ],
+        "target" => _serialize_chaos_design_target(result.target),
+        "candidates" => [
+            _serialize_chaos_design_candidate(candidate) for candidate in result.candidates
+        ],
+        "nEvaluated" => result.n_evaluated,
+        "nFeasible" => result.n_feasible,
+        "budgetReached" => result.budget_reached,
+        "refinementLevelsCompleted" => result.refinement_levels_completed,
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_chaos_design_result(data::AbstractDict)::ChaosDesignResult
+    format = _as_string(get(data, "format", ""), "")
+    format == _CHAOS_DESIGN_RESULT_FORMAT || error(
+        "Unsupported chaos-design-result format $(repr(format)); expected " *
+        "$(repr(_CHAOS_DESIGN_RESULT_FORMAT)).")
+    for key in (
+        "systemName",
+        "operatingBand",
+        "operatingParamIndex",
+        "variables",
+        "target",
+        "candidates",
+        "nEvaluated",
+        "nFeasible",
+        "budgetReached",
+        "refinementLevelsCompleted",
+        "timestamp",
+    )
+        haskey(data, key) || error(
+            "Serialized chaos-design result requires field $(repr(key)).")
+    end
+
+    system_name = _as_string(data["systemName"], "")
+    isempty(strip(system_name)) && error(
+        "Serialized chaos-design result systemName must not be blank.")
+    band_raw = collect(data["operatingBand"])
+    length(band_raw) == 2 || error(
+        "Serialized chaos-design result operatingBand must contain exactly two values.")
+    band = (_as_float(band_raw[1]), _as_float(band_raw[2]))
+    all(isfinite, band) && band[1] <= band[2] || error(
+        "Serialized chaos-design result requires a finite ascending operatingBand.")
+    operating_index = _as_int(data["operatingParamIndex"])
+    operating_index >= 1 || error(
+        "Serialized chaos-design result operatingParamIndex must be >= 1.")
+    variables = ChaosDesignVariable[
+        _deserialize_chaos_design_variable(_jsonish_dict(value))
+        for value in data["variables"]
+    ]
+    1 <= length(variables) <= 3 || error(
+        "Serialized chaos-design result requires one to three variables.")
+    allunique(variable.param_index for variable in variables) || error(
+        "Serialized chaos-design result variable parameter indices must be unique.")
+    target = _deserialize_chaos_design_target(_jsonish_dict(data["target"]))
+    candidates = ChaosDesignCandidate[
+        _deserialize_chaos_design_candidate(_jsonish_dict(value))
+        for value in data["candidates"]
+    ]
+    isempty(candidates) && error(
+        "Serialized chaos-design result must contain at least one candidate.")
+
+    for candidate in candidates
+        length(candidate.design_values) == length(variables) || error(
+            "Serialized chaos-design candidate designValues length does not match variables.")
+        all(
+            (
+                candidate.design_values[idx] > variables[idx].lower ||
+                _robust_float_repr_equal(
+                    candidate.design_values[idx], variables[idx].lower)
+            ) && (
+                candidate.design_values[idx] < variables[idx].upper ||
+                _robust_float_repr_equal(
+                    candidate.design_values[idx], variables[idx].upper)
+            )
+            for idx in eachindex(variables)
+        ) || error("Serialized chaos-design candidate lies outside the design bounds.")
+        certificate = candidate.certificate
+        certificate.system_name == system_name || error(
+            "Serialized chaos-design candidate certificate system does not match systemName.")
+        certificate.param_index == operating_index &&
+            _robust_float_repr_equal(certificate.param_min, band[1]) &&
+            _robust_float_repr_equal(certificate.param_max, band[2]) || error(
+                "Serialized chaos-design candidate certificate does not match the operating band.")
+        expected = _cd_scores(
+            certificate,
+            candidate.signal_status,
+            candidate.amplitude,
+            candidate.spectral_flatness_value,
+            target,
+        )
+        candidate.feasible == expected.feasible &&
+            _robust_float_repr_equal(candidate.robust_score, expected.robust_score) &&
+            _robust_float_repr_equal(candidate.amplitude_score, expected.amplitude_score) &&
+            _robust_float_repr_equal(candidate.flatness_score, expected.flatness_score) &&
+            _robust_float_repr_equal(candidate.objective, expected.objective) || error(
+                "Serialized chaos-design candidate scores are inconsistent with its evidence.")
+    end
+
+    n_evaluated = _as_int(data["nEvaluated"])
+    n_feasible = _as_int(data["nFeasible"])
+    n_evaluated == length(candidates) || error(
+        "Serialized chaos-design result nEvaluated does not match its candidate count.")
+    n_feasible == count(candidate -> candidate.feasible, candidates) || error(
+        "Serialized chaos-design result nFeasible does not match its candidates.")
+    levels = _as_int(data["refinementLevelsCompleted"])
+    levels >= 0 || error(
+        "Serialized chaos-design result refinementLevelsCompleted must be >= 0.")
+    ranked = _cd_rank_candidates(candidates)
+    return ChaosDesignResult(
+        system_name,
+        band,
+        operating_index,
+        variables,
+        target,
+        candidates,
+        ranked,
+        first(ranked),
+        n_evaluated,
+        n_feasible,
+        _as_bool(data["budgetReached"]),
+        levels,
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
 # --- Public serialization API ---
 # The JSON-plain wire format for the library's public result types; external persistence layers
 # build on these. The per-field sub-helpers above stay private — only these entry points are public.
@@ -1513,6 +1767,10 @@ const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certifica
 const serialize_robust_chaos_evidence = _serialize_robust_chaos_evidence
 """    deserialize_robust_chaos_evidence(data::AbstractDict) -> RobustChaosEvidence"""
 const deserialize_robust_chaos_evidence = _deserialize_robust_chaos_evidence
+"""    serialize_chaos_design_result(result::ChaosDesignResult) -> Dict — versioned JSON-plain form."""
+const serialize_chaos_design_result = _serialize_chaos_design_result
+"""    deserialize_chaos_design_result(data::AbstractDict) -> ChaosDesignResult"""
+const deserialize_chaos_design_result = _deserialize_chaos_design_result
 """    serialize_branch_reachability_result(result::BranchReachabilityResult) -> Dict — versioned JSON-plain form (format "branch-reachability-v1")."""
 const serialize_branch_reachability_result = _serialize_branch_reachability_result
 """    deserialize_branch_reachability_result(data::AbstractDict) -> BranchReachabilityResult"""

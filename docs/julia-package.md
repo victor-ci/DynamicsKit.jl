@@ -209,6 +209,82 @@ that no stable orbit exists outside those limits. Use
 `serialize_robust_chaos_evidence` and `deserialize_robust_chaos_evidence` for
 the complete versioned evidence bundle.
 
+## Chaos-source inverse design
+
+`design_chaos_source` searches design-component parameter space for
+configurations that satisfy a target robust-chaos specification. Given a system,
+a `RobustChaosConfig` describing the desired operating band, bounded design
+variable ranges, and signal quality thresholds, it runs a deterministic
+coarse-to-fine Cartesian grid search. Every candidate is evaluated with
+`robust_chaos_certificate`; a representative orbit is then used to compute
+peak-to-peak amplitude and Wiener spectral flatness.
+
+```julia
+sys = vilnius_oscillator()
+lyap = LyapunovConfig(
+    param_min=0.20, param_max=0.50, param_steps=40,
+    param_index=1, fixed_params=[0.3, 30.0, 0.07],
+    transient=500, iterations=800,
+)
+atlas = AtlasConfig(
+    periods=collect(1:6),
+    brute_force=BruteForceConfig(
+        param_min=0.20, param_max=0.50, param_steps=60,
+        param_index=1, fixed_params=[0.3, 30.0, 0.07],
+        transient=500, iterations=800,
+    ),
+    continuation=ContinuationConfig(
+        p_min=0.18, p_max=0.52, param_index=1,
+        ds=0.001, dsmax=0.005,
+    ),
+)
+basins = BasinsConfig(
+    bif_param=0.35, param_index=1, fixed_params=[0.35, 30.0, 0.07],
+    x_min=-30.0, x_max=30.0, y_min=15.0, y_max=30.0,
+    x_steps=20, y_steps=20, x_index=1, y_index=3,
+    ic_template=[0.0, 0.0, 0.0], max_period=6, iterations=800,
+)
+rc_cfg = RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins)
+
+# Search the Vilnius time-scale component epsilon while certifying an a-band.
+design_cfg = ChaosDesignConfig(
+    operating_config=rc_cfg,
+    variables=[ChaosDesignVariable(:ε, 3, 0.05, 0.25)],
+    target=ChaosDesignTarget(
+        min_amplitude=20.0, max_amplitude=80.0,
+        min_spectral_flatness=0.10,
+        min_robustness_score=0.6,
+    ),
+    signal=ChaosDesignSignalConfig(state_index=1),
+    samples_per_axis=5,
+    refinement_levels=2,
+    survivors_per_level=3,
+    max_evaluations=30,
+)
+
+result = design_chaos_source(sys, design_cfg; initial_point=[0.1, 0.1, 0.0])
+result.best_candidate          # best ChaosDesignCandidate, or nothing
+result.n_feasible              # number meeting all thresholds
+result.ranked_candidates       # feasible first, then descending objective
+chaos_design_summary(result)   # plain Dict for display/logging
+```
+
+Each `ChaosDesignCandidate` holds the full `RobustChaosCertificate` summary,
+signal status (`:ok`, `:diverged`, or `:insufficient_samples`),
+peak-to-peak amplitude, spectral flatness, component scores, and a `feasible`
+flag that is true only when the certificate is `:certified`, robustness meets
+the configured floor, amplitude is in range, spectral flatness meets the floor,
+and the signal resolved without divergence.
+
+`spectral_flatness(power)` is also available directly: it computes the standard
+Wiener metric (geometric mean / arithmetic mean of non-DC power bins), returning
+values in [0, 1] with 1 indicating a perfectly flat spectrum.
+
+Serialization uses `serialize_chaos_design_result` /
+`deserialize_chaos_design_result` (versioned, plain-Dict format compatible with
+JSON serialization). Heavy evidence arrays are not stored; each candidate
+retains only its `RobustChaosCertificate` summary.
+
 ## Continuation branch
 
 Continuation traces periodic solutions with pseudo-arclength continuation.

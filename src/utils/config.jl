@@ -784,6 +784,58 @@ end
 end
 
 """
+    ChaosDesignSignalConfig
+
+Representative signal-measurement settings for `design_chaos_source`.
+Discrete maps use the transient, sample count, interval, and window fields.
+Continuous systems use `continuous`, or a documented default
+`PowerSpectrumConfig` when it is `nothing`.
+"""
+@with_kw struct ChaosDesignSignalConfig
+    state_index::Int = 1
+    discrete_transient::Int = 500
+    discrete_samples::Int = 2048
+    discrete_sample_interval::Int = 1
+    discrete_window::Symbol = :hann
+    continuous::Union{Nothing, PowerSpectrumConfig} = nothing
+    divergence_cutoff::Float64 = 1e6
+    @assert state_index >= 1 "ChaosDesignSignalConfig.state_index must be >= 1"
+    @assert discrete_transient >= 0 "ChaosDesignSignalConfig.discrete_transient must be >= 0"
+    @assert discrete_samples >= 4 "ChaosDesignSignalConfig.discrete_samples must be >= 4 for spectrum estimation"
+    @assert discrete_sample_interval >= 1 "ChaosDesignSignalConfig.discrete_sample_interval must be >= 1"
+    @assert discrete_window in (:hann, :none) "ChaosDesignSignalConfig.discrete_window must be :hann or :none"
+    @assert isfinite(divergence_cutoff) && divergence_cutoff > 0.0 "ChaosDesignSignalConfig.divergence_cutoff must be finite and > 0"
+end
+
+"""
+    ChaosDesignConfig
+
+Configuration for a deterministic bounded coarse-to-fine search over one to
+three system parameter slots. `operating_config` defines the target robust-chaos
+band and its representative basin parameter.
+"""
+@with_kw struct ChaosDesignConfig
+    operating_config::RobustChaosConfig
+    variables::Vector{ChaosDesignVariable}
+    target::ChaosDesignTarget
+    signal::ChaosDesignSignalConfig
+    samples_per_axis::Int = 5
+    refinement_levels::Int = 2
+    survivors_per_level::Int = 5
+    max_evaluations::Int = 200
+    @assert 1 <= length(variables) <= 3 "ChaosDesignConfig requires 1-3 design variables"
+    @assert allunique(v.param_index for v in variables) "ChaosDesignConfig: design variable param_index values must be distinct"
+    @assert let lya = operating_config.lyapunov
+        swept = Set{Int}(vcat([lya.param_index], lya.linked_param_indices))
+        all(!(v.param_index in swept) for v in variables)
+    end "ChaosDesignConfig: design variable param_index must not overlap the operating bifurcation parameter slot or its linked slots"
+    @assert samples_per_axis >= 2 "ChaosDesignConfig.samples_per_axis must be >= 2"
+    @assert refinement_levels >= 0 "ChaosDesignConfig.refinement_levels must be >= 0"
+    @assert survivors_per_level >= 1 "ChaosDesignConfig.survivors_per_level must be >= 1"
+    @assert max_evaluations >= 1 "ChaosDesignConfig.max_evaluations must be >= 1"
+end
+
+"""
     BranchReachabilityConfig
 
 Configuration for `branch_reachability` (multistability-aware continuation). Pairs a

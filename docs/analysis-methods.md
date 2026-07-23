@@ -19,6 +19,7 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | What is the full Lyapunov spectrum at one operating point? | Lyapunov spectrum |
 | What frequencies dominate an ODE regime? | Power spectrum |
 | What does the ODE trajectory look like in time/state space? | Phase portrait |
+| Which component parameter values produce robust chaos in a target band? | Chaos-source inverse design |
 | A branch/window needs more local detail. | Atlas preview/apply refinement or direct branch refinement |
 
 ## Brute-force bifurcation diagram
@@ -751,6 +752,46 @@ Configuration:
 | `maxiters` | ODE solver iteration cap |
 
 The implementation detrends the retained tail, applies the configured window, and computes a one-sided `rfft` power spectrum. This is currently an ODE-only workflow.
+
+## Chaos-source inverse design
+
+Function:
+
+```julia
+design_chaos_source(sys, ChaosDesignConfig(...); initial_point, kwargs...)
+```
+
+Configuration:
+
+| Field | Meaning |
+| --- | --- |
+| `operating_config` | `RobustChaosConfig` describing the desired operating band |
+| `variables` | 1–3 `ChaosDesignVariable` entries (name, param index, lower/upper bounds) |
+| `target` | `ChaosDesignTarget` (amplitude range, spectral flatness floor, robustness floor) |
+| `signal` | `ChaosDesignSignalConfig` (state index, transient/samples for maps, `PowerSpectrumConfig` for ODEs) |
+| `samples_per_axis` | Points per design-variable axis in the initial coarse grid |
+| `refinement_levels` | Number of coarse-to-fine zoom levels after the initial sweep |
+| `survivors_per_level` | Candidates carried into each refinement level |
+| `max_evaluations` | Hard budget; never exceeded |
+
+Each candidate is evaluated with `robust_chaos_certificate`; a representative orbit at
+`operating_config.basins.bif_param` is used to compute peak-to-peak amplitude and
+Wiener spectral flatness (geometric / arithmetic mean of non-DC power bins, in [0, 1]).
+
+Design variables must not overlap the operating bifurcation parameter slot or any
+linked-parameter slots. The search is fully deterministic: exact-tuple deduplication and
+lexicographic tie-breaking give reproducible rankings independent of evaluation order.
+
+A `ChaosDesignCandidate` is `feasible` only when the certificate is `:certified`,
+robustness score meets the configured floor, amplitude is in the target range, spectral
+flatness meets the floor, and the signal resolved without divergence. `design_chaos_source`
+returns a `ChaosDesignResult` with `ranked_candidates` (feasible first, then descending
+objective score), `best_candidate`, and budget/refinement statistics.
+
+`spectral_flatness(power)` is available directly for other uses. `chaos_design_summary`
+returns a plain `Dict` for display or logging. `serialize_chaos_design_result` /
+`deserialize_chaos_design_result` provide versioned round-trip serialization; heavy evidence
+arrays are not stored.
 
 ## Refinement
 

@@ -1075,6 +1075,104 @@ struct RobustChaosCertificate
     timestamp::DateTime
 end
 
+"""
+    ChaosDesignVariable
+
+One scalar design-parameter axis for `design_chaos_source`.
+"""
+struct ChaosDesignVariable
+    name::Symbol
+    param_index::Int
+    lower::Float64
+    upper::Float64
+
+    function ChaosDesignVariable(name::Symbol, param_index::Int, lower::Real, upper::Real)
+        isempty(String(name)) && throw(ArgumentError("ChaosDesignVariable.name must not be empty."))
+        param_index >= 1 || throw(ArgumentError(
+            "ChaosDesignVariable.param_index must be >= 1; got $param_index."))
+        lo = Float64(lower)
+        hi = Float64(upper)
+        isfinite(lo) && isfinite(hi) && hi > lo || throw(ArgumentError(
+            "ChaosDesignVariable requires finite bounds with upper > lower; got [$lo, $hi]."))
+        return new(name, param_index, lo, hi)
+    end
+end
+
+"""
+    ChaosDesignTarget
+
+Amplitude, spectral-flatness, and certificate-robustness requirements applied to
+every design candidate.
+"""
+struct ChaosDesignTarget
+    min_amplitude::Float64
+    max_amplitude::Float64
+    min_spectral_flatness::Float64
+    min_robustness_score::Float64
+
+    function ChaosDesignTarget(;
+        min_amplitude::Real=0.0,
+        max_amplitude::Real=Inf,
+        min_spectral_flatness::Real=0.0,
+        min_robustness_score::Real=0.0,
+    )
+        min_amp = Float64(min_amplitude)
+        max_amp = Float64(max_amplitude)
+        flatness = Float64(min_spectral_flatness)
+        robustness = Float64(min_robustness_score)
+        isfinite(min_amp) && min_amp >= 0.0 || throw(ArgumentError(
+            "ChaosDesignTarget.min_amplitude must be finite and >= 0."))
+        (isfinite(max_amp) || max_amp == Inf) && max_amp > min_amp || throw(ArgumentError(
+            "ChaosDesignTarget.max_amplitude must be greater than min_amplitude and finite or Inf."))
+        0.0 <= flatness <= 1.0 || throw(ArgumentError(
+            "ChaosDesignTarget.min_spectral_flatness must be in [0, 1]."))
+        0.0 <= robustness <= 1.0 || throw(ArgumentError(
+            "ChaosDesignTarget.min_robustness_score must be in [0, 1]."))
+        return new(min_amp, max_amp, flatness, robustness)
+    end
+end
+
+"""
+    ChaosDesignCandidate
+
+One evaluated design-space candidate. `objective` is the product of the robust,
+amplitude, and spectral desirability scores; feasibility is reported separately
+so a near miss cannot be mistaken for a design satisfying every target.
+"""
+struct ChaosDesignCandidate
+    design_values::Vector{Float64}
+    certificate::RobustChaosCertificate
+    signal_status::Symbol
+    amplitude::Union{Nothing, Float64}
+    spectral_flatness_value::Union{Nothing, Float64}
+    feasible::Bool
+    robust_score::Float64
+    amplitude_score::Float64
+    flatness_score::Float64
+    objective::Float64
+end
+
+"""
+    ChaosDesignResult
+
+Bounded deterministic search result from `design_chaos_source`.
+"""
+struct ChaosDesignResult
+    system_name::String
+    operating_band::Tuple{Float64, Float64}
+    operating_param_index::Int
+    variables::Vector{ChaosDesignVariable}
+    target::ChaosDesignTarget
+    candidates::Vector{ChaosDesignCandidate}
+    ranked_candidates::Vector{ChaosDesignCandidate}
+    best_candidate::Union{Nothing, ChaosDesignCandidate}
+    n_evaluated::Int
+    n_feasible::Int
+    budget_reached::Bool
+    refinement_levels_completed::Int
+    timestamp::DateTime
+end
+
 const _BORDER_COLLISION_CONVENTION =
     "Feigin/Simpson/di Bernardo border-collision classification for continuous piecewise-smooth " *
     "maps. Persistence vs nonsmooth fold from sign(det(I-A_L)*det(I-A_R)); companion 2q-cycle " *
