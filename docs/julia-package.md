@@ -910,6 +910,28 @@ confidence, Lyapunov estimates, multistability, adaptive refinement, and neighbo
 metadata (e.g. `bifurcation_map` via the lower-level `DynamicsKit._bifurcation_map`, which returns
 `(result, diagnostics)`).
 
+## Adaptive bifurcation map
+
+`adaptive_bifurcation_map` runs a coarse uniform sweep then applies dyadic (quadtree) subdivision at classification boundaries under a strict total-evaluation budget:
+
+```julia
+result = adaptive_bifurcation_map(henon_map(),
+    BifurcationMapConfig(
+        a_min=0.0, a_max=1.4, a_steps=20,
+        b_min=0.0, b_max=0.35, b_steps=20,
+        a_index=1, b_index=2,
+        max_period=8, iterations=400, precision=1e-3,
+        base_params=[1.0, 0.3],
+    ),
+    AdaptiveMapConfig(total_budget=2000, max_depth=4);
+    initial_point=[0.1, 0.1],
+)
+```
+
+`coarse_config.reuse_neighbor_seeds` must be `false` (fixed-seed traversal is required for deterministic, topology-independent results).
+
+`adaptive_map_summary(result)` returns a NamedTuple with provenance including `budget_used`, `budget_exhausted`, `uninspected_cell_count`, `coarse_evaluations`, `refinement_evaluations`, `flagged_cells`, `split_cells`, `max_depth_reached`, `boundary_segment_count`, and `boundary_length`. See `docs/analysis-methods.md` for the full field reference and serialization API.
+
 ## Optional GPU acceleration
 
 `bifurcation_map`, `lyapunov_field`, and `basins_of_attraction` accept a `backend::ComputeBackend`
@@ -1127,7 +1149,7 @@ These are for callers that drive the analyses programmatically and need more tha
 
 - **Diagnostics producers** — the summary dicts the map kernel and atlas assemble, exposed so a consumer
   can build the same payloads from raw data it already holds:
-  `map_lyapunov_diagnostics`, `map_neighbor_seed_diagnostics`, `poincare_crossing_diagnostics_summary`,
+  `map_status_code`, `map_status_label`, `map_lyapunov_diagnostics`, `map_neighbor_seed_diagnostics`, `poincare_crossing_diagnostics_summary`,
   and `orbit_geometry_summary`. Each returns a JSON-plain `Dict`. (These are the library's own
   diagnostics format — the same dicts appear in the kernel's returned `diagnostics`.)
 

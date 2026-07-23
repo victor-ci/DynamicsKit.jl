@@ -1822,3 +1822,132 @@ end
 const serialize_homoclinic_branch_result = _serialize_homoclinic_branch_result
 """    deserialize_homoclinic_branch_result(data::AbstractDict) -> HomoclinicBranchResult"""
 const deserialize_homoclinic_branch_result = _deserialize_homoclinic_branch_result
+
+# ─── BifurcationMapResult serialization: bifurcation-map-v2 ────────────────────
+#
+# Periodicity matrix stored as a flat column-major vector (Julia native order).
+# Lyapunov exponents use the same flat encoding; NaN/Inf encoded as strings.
+
+function _serialize_special_float_vec(v::AbstractVector{<:Real})
+    return [_encode_special_float(x) for x in v]
+end
+
+function _deserialize_special_float_vec(raw::AbstractVector)
+    return Float64[_decode_special_float(x) for x in raw]
+end
+
+function _serialize_lyapunov_field_result_v2(r::LyapunovFieldResult)
+    na = length(r.a_grid); nb = length(r.b_grid)
+    expected_size = (na, nb)
+    for (name, values) in (
+            ("exponents", r.exponents),
+            ("classification_status_codes", r.classification_status_codes),
+            ("estimation_status_codes", r.estimation_status_codes),
+            ("sample_counts", r.sample_counts))
+        size(values) == expected_size || throw(ArgumentError(
+            "LyapunovFieldResult: $name matrix size $(size(values)) does not match " *
+            "grid lengths ($na × $nb)."))
+    end
+    return Dict{String, Any}(
+        "aGrid"                    => r.a_grid,
+        "bGrid"                    => r.b_grid,
+        "exponents"                => _serialize_special_float_vec(vec(r.exponents)),
+        "classificationStatusCodes"=> vec(Int.(r.classification_status_codes)),
+        "estimationStatusCodes"    => vec(Int.(r.estimation_status_codes)),
+        "sampleCounts"             => vec(Int.(r.sample_counts)),
+        "neutralTolerance"         => r.neutral_tolerance,
+        "systemName"               => r.system_name,
+        "paramNames"               => String.(collect(r.param_names)),
+        "timestamp"                => _serialize_timestamp(r.timestamp),
+        "computeBackend"           => String(r.compute_backend),
+    )
+end
+
+function _deserialize_lyapunov_field_result_v2(data::AbstractDict)
+    for req in ("aGrid", "bGrid", "exponents", "classificationStatusCodes",
+                "estimationStatusCodes", "sampleCounts", "neutralTolerance",
+                "systemName", "paramNames", "timestamp", "computeBackend")
+        haskey(data, req) || throw(ArgumentError(
+            "Lyapunov field result missing required field '$(req)'."))
+    end
+    pn_raw = data["paramNames"]
+    length(pn_raw) == 2 || throw(ArgumentError("Lyapunov 'paramNames' must have 2 elements."))
+    ag = Float64.(data["aGrid"])
+    bg = Float64.(data["bGrid"])
+    na = length(ag); nb = length(bg)
+    expected = na * nb
+    exp_raw  = _deserialize_special_float_vec(collect(data["exponents"]))
+    cls_raw  = Int.(data["classificationStatusCodes"])
+    est_raw  = Int.(data["estimationStatusCodes"])
+    cnt_raw  = Int.(data["sampleCounts"])
+    all(==(expected), (length(exp_raw), length(cls_raw), length(est_raw), length(cnt_raw))) ||
+        throw(ArgumentError("Lyapunov field result columns have unequal or incorrect lengths."))
+    return LyapunovFieldResult(
+        ag, bg,
+        reshape(exp_raw, na, nb),
+        reshape(cls_raw, na, nb),
+        reshape(est_raw, na, nb),
+        reshape(cnt_raw, na, nb),
+        _as_float(get(data, "neutralTolerance", 1e-3), 1e-3),
+        String(data["systemName"]),
+        (Symbol(pn_raw[1]), Symbol(pn_raw[2])),
+        _deserialize_timestamp(data["timestamp"]);
+        compute_backend=_compute_backend_symbol(String(data["computeBackend"])),
+    )
+end
+
+function _serialize_bifurcation_map_result(result::BifurcationMapResult)
+    lyapunov_data = isnothing(result.lyapunov) ? nothing :
+                    _serialize_lyapunov_field_result_v2(result.lyapunov)
+    return Dict{String, Any}(
+        "format"         => "bifurcation-map-v2",
+        "aGrid"          => result.a_grid,
+        "bGrid"          => result.b_grid,
+        "periodicity"    => vec(result.periodicity),
+        "maxPeriod"      => result.max_period,
+        "systemName"     => result.system_name,
+        "paramNames"     => String.(collect(result.param_names)),
+        "timestamp"      => _serialize_timestamp(result.timestamp),
+        "lyapunov"       => lyapunov_data,
+        "computeBackend" => String(result.compute_backend),
+    )
+end
+
+function _deserialize_bifurcation_map_result(data::AbstractDict)
+    fmt = get(data, "format", "")
+    fmt == "bifurcation-map-v2" || throw(ArgumentError(
+        "Unrecognised bifurcation map result format $(repr(fmt)); expected \"bifurcation-map-v2\"."))
+    for req in ("aGrid", "bGrid", "periodicity", "maxPeriod", "systemName",
+                "paramNames", "timestamp", "computeBackend")
+        haskey(data, req) || throw(ArgumentError(
+            "Bifurcation map result missing required field '$(req)'."))
+    end
+    pn_raw = data["paramNames"]
+    length(pn_raw) == 2 || throw(ArgumentError("BifurcationMap 'paramNames' must have 2 elements."))
+    ag = Float64.(data["aGrid"])
+    bg = Float64.(data["bGrid"])
+    na = length(ag); nb = length(bg)
+    expected = na * nb
+    per_flat = Int.(data["periodicity"])
+    length(per_flat) == expected || throw(ArgumentError(
+        "BifurcationMap 'periodicity' length $(length(per_flat)) != na*nb=$expected."))
+    all(>=(0), per_flat) || throw(ArgumentError(
+        "BifurcationMap 'periodicity' values must be >= 0."))
+    lyapunov = isnothing(get(data, "lyapunov", nothing)) ? nothing :
+               _deserialize_lyapunov_field_result_v2(data["lyapunov"])
+    return BifurcationMapResult(
+        ag, bg,
+        reshape(per_flat, na, nb),
+        Int(data["maxPeriod"]),
+        String(data["systemName"]),
+        (Symbol(pn_raw[1]), Symbol(pn_raw[2])),
+        _deserialize_timestamp(data["timestamp"]);
+        lyapunov=lyapunov,
+        compute_backend=_compute_backend_symbol(String(data["computeBackend"])),
+    )
+end
+
+"""    serialize_bifurcation_map_result(result::BifurcationMapResult) -> Dict — versioned columnar JSON-plain form."""
+const serialize_bifurcation_map_result = _serialize_bifurcation_map_result
+"""    deserialize_bifurcation_map_result(data::AbstractDict) -> BifurcationMapResult"""
+const deserialize_bifurcation_map_result = _deserialize_bifurcation_map_result

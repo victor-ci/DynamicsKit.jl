@@ -509,6 +509,136 @@ function BifurcationMapResult(a_grid::Vector{Float64},
 end
 
 """
+    AdaptiveMapSample
+
+A single uniquely-evaluated sample produced by `adaptive_bifurcation_map`.
+`depth == 0` identifies coarse-grid samples shared with the underlying
+`BifurcationMapResult`; higher depths are refinement samples.
+"""
+struct AdaptiveMapSample
+    a::Float64
+    b::Float64
+    period::Int
+    status_code::Int
+    confidence::Float64
+    depth::Int
+end
+
+"""
+    AdaptiveMapLeafCell
+
+A terminal (leaf) cell in the adaptive quadtree produced by
+`adaptive_bifurcation_map`.
+
+Sample indices reference the `samples` vector of the containing
+`AdaptiveMapResult` (1-based). `si_center` is `0` when the cell center was
+not evaluated.
+
+`terminal` records why this cell was not split further:
+- `:interior` — all four corners share the same classification; the center was
+  evaluated and agreed (si_center > 0), or the cell could not be center-screened
+  within the available budget (si_center == 0).
+- `:boundary` — corners disagree but their disagreement triggers were disabled, or
+  corners/center disagree and `max_depth` was reached.
+- `:budget_limited` — corners disagree but the remaining evaluation budget could not
+  cover all required mid-point evaluations for a split.
+"""
+struct AdaptiveMapLeafCell
+    a0::Float64; a1::Float64
+    b0::Float64; b1::Float64
+    ia0::Int; ia1::Int        # integer-lattice a coordinates
+    ib0::Int; ib1::Int        # integer-lattice b coordinates
+    depth::Int
+    si_sw::Int                # sample index — corner (a0, b0)
+    si_se::Int                # sample index — corner (a1, b0)
+    si_nw::Int                # sample index — corner (a0, b1)
+    si_ne::Int                # sample index — corner (a1, b1)
+    si_center::Int            # sample index — center, 0 if unevaluated
+    terminal::Symbol          # :interior | :boundary | :budget_limited
+    reasons::Vector{Symbol}   # refinement triggers that flagged this cell
+end
+
+"""
+    AdaptiveMapSegment
+
+A classification boundary segment produced by categorical marching-squares
+applied to the leaf cells of `adaptive_bifurcation_map`.
+
+Physical endpoints: `(a0, b0)` – `(a1, b1)`, stored in canonical order
+(`(a0, b0) <= (a1, b1)` lexicographically).
+
+`key_a` and `key_b` are the two classification keys on either side,
+each a `(status_code::Int, period::Int)` tuple in canonical order
+(`key_a <= key_b`). Period values are not interpolated.
+
+`ambiguity`:
+- `:resolved` — two-key ordinary or center-disambiguated checkerboard cell.
+- `:ambiguous` — checkerboard cell without a center evaluation; endpoints connect
+  to the physical cell center as a conservative approximation.
+- `:multi_region` — three or more distinct classifications present, or odd crossing
+  count; each crossing midpoint connects to the physical cell center.
+"""
+struct AdaptiveMapSegment
+    a0::Float64
+    b0::Float64
+    a1::Float64
+    b1::Float64
+    key_a::Tuple{Int,Int}
+    key_b::Tuple{Int,Int}
+    ambiguity::Symbol
+end
+
+"""
+    AdaptiveMapResult
+
+First-class result of `adaptive_bifurcation_map`. Contains the full set of
+uniquely-evaluated samples, all quadtree leaf cells, extracted boundary segments,
+and provenance summary.
+
+The `coarse_result` field holds the standard `BifurcationMapResult` from the
+initial uniform sweep. All `AdaptiveMapSample` entries at `depth == 0` correspond
+exactly to the coarse grid, in column-major order `(i, j)` with `i` along the
+a-axis and `j` along the b-axis.
+
+Provenance:
+- `total_budget` — requested upper bound on unique evaluations.
+- `budget_used` — actual unique evaluations (coarse + refinement); always ≤ total_budget.
+- `coarse_evaluations` — number of coarse-grid samples.
+- `refinement_evaluations` — unique refinement-only samples evaluated.
+- `budget_exhausted` — true when budget prevented at least one otherwise-eligible
+  refinement split or center-screening step; false when all triggered and
+  center-check-eligible cells were processed.
+- `uninspected_cell_count` — number of `:interior` leaf cells with `si_center == 0`
+  and `depth < max_depth_allowed`: cells that could have been center-screened but
+  were not due to budget.
+- `max_depth_reached` — deepest subdivision level actually created.
+- `max_depth_allowed` — the configured `AdaptiveMapConfig.max_depth`.
+- `flagged_cells` — cells that triggered at least one refinement criterion
+  (corner disagreement or center disagreement).
+- `split_cells` — cells that were actually split.
+"""
+struct AdaptiveMapResult
+    samples::Vector{AdaptiveMapSample}
+    leaf_cells::Vector{AdaptiveMapLeafCell}
+    boundary_segments::Vector{AdaptiveMapSegment}
+    coarse_result::BifurcationMapResult
+    total_budget::Int
+    budget_used::Int
+    coarse_evaluations::Int
+    refinement_evaluations::Int
+    budget_exhausted::Bool
+    uninspected_cell_count::Int
+    max_depth_reached::Int
+    max_depth_allowed::Int
+    flagged_cells::Int
+    split_cells::Int
+    compute_backend::Symbol
+    system_name::String
+    param_names::Tuple{Symbol,Symbol}
+    timestamp::DateTime
+end
+
+"""
     PhasePortraitResult
 
 Result of a continuous-time phase portrait integration.

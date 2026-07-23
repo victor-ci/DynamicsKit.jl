@@ -653,13 +653,83 @@ Advanced fields:
 | `lyapunov_iterations`, `lyapunov_transient` | Lyapunov sampling budgets |
 | `lyapunov_perturbation` | Perturbation size for two-trajectory estimates |
 | `lyapunov_neutral_tolerance` | Threshold for neutral/quasiperiodic candidates |
-| `adaptive_refinement_enabled` | Add sparse boundary/low-confidence refinement samples |
-| `adaptive_refinement_max_depth`, `adaptive_refinement_budget` | Adaptive refinement budget controls |
-| `adaptive_refinement_min_confidence`, `adaptive_refinement_confidence_delta` | Confidence triggers |
-
 If Lyapunov diagnostics were enabled, call `lyapunov_field(result)` to extract the co-computed `LyapunovFieldResult` without re-running the map.
 
 This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The continuous Lyapunov field stays CPU-only (coupled two-trajectory method). See "Optional GPU acceleration" in `docs/julia-package.md`.
+
+## Adaptive bifurcation map
+
+Automatically refines a coarse 2D map at classification boundaries using deterministic dyadic (quadtree) subdivision:
+
+```julia
+result = adaptive_bifurcation_map(sys, coarse_config, adaptive_config;
+                                   initial_point=[...],
+                                   backend=CPUBackend())
+```
+
+`coarse_config` is an ordinary `BifurcationMapConfig`; `adaptive_config` is an `AdaptiveMapConfig`.
+
+**`AdaptiveMapConfig` fields:**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `total_budget` | `1024` | Strict upper bound on unique parameter-point evaluations (coarse + refinement) |
+| `max_depth` | `4` | Maximum quadtree subdivision depth |
+| `refine_on_period_disagreement` | `true` | Refine when corner periods differ |
+| `refine_on_status_disagreement` | `true` | Refine when corner status codes differ |
+| `min_confidence` | `0.0` | Refine any cell whose minimum corner confidence is below this threshold (0 = disabled) |
+| `confidence_delta` | `0.0` | Refine when max–min corner confidence spread exceeds this value (0 = disabled) |
+
+At least one refinement trigger must be active.
+
+`coarse_config.reuse_neighbor_seeds` must be `false`: traversal-dependent neighbor modes would make the adaptive result depend on thread scheduling and are explicitly rejected.
+
+**Algorithm.** At max depth `D`, each coarse axis step spans `2^D` integer lattice units. Shared edge midpoints between adjacent cells have identical integer keys; deduplication is exact with no floating-point comparisons. The work queue has two phases: (A) all triggered cells are split first, (B) uniform-corner cells are centre-screened for enclosed-boundary detection. Both phases proceed in source order for deterministic output. If the budget is exhausted before all eligible work completes, the limitation is recorded explicitly in `budget_exhausted` and `uninspected_cell_count`; the algorithm never silently suppresses coverage gaps.
+
+**`AdaptiveMapResult` fields:**
+
+| Field | Meaning |
+| --- | --- |
+| `samples` | `Vector{AdaptiveMapSample}` — all unique evaluated points (coarse + refinement) |
+| `leaf_cells` | `Vector{AdaptiveMapLeafCell}` — final quadtree cells with bounds, sample indices, depth, terminal reason |
+| `boundary_segments` | `Vector{AdaptiveMapSegment}` — conservative classification boundary edges |
+| `coarse_result` | Embedded `BifurcationMapResult` from the initial uniform sweep |
+| `total_budget`, `budget_used` | Requested and actual evaluation counts (`budget_used ≤ total_budget` always) |
+| `coarse_evaluations`, `refinement_evaluations` | Budget breakdown |
+| `budget_exhausted` | `true` iff the budget prevented at least one otherwise-eligible refinement or centre-screening step |
+| `uninspected_cell_count` | Number of uniform-corner cells that could not be centre-screened due to budget |
+| `max_depth_reached`, `max_depth_allowed` | Depth provenance |
+| `flagged_cells`, `split_cells` | Refinement statistics (triggered cells, successfully split cells) |
+| `compute_backend` | Backend symbol from the coarse sweep (e.g. `:cpu`) |
+| `system_name`, `param_names`, `timestamp` | Provenance |
+
+Each `AdaptiveMapLeafCell` has `terminal` ∈ `:interior` (uniform, centre confirmed), `:boundary` (classification change present or at max depth), `:budget_limited` (could not be split due to exhausted budget).
+
+Boundary segments in `AdaptiveMapSegment` store physical endpoints `(a0,b0)-(a1,b1)` plus canonical neighbouring classification keys `(key_a, key_b)` and `ambiguity` ∈ `:resolved`, `:ambiguous`, `:multi_region`. Segments are derived by categorical marching-squares on each final leaf cell — no period value interpolation. For a standard two-classification two-crossing leaf, the two edge midpoints are connected directly (`:resolved`). For a checkerboard four-crossing leaf the cell centre determines the correct pairing (`:resolved`) or spokes are used if unavailable (`:ambiguous`). For three-or-more classification regimes, each crossing is connected to the cell centre as a spoke (`:multi_region`).
+
+**Provenance summary accessor:**
+
+```julia
+s = adaptive_map_summary(result)
+# => NamedTuple with system_name, param_names, coarse_a_steps, coarse_b_steps,
+#    total_budget, budget_used, coarse_evaluations, refinement_evaluations,
+#    budget_exhausted, uninspected_cell_count,
+#    max_depth_reached, max_depth_allowed,
+#    flagged_cells, split_cells, leaf_cell_count,
+#    boundary_segment_count, boundary_length,
+#    resolved_segments, ambiguous_segments, multi_region_segments,
+#    compute_backend
+```
+
+**Serialization:**
+
+```julia
+data = serialize_adaptive_map_result(result)       # format "adaptive-map-v2"
+result2 = deserialize_adaptive_map_result(data)    # exact round-trip
+```
+
+The adaptive-map serializer uses a columnar layout: `samples`, `leafCells`, and
+`boundarySegments` are dictionaries of flat arrays rather than row-wise records.
 
 ## Power spectrum
 

@@ -82,6 +82,7 @@ export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult,
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
 export BorderCollisionClassification, BorderCollisionPoint
 export AffineModeSpec, SwitchingCircuitDescription
+export AdaptiveMapSample, AdaptiveMapLeafCell, AdaptiveMapSegment, AdaptiveMapResult
 
 # Exports — system accessors
 export state_dim, switching_events
@@ -130,6 +131,7 @@ export RegimeBoundaryResult, ToleranceMapResult, regime_boundary_distances, tole
 export regime_boundary_summary, tolerance_regime_summary
 export AbstractTolerance, UniformTolerance, GaussianTolerance
 export map_effective_settings
+export map_status_code, map_status_label
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
 
 # Exports — scripted-analysis helpers (consumed by reproducibility scripts).
@@ -144,7 +146,7 @@ export connecting_orbit_continuation, heteroclinic_orbit_continuation, saddle_cy
 export homoclinic_orbit, homoclinic_special_point_label
 export map_normal_form, map_special_points, codim2_special_points
 export border_collision_classify, border_collision_at_cycle, border_collision_points
-export basins_of_attraction, bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
+export basins_of_attraction, bifurcation_map, adaptive_bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
 export robust_chaos_certificate, robust_chaos_evidence
@@ -155,7 +157,7 @@ export CombinedBranchResult
 export Codim2ContinuationResult
 
 # Exports — config
-export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, ConnectingOrbitConfig, BasinsConfig, BifurcationMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
+export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, ConnectingOrbitConfig, BasinsConfig, BifurcationMapConfig, AdaptiveMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
 export RobustChaosConfig
 export BranchReachabilityConfig
 export RegimeBoundaryConfig, ToleranceConfig
@@ -180,6 +182,9 @@ export serialize_border_collision_classification, deserialize_border_collision_c
 export serialize_border_collision_point, deserialize_border_collision_point
 export serialize_codim2_special_point, deserialize_codim2_special_point
 export serialize_homoclinic_branch_result, deserialize_homoclinic_branch_result
+export serialize_bifurcation_map_result, deserialize_bifurcation_map_result
+export serialize_adaptive_map_result, deserialize_adaptive_map_result
+export adaptive_map_summary
 
 # Exports — visualization
 export plot_brute_force, plot_lyapunov_diagram, plot_lyapunov_spectrum, plot_branches, plot_overlay, plot_basins, plot_bifurcation_map, plot_lyapunov_field, plot_codim2, plot_phase_portrait, plot_power_spectrum

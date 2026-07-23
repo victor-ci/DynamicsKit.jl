@@ -183,9 +183,6 @@ function _validate_direct_lyapunov_field_config(config::BifurcationMapConfig)
     isempty(config.multistability_initial_points) || throw(ArgumentError(
         "lyapunov_field does not support multistability_initial_points; use one fixed initial condition per run."
     ))
-    !config.adaptive_refinement_enabled || throw(ArgumentError(
-        "lyapunov_field does not support adaptive_refinement_enabled; rerun at higher resolution instead."
-    ))
     return nothing
 end
 

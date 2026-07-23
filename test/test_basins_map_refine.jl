@@ -536,48 +536,6 @@ end
         @test crossing["divergenceCallbackCount"] == 0
     end
 
-    @testset "Bifurcation map adaptive boundary refinement" begin
-        boundary_map = DiscreteMap(
-            (x, p) -> p[1] < 0.5 ? SVector(0.0) : SVector(-x[1]),
-            1,
-            [:a, :b],
-            "Adaptive boundary map"
-        )
-        cfg = BifurcationMapConfig(
-            a_min = 0.0, a_max = 1.0, a_steps = 1,
-            b_min = 0.0, b_max = 1.0, b_steps = 1,
-            a_index = 1, b_index = 2,
-            max_period = 2,
-            precision = 1e-10,
-            iterations = 3,
-            base_params = [0.0, 0.0],
-            adaptive_refinement_enabled = true,
-            adaptive_refinement_max_depth = 1,
-            adaptive_refinement_budget = 5
-        )
-        result, diagnostics = DynamicsKit._bifurcation_map(boundary_map, cfg; initial_point=[1.0])
-        adaptive = diagnostics["adaptiveRefinement"]
-
-        @test size(result.periodicity) == (2, 2)
-        @test result.periodicity[1, 1] == 1
-        @test result.periodicity[2, 1] == 2
-        @test adaptive["enabled"] == true
-        @test adaptive["baseCellCount"] == 1
-        @test adaptive["flaggedBaseCells"] == 1
-        @test adaptive["sampleCount"] == 5
-        @test adaptive["refinedCellCount"] >= 1
-        @test !adaptive["budgetExhausted"]
-        @test any(point -> point["a"] == 0.5 && point["period"] == 2, adaptive["points"])
-        @test any(cell -> "period" in cell["reasons"], adaptive["cells"])
-
-        @test_throws AssertionError BifurcationMapConfig(
-            a_min = 0.0, a_max = 1.0,
-            b_min = 0.0, b_max = 1.0,
-            reuse_neighbor_seeds = true,
-            adaptive_refinement_enabled = true
-        )
-    end
-
     @testset "Bifurcation map Lyapunov diagnostics" begin
         logistic_map = DiscreteMap(
             (x, p) -> SVector(p[1] * x[1] * (1.0 - x[1])),

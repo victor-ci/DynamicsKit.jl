@@ -394,11 +394,6 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
  - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation
  - `lyapunov_neutral_tolerance`: Absolute exponent threshold for neutral/quasiperiodic candidates
  - `min_crossing_time`: Ignore section crossings before this time for continuous-time maps and Lyapunov-field runs
- - `adaptive_refinement_enabled`: Refine boundary/low-confidence 2D map cells into a sparse overlay
- - `adaptive_refinement_max_depth`: Maximum recursive subdivision depth for adaptive refinement
- - `adaptive_refinement_budget`: Maximum number of extra sparse samples; `0` selects a conservative automatic budget
- - `adaptive_refinement_min_confidence`: Refine cells with any corner below this confidence; `0` disables this trigger
- - `adaptive_refinement_confidence_delta`: Refine cells whose corner confidence range exceeds this value; `0` disables this trigger
 """
 @with_kw struct BifurcationMapConfig
     a_min::Float64
@@ -427,11 +422,6 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     lyapunov_perturbation::Float64 = 1e-8
     lyapunov_neutral_tolerance::Float64 = 1e-3
     min_crossing_time::Float64 = 1e-6
-    adaptive_refinement_enabled::Bool = false
-    adaptive_refinement_max_depth::Int = 1
-    adaptive_refinement_budget::Int = 0
-    adaptive_refinement_min_confidence::Float64 = 0.0
-    adaptive_refinement_confidence_delta::Float64 = 0.0
     @assert isnothing(neighbor_transient) || neighbor_transient >= 0 "BifurcationMapConfig.neighbor_transient must be nothing or >= 0"
     @assert neighbor_tile_size_a >= 0 "BifurcationMapConfig.neighbor_tile_size_a must be >= 0"
     @assert neighbor_tile_size_b >= 0 "BifurcationMapConfig.neighbor_tile_size_b must be >= 0"
@@ -442,11 +432,6 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     @assert isfinite(lyapunov_perturbation) && lyapunov_perturbation > 0.0 "BifurcationMapConfig.lyapunov_perturbation must be finite and > 0"
     @assert isfinite(lyapunov_neutral_tolerance) && lyapunov_neutral_tolerance >= 0.0 "BifurcationMapConfig.lyapunov_neutral_tolerance must be finite and >= 0"
     @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BifurcationMapConfig.min_crossing_time must be finite and >= 0"
-    @assert adaptive_refinement_max_depth >= 0 "BifurcationMapConfig.adaptive_refinement_max_depth must be >= 0"
-    @assert adaptive_refinement_budget >= 0 "BifurcationMapConfig.adaptive_refinement_budget must be >= 0"
-    @assert isfinite(adaptive_refinement_min_confidence) && adaptive_refinement_min_confidence >= 0.0 && adaptive_refinement_min_confidence <= 1.0 "BifurcationMapConfig.adaptive_refinement_min_confidence must be finite and in [0, 1]"
-    @assert isfinite(adaptive_refinement_confidence_delta) && adaptive_refinement_confidence_delta >= 0.0 && adaptive_refinement_confidence_delta <= 1.0 "BifurcationMapConfig.adaptive_refinement_confidence_delta must be finite and in [0, 1]"
-    @assert !adaptive_refinement_enabled || !reuse_neighbor_seeds "BifurcationMapConfig.adaptive_refinement_enabled requires fixed-seed traversal (reuse_neighbor_seeds=false)"
 end
 
 """
@@ -1021,4 +1006,45 @@ is a per-cell categorical distribution over regimes plus unknown and out-of-doma
     aperiodic_is_regime::Bool = true
     diverged_is_regime::Bool = true
     @assert n_samples >= 1 "ToleranceConfig.n_samples must be >= 1"
+end
+
+"""
+    AdaptiveMapConfig
+
+Configuration for first-class adaptive 2D bifurcation-map refinement via
+`adaptive_bifurcation_map`. See `docs/analysis-methods.md` for scientific details.
+
+Adaptive refinement applies dyadic (quadtree) subdivision to the coarse
+bifurcation map produced by `BifurcationMapConfig`, spending evaluations where
+classification boundaries or low-confidence cells are detected and leaving
+uniform regions at coarse resolution.
+
+# Fields
+- `total_budget`: Strict upper bound on the **total** number of unique parameter-point
+  evaluations — coarse grid plus all refinement evaluations combined. Must be at least
+  `(a_steps+1)*(b_steps+1)` for the coarse grid to run; any surplus is available for
+  refinement. Default `1024`.
+- `max_depth`: Maximum quadtree subdivision depth. At depth `d`, each coarse cell
+  has been split into `4^d` sub-cells. Default `4`.
+- `refine_on_period_disagreement`: Split a cell when its four corners carry at least
+  two distinct detected periods. Enabled by default.
+- `refine_on_status_disagreement`: Split a cell when its four corners carry at least
+  two distinct status codes (e.g. periodic vs. aperiodic). Enabled by default.
+- `min_confidence`: Split a cell when any corner's closure confidence is below this
+  threshold. `0.0` disables this trigger (default).
+- `confidence_delta`: Split a cell when the range of corner confidences exceeds this
+  value. `0.0` disables this trigger (default).
+"""
+@with_kw struct AdaptiveMapConfig
+    total_budget::Int = 1024
+    max_depth::Int = 4
+    refine_on_period_disagreement::Bool = true
+    refine_on_status_disagreement::Bool = true
+    min_confidence::Float64 = 0.0
+    confidence_delta::Float64 = 0.0
+    @assert total_budget >= 1 "AdaptiveMapConfig.total_budget must be >= 1"
+    @assert max_depth >= 0 "AdaptiveMapConfig.max_depth must be >= 0"
+    @assert isfinite(min_confidence) && min_confidence >= 0.0 && min_confidence <= 1.0 "AdaptiveMapConfig.min_confidence must be in [0, 1]"
+    @assert isfinite(confidence_delta) && confidence_delta >= 0.0 && confidence_delta <= 1.0 "AdaptiveMapConfig.confidence_delta must be in [0, 1]"
+    @assert refine_on_period_disagreement || refine_on_status_disagreement || min_confidence > 0.0 || confidence_delta > 0.0 "AdaptiveMapConfig: at least one refinement trigger must be active"
 end
