@@ -4,17 +4,23 @@
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21327845-blue.svg)](https://doi.org/10.5281/zenodo.21327845)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Julia library for bifurcation analysis of dynamical systems — discrete maps and continuous-time
-ODEs with Poincaré sections. Two complementary workflows:
+A Julia library for bifurcation analysis of discrete maps and continuous-time ODEs, combining direct
+simulation, numerical continuation, and evidence-based robustness analysis. Continuous-time
+workflows use [Poincaré sections and return maps](docs/julia-package.md#continuous-time-systems) for
+sweeps and shooting-based continuation, with orthogonal collocation as an alternative.
 
-- **Brute-force parameter sweeps** (threaded) for discrete maps and ODEs: 1-D bifurcation diagrams,
-  basins of attraction, and 2-D parameter maps with period/status/Lyapunov diagnostics — plus
-  largest-Lyapunov and full Lyapunov-spectrum sweeps, phase portraits, and power spectra.
-- **Pseudo-arclength continuation** wrapping [`BifurcationKit.jl`](https://github.com/bifurcationkit/BifurcationKit.jl)
-  (`PALC()`): periodic-branch continuation by return-map shooting or orthogonal collocation,
-  map-aware period-doubling/fold detection, adaptive branch refinement, and codimension-2 curve
-  tracing — including a higher-level **atlas** that combines reconnaissance sweeps with targeted
-  skeleton seeding to map periodic branches automatically.
+| Area | Core capabilities |
+| --- | --- |
+| **Parameter-space exploration** | Threaded 1-D sweeps; basins of attraction; uniform and adaptive 2-D period, status, and Lyapunov maps; Lyapunov spectra, phase portraits, and power spectra. |
+| **Continuation and local bifurcations** | [`BifurcationKit.jl`](https://github.com/bifurcationkit/BifurcationKit.jl) pseudo-arclength continuation; periodic-orbit shooting and collocation; branch refinement; codimension-2 curves and map normal forms; [connecting orbits](docs/julia-package.md#connecting-orbit-continuation-homoclinic--heteroclinic--saddle-cycle); and [border-collision diagnostics](docs/julia-package.md#border-collision-classification). |
+| **Automatic structure discovery** | Periodic-skeleton searches and an atlas combining reconnaissance sweeps with targeted seeding and recovery to map periodic branches and windows. |
+| **Robustness and design** | Multistability-aware branch reachability; regime-boundary and tolerance maps; layered robust-chaos evidence; and [inverse chaos-source design](docs/julia-package.md#chaos-source-inverse-design). |
+
+[GPU acceleration](docs/julia-package.md#optional-gpu-acceleration) is available through CUDA.jl or
+AMDGPU.jl for eligible cell-independent discrete-map sweeps and independent-trajectory ODE
+bifurcation maps and basin sweeps. Continuous-time Lyapunov analyses and continuation remain CPU-only;
+Metal is unavailable because its lack of Float64 support is incompatible with the validated
+classification tolerances.
 
 ```julia
 using DynamicsKit
