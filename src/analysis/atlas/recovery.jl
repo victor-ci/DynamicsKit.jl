@@ -85,6 +85,7 @@ function _recover_window_branches(sys::DiscreteMap,
                 seed_success = true
                 break
             catch err
+                err isa InterruptException && rethrow()
                 push!(continuation_attempts, Dict(
                     "retryIndex" => retry_idx,
                     "status" => "failed",
@@ -376,6 +377,7 @@ function _atlas_maybe_auto_refine_branch(sys::DynamicalSystem,
             )
         end
     catch err
+        err isa InterruptException && rethrow()
         lo, hi = _atlas_branch_param_support(branch)
         _atlas_log!(log, "Atlas auto-refine skipped for branch over param ∈ [$(round(lo, digits=4)), $(round(hi, digits=4))]: " *
             "$(sprint(showerror, err)). Keeping the unrefined branch.")
@@ -653,6 +655,7 @@ function _atlas_branch_geometry_diagnostics(sys::DynamicalSystem,
             )
             orbit_valid || (status = "partial_orbit")
         catch err
+            err isa InterruptException && rethrow()
             failure_count += 1
             status = "orbit_evaluation_failed"
             push!(scores, 0.0)

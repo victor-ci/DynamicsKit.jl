@@ -74,6 +74,24 @@ using Dates
         )
         @test vertical.sequence.parameter_name == :load
         @test vertical.sequence.modes == fill("P2", 3)
+
+        descending = BifurcationMapResult(
+            reverse(a_grid),
+            reverse(b_grid),
+            reverse(reverse(periodicity; dims=1); dims=2),
+            8,
+            "Descending route",
+            (:gain, :load),
+            now(),
+        )
+        descending_route = operating_map_cross_section(
+            descending;
+            varying_parameter=:gain,
+            fixed_value=19.0,
+        )
+        @test descending_route.selected_fixed_value == 20.0
+        @test descending_route.sequence.parameter_values == a_grid
+
         alias_collision = BifurcationMapResult(
             [0.0, 1.0],
             [0.0, 1.0],

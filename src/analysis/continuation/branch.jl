@@ -551,6 +551,7 @@ function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, p
                         signature_state_tol
                     )
                 catch err
+                    err isa InterruptException && rethrow()
                     _report_continuation_error(on_error, "Continuation batch for period $period failed", err)
                     BranchResult[]
                 end
@@ -598,6 +599,7 @@ function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, p
                 signature_state_tol
             ))
         catch err
+            err isa InterruptException && rethrow()
             _report_continuation_error(on_error, "Continuation batch for period $period failed", err)
         end
     end

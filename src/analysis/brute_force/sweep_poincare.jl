@@ -302,6 +302,7 @@ function _collect_poincare_points(sys::ContinuousODE, params::AbstractVector;
             maxiters=maxiters
         )
     catch err
+        err isa InterruptException && rethrow()
         points = Vector{Vector{Float64}}()
         diagnostics = _poincare_crossing_diagnostics(
             crossings_requested=crossings,

@@ -1753,7 +1753,13 @@ const serialize_branch_result = _serialize_branch_result
 const deserialize_branch_result = _deserialize_branch_result
 """    serialize_atlas_result(result::AtlasResult) -> Dict — JSON-plain form."""
 const serialize_atlas_result = _serialize_atlas_result
-"""    deserialize_atlas_result(data::AbstractDict) -> AtlasResult"""
+"""
+    deserialize_atlas_result(data::AbstractDict;
+                             brute_force::BruteForceResult) -> AtlasResult
+
+Restore an atlas from its JSON-plain form. The atlas wire payload does not duplicate its
+reconnaissance sweep, so the corresponding `brute_force` result is a required keyword.
+"""
 const deserialize_atlas_result = _deserialize_atlas_result
 """    serialize_codim2_continuation_result(result::Codim2ContinuationResult) -> Dict — JSON-plain form (multipliers stored as [re, im] pairs)."""
 const serialize_codim2_continuation_result = _serialize_codim2_continuation_result

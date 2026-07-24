@@ -80,6 +80,7 @@ function continuation_branch_diagnostics(sys::DynamicalSystem,
                 residual = _map_residual(sys, state, local_params, period; kwargs...)
                 norm(residual)
             catch err
+                err isa InterruptException && rethrow()
                 residual_failures += 1
                 push!(warnings, "residual evaluation failed at point $idx: $(_continuation_error_message(err))")
                 NaN
@@ -91,6 +92,7 @@ function continuation_branch_diagnostics(sys::DynamicalSystem,
             point_multipliers = try
                 _map_multipliers(sys, state, local_params, period; kwargs...)
             catch err
+                err isa InterruptException && rethrow()
                 multiplier_failures += 1
                 push!(warnings, "multiplier evaluation failed at point $idx: $(_continuation_error_message(err))")
                 nothing
@@ -243,6 +245,7 @@ function _run_continuation_direction_safe(prob_builder::Function, config::Contin
     try
         return _run_continuation_direction(prob_builder(), config; p_min=p_min, p_max=p_max, ds=ds)
     catch err
+        err isa InterruptException && rethrow()
         _report_continuation_error(on_error, context, err)
         return nothing
     end

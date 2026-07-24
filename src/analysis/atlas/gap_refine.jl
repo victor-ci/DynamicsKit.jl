@@ -265,6 +265,7 @@ function _atlas_probe_branch_switch(sys::DynamicalSystem,
             kwargs...
         )
     catch err
+        err isa InterruptException && rethrow()
         return BranchResult[], Dict{String, Any}(
             "status" => "skeleton_failed",
             "sourceBranchId" => record.id,
@@ -295,6 +296,7 @@ function _atlas_probe_branch_switch(sys::DynamicalSystem,
                 "seedPoint" => copy(seed.point)
             ))
         catch err
+            err isa InterruptException && rethrow()
             push!(continuation_attempts, Dict(
                 "seedIndex" => seed_idx,
                 "status" => "failed",
@@ -1060,6 +1062,7 @@ function continuation_atlas(sys::DynamicalSystem,
         try
             return _load_cached_atlas_result(cache_path; cache_key=cache_key, log=log)
         catch err
+            err isa InterruptException && rethrow()
             bt = catch_backtrace()
             _atlas_log!(log, "Atlas cache load failed for '$cache_path'; recomputing. $(sprint(io -> showerror(io, err, bt)))")
         end
@@ -1337,6 +1340,7 @@ function continuation_atlas(sys::DynamicalSystem,
         try
             _store_cached_atlas_result(result, cache_path; cache_key=cache_key, log=log)
         catch err
+            err isa InterruptException && rethrow()
             bt = catch_backtrace()
             _atlas_log!(log, "WARNING: Atlas cache store failed for '$cache_path'. $(sprint(io -> showerror(io, err, bt)))")
         end

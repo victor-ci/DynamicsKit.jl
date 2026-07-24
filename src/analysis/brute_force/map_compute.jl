@@ -560,6 +560,7 @@ function _detect_continuous_poincare_period(sys::ContinuousODE, params::Abstract
             maxiters=maxiters
         )
     catch err
+        err isa InterruptException && rethrow()
         result = (
             _period_detection_result(0, :integration_failed, min_error[], min_period[], observed_points[], min_threshold[])...,
             final_point=copy(u0),

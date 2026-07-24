@@ -441,6 +441,11 @@ using Dates: DateTime
         @test plain["atlasBruteForce"]["pointShape"] ==
               collect(size(evidence.atlas.brute_force.points))
         @test serialize_bruteforce_result(evidence.atlas.brute_force)["points"] isa AbstractMatrix
+        atlas_plain = serialize_atlas_result(evidence.atlas)
+        restored_atlas = deserialize_atlas_result(
+            atlas_plain; brute_force=evidence.atlas.brute_force)
+        @test restored_atlas.brute_force === evidence.atlas.brute_force
+        @test restored_atlas.coverage_summary == evidence.atlas.coverage_summary
         restored = deserialize_robust_chaos_evidence(plain)
         @test restored.certificate.overall_verdict == cert.overall_verdict
         @test restored.lyapunov.params == evidence.lyapunov.params

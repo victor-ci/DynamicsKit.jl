@@ -83,7 +83,7 @@ Interpretation cautions:
 
 `regime_boundary_distances` and `tolerance_regime_map` turn a classified operating map into a component-drift robustness statement. They are pure post-processing of the map surrogate — they never rerun the model — so their honesty depends on reading them as such.
 
-- **Margins are to a boundary *cell centre*, not the true interface.** `regime_boundary_distances` reports the Euclidean distance to the nearest boundary cell centre on the sampled grid. This is a finite-grid convention carrying ≤ one cell-diagonal discretization error versus the continuous interface; refine the map to tighten it. Per-axis `distance_a` / `distance_b` are the single-parameter drift margins and are `Inf` when that grid line carries no boundary.
+- **Margins are to a boundary *cell centre*, not the true interface.** `regime_boundary_distances` reports the Euclidean distance to the nearest boundary cell centre on the sampled grid. This is a finite-grid convention carrying ≤ one cell-diagonal discretization error versus the continuous interface; refine the map to tighten it. The 2D norm combines raw parameter coordinates and is not physically meaningful for heterogeneous units or strongly different scales unless the axes are normalized first. Per-axis `distance_a` / `distance_b` are the single-parameter drift margins in each parameter's own units and are `Inf` when that grid line carries no boundary.
 - **Unknown is not a regime.** Cells whose regime cannot be resolved (period `0` without status evidence, or non-informative status codes) are treated as unknown: they get no margin and form a boundary for their neighbours. A margin therefore answers "distance to a *different known regime or to the edge of knowledge*," conservatively. Read `status_evidence`: without status codes the classification is periodicity-only and cannot separate chaos, divergence, and solver failure.
 - **The edge policy changes the meaning.** Under the default `:censored` policy a margin capped by the sampled-domain edge is flagged `edge_censored` and must be read as a *lower bound* — a regime change may lie just outside the window. Do not report a censored margin as the true distance.
 - **Tolerance probabilities are surrogate propagation, not a proof.** `tolerance_regime_map` estimates, by nearest-cell Monte-Carlo lookup over the fixed classified map, the probability that a tolerance-perturbed operating point stays in each regime. It is neither model reruns nor a closed-form tolerance bound; its resolution is the map's resolution, and integer regime labels are never interpolated. Report the Wilson interval, not just the point probability.
@@ -154,8 +154,12 @@ records per-sample multipliers on the returned `Codim2ContinuationResult`, so
 every point of the locus carries its own evidence that the defining condition
 holds. Defining-system curves are solved to Newton tolerance and may fold back
 in either parameter; a fold of the locus itself
-(`curve_fold_secondary_values`) is an organising-point candidate (for example a
-cusp) worth inspecting rather than an artifact.
+(`curve_fold_secondary_values`) is an organising-point candidate worth
+inspecting rather than an artifact. Such a turning point is coordinate-dependent
+and is not by itself a cusp: a cusp is the intrinsic fold degeneracy where the
+fold normal-form coefficient `b = 1/2<p,B(q,q)>` vanishes, which
+`codim2_special_points(...; detect=[:cusp])` locates by evaluating `b` along the
+locus rather than by locus turning.
 
 ## Special points
 

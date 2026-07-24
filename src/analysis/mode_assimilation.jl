@@ -319,6 +319,7 @@ function load_mode_sequence_csv(input;
     rows = try
         collect(CSV.File(input; types=String, strict=true))
     catch err
+        err isa InterruptException && rethrow()
         throw(ArgumentError("could not parse mode-sequence CSV: $(sprint(showerror, err))"))
     end
     isempty(rows) && throw(ArgumentError("mode-sequence CSV contains no data rows."))
@@ -391,13 +392,19 @@ function operating_map_cross_section(map_result::BifurcationMapResult;
     fixed_grid = axis == 1 ? cls.b_grid : cls.a_grid
     requested = Float64(fixed_value)
     isfinite(requested) || throw(ArgumentError("fixed_value must be finite."))
-    first(fixed_grid) <= requested <= last(fixed_grid) || throw(ArgumentError(
+    fixed_min, fixed_max = extrema(fixed_grid)
+    fixed_min <= requested <= fixed_max || throw(ArgumentError(
         "fixed_value $requested lies outside the computed $(axis == 1 ? cls.param_names[2] : cls.param_names[1]) range " *
-        "[$(first(fixed_grid)), $(last(fixed_grid))]."))
+        "[$fixed_min, $fixed_max]."))
     fixed_index = argmin(abs.(fixed_grid .- requested))
     parameter_values = axis == 1 ? cls.a_grid : cls.b_grid
     labels = axis == 1 ? cls.labels[:, fixed_index] : cls.labels[fixed_index, :]
     resolved = axis == 1 ? cls.resolved[:, fixed_index] : cls.resolved[fixed_index, :]
+    if first(parameter_values) > last(parameter_values)
+        parameter_values = reverse(parameter_values)
+        labels = reverse(labels)
+        resolved = reverse(resolved)
+    end
     modes = [_mode_label(labels[index], resolved[index]) for index in eachindex(labels)]
     sequence = ModeSequence(
         cls.param_names[axis],

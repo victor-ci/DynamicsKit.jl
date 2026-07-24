@@ -1077,7 +1077,7 @@ uniform regions at coarse resolution.
   `(a_steps+1)*(b_steps+1)` for the coarse grid to run; any surplus is available for
   refinement. Default `1024`.
 - `max_depth`: Maximum quadtree subdivision depth. At depth `d`, each coarse cell
-  has been split into `4^d` sub-cells. Default `4`.
+  has been split into `4^d` sub-cells. Must be in `[0, 30]`. Default `4`.
 - `refine_on_period_disagreement`: Split a cell when its four corners carry at least
   two distinct detected periods. Enabled by default.
 - `refine_on_status_disagreement`: Split a cell when its four corners carry at least
@@ -1087,6 +1087,8 @@ uniform regions at coarse resolution.
 - `confidence_delta`: Split a cell when the range of corner confidences exceeds this
   value. `0.0` disables this trigger (default).
 """
+const _ADAPTIVE_MAP_MAX_DEPTH = 30
+
 @with_kw struct AdaptiveMapConfig
     total_budget::Int = 1024
     max_depth::Int = 4
@@ -1095,7 +1097,7 @@ uniform regions at coarse resolution.
     min_confidence::Float64 = 0.0
     confidence_delta::Float64 = 0.0
     @assert total_budget >= 1 "AdaptiveMapConfig.total_budget must be >= 1"
-    @assert max_depth >= 0 "AdaptiveMapConfig.max_depth must be >= 0"
+    @assert 0 <= max_depth <= _ADAPTIVE_MAP_MAX_DEPTH "AdaptiveMapConfig.max_depth must be in [0, $(_ADAPTIVE_MAP_MAX_DEPTH)]"
     @assert isfinite(min_confidence) && min_confidence >= 0.0 && min_confidence <= 1.0 "AdaptiveMapConfig.min_confidence must be in [0, 1]"
     @assert isfinite(confidence_delta) && confidence_delta >= 0.0 && confidence_delta <= 1.0 "AdaptiveMapConfig.confidence_delta must be in [0, 1]"
     @assert refine_on_period_disagreement || refine_on_status_disagreement || min_confidence > 0.0 || confidence_delta > 0.0 "AdaptiveMapConfig: at least one refinement trigger must be active"

@@ -508,79 +508,135 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Cusp detection on a fold locus with a known turning point
+# Cusp detection on a fold locus: fold normal-form coefficient b crossing zero
+#
+# A cusp is the intrinsic fold degeneracy b = 1/2<p,B(q,q)> -> 0, not a turning
+# point of the fold locus in a chosen parameter (which is coordinate-dependent
+# and routinely happens with b != 0).  These fixtures are analytic-first: b is a
+# closed form on the constructed maps, so the sign/verdict is known exactly.
 # ---------------------------------------------------------------------------
-@testset "codim2_special_points — cusp on fold locus (analytic)" begin
-    # Build a fold locus that has a turning point in the primary parameter.
-    # p1(t) = -(t-1)^2 + 1, p2(t) = t, t in [0, 2].
-    # Primary turning point at t=1: p1=1, p2=1.
-    t = range(0.0, 2.0, length=21)
-    p1 = [-(ti - 1)^2 + 1 for ti in t]   # parabola, max at t=1
-    p2 = collect(t)
-    states = [[0.5] for _ in 1:21]
-    result = _make_c2result(kind=:fold, p1=p1, p2=p2, states=states)
+@testset "codim2_special_points — cusp on fold locus (coefficient b)" begin
+    # NEGATIVE (analytic): the fold parabola F(x,p)=x+p1+p2 x+x^2 has F''=2, so
+    # b = 1/2 F'' = 1 everywhere.  Its fold locus p1=p2^2/4 turns in p1 at p2=0,
+    # but that turning is NOT a cusp — b never vanishes, so nothing must be reported.
+    para = DiscreteMap((x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + x[1]^2),
+                       1, [:p1, :p2], "fold parabola")
+    p2_para = collect(range(-0.3, 0.3, length=21))    # brackets the p1-turning at p2=0
+    p1_para = p2_para .^ 2 ./ 4                        # fold locus p1 = p2^2/4
+    result_para = _make_c2result(kind=:fold, p1=p1_para, p2=p2_para,
+                                  states=[[-pi2 / 2] for pi2 in p2_para])  # x = -p2/2
+    pts_para = codim2_special_points(para, result_para;
+                                     detect=[:cusp],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
+    @test isempty(pts_para)   # a turning point of the fold locus is not a cusp
 
-    sys = DiscreteMap((x, p) -> SVector(p[1] * x[1]), 1, [:p1, :p2], "test fold")
-    pts = codim2_special_points(sys, result; detect=[:cusp])
-    @test length(pts) >= 1
-    cusp = pts[1]
+    # POSITIVE (analytic): the cubic F(x,p)=x+p1+p2 x+x^3 has F''=6x, so on its
+    # fold locus (p2=-3s^2, p1=2s^3, state x=s) the coefficient is b = 3s.  b crosses
+    # zero at s=0 — a genuine cusp at (p1,p2)=(0,0).
+    cubic = DiscreteMap((x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + x[1]^3),
+                        1, [:p1, :p2], "cubic cusp")
+    cubic_locus(s) = _make_c2result(kind=:fold,
+                                    p1=2 .* s .^ 3, p2=-3 .* s .^ 2,
+                                    states=[[si] for si in s])
+
+    # Interpolated crossing: even sample count straddles s=0 without landing on it.
+    s_i = collect(range(-0.2, 0.2, length=20))
+    @test !any(iszero, s_i)
+    result_i = cubic_locus(s_i)
+    pts_i = codim2_special_points(cubic, result_i;
+                                  detect=[:cusp],
+                                  base_params=[0.0, 0.0],
+                                  param_index=1, second_param_index=2)
+    @test length(pts_i) == 1
+    cusp = pts_i[1]
     @test cusp.kind === :cusp
     @test cusp.locus_kind === :fold
-    # 3-point quadratic vertex locates the turning point exactly at the middle sample;
-    # tolerances are tighter than simple linear interpolation would allow.
-    @test abs(cusp.primary_param - 1.0) < 0.02    # near the turning point p1=1
-    @test abs(cusp.secondary_param - 1.0) < 0.02  # near t=1 → p2=1
     @test cusp.status === :interpolated
     @test cusp.converged == false
+    @test abs(cusp.primary_param) < 0.005     # near p1=0
+    @test abs(cusp.secondary_param) < 0.01    # near p2=0
+    # Interpolated b=0 location: attaching a bracketing nonzero form would mislead.
+    @test cusp.normal_form === nothing
 
-    # No false detections when primary is monotone.
-    p1_mono = collect(range(-1.0, 1.0, length=11))
-    p2_mono = collect(range(0.0, 1.0, length=11))
-    states_mono = [[0.5] for _ in 1:11]
-    result_mono = _make_c2result(kind=:fold, p1=p1_mono, p2=p2_mono, states=states_mono)
-    pts_mono = codim2_special_points(sys, result_mono; detect=[:cusp])
+    flat_orientation_flip = Union{Float64, Nothing}[1.0, 1.0, -1.0, -1.0]
+    @test !DynamicsKit._c2sp_cusp_valley(flat_orientation_flip, 2)
+    strict_valley = Union{Float64, Nothing}[2.0, 1.0, -1.0, -2.0]
+    @test DynamicsKit._c2sp_cusp_valley(strict_valley, 2)
+    @test !DynamicsKit._c2sp_cusp_valley(
+        Union{Float64, Nothing}[-1.0, 1.0, 2.0, 3.0], 1)
+    @test !DynamicsKit._c2sp_cusp_valley(
+        Union{Float64, Nothing}[-3.0, -2.0, -1.0, 1.0], 3)
+
+    # A genuine crossing in the first bracket is deliberately not interpolated without an
+    # outer left sample. Extending the locus is the safe way to make the bracket interior.
+    result_edge = cubic_locus([-0.05, 0.05, 0.2, 0.35])
+    pts_edge = codim2_special_points(cubic, result_edge;
+                                     detect=[:cusp],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
+    @test isempty(pts_edge)
+
+    # Sampled degenerate cusp: an odd count places a sample exactly on s=0 (b=0),
+    # which map_normal_form flags :degenerate; that sample carries its actual form.
+    s_s = collect(range(-0.2, 0.2, length=21))
+    @test any(iszero, s_s)
+    result_s = cubic_locus(s_s)
+    pts_s = codim2_special_points(cubic, result_s;
+                                  detect=[:cusp],
+                                  base_params=[0.0, 0.0],
+                                  param_index=1, second_param_index=2)
+    @test length(pts_s) == 1
+    @test pts_s[1].status === :sampled
+    @test abs(pts_s[1].secondary_param) < 1e-12
+    @test abs(pts_s[1].primary_param) < 1e-12
+    @test pts_s[1].normal_form !== nothing
+    @test pts_s[1].normal_form.kind === :fold
+    @test abs(pts_s[1].normal_form.coefficient) <= 1e-5
+
+    # No false positive when b stays nonzero and same-signed (all s > 0 → b = 3s > 0).
+    s_mono = collect(range(0.05, 0.3, length=15))
+    result_mono = cubic_locus(s_mono)
+    pts_mono = codim2_special_points(cubic, result_mono;
+                                     detect=[:cusp],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
     @test isempty(pts_mono)
 
-    # Regression: zero increment without direction reversal must not produce a false cusp.
-    # p1 = [0, 0, 1]: dp = [0, 1] — no strict sign change → no detection.
-    p1_zero_step = [0.0, 0.0, 1.0]
-    result_zs = _make_c2result(kind=:fold, p1=p1_zero_step, p2=[0.0, 0.5, 1.0],
-                                states=[[0.5], [0.5], [0.5]])
-    @test isempty(codim2_special_points(sys, result_zs; detect=[:cusp]))
+    # Explicitly requesting :cusp on a :fold locus without base_params → ArgumentError.
+    @test_throws ArgumentError codim2_special_points(cubic, result_i; detect=[:cusp])
+    @test_throws ArgumentError codim2_special_points(
+        cubic, result_i; detect=[:cusp],
+        base_params=[0.0, 0.0], param_index=1, second_param_index=1)   # overlapping roles
 
-    # Regression: zero increment at the end — no reversal.
-    # p1 = [1, 0, 0]: dp = [-1, 0] — no strict sign change → no detection.
-    p1_trail_zero = [1.0, 0.0, 0.0]
-    result_tz = _make_c2result(kind=:fold, p1=p1_trail_zero, p2=[0.0, 0.5, 1.0],
-                                states=[[0.5], [0.5], [0.5]])
-    @test isempty(codim2_special_points(sys, result_tz; detect=[:cusp]))
+    # Default all-kinds pass (detect=nothing) on a :fold locus without base_params →
+    # no error; the cusp coefficient detector is simply skipped.
+    pts_default = codim2_special_points(cubic, result_i)
+    @test pts_default isa Vector{Codim2SpecialPoint}
+    @test isempty(pts_default)
 
-    # Regression: symmetric zero sample [1, 0, 1] → vertex exactly at the middle sample.
-    p1_sym = [1.0, 0.0, 1.0]
-    result_sym = _make_c2result(kind=:fold, p1=p1_sym, p2=[0.0, 0.5, 1.0],
-                                 states=[[0.5], [0.5], [0.5]])
-    pts_sym = codim2_special_points(sys, result_sym; detect=[:cusp])
-    @test length(pts_sym) == 1
-    @test abs(pts_sym[1].secondary_param - 0.5) < 1e-10  # exactly at middle sample
-
-    # Cusp inapplicable to pd/ns loci.
-    result_pd = _make_c2result(kind=:pd, p1=p1, p2=p2, states=states)
-    @test isempty(codim2_special_points(sys, result_pd; detect=[:cusp]))
+    # Cusp inapplicable to pd/ns loci — no error even without base_params, and empty
+    # even with base_params supplied.
+    result_pd = _make_c2result(kind=:pd, p1=2 .* s_i .^ 3, p2=-3 .* s_i .^ 2,
+                               states=[[si] for si in s_i])
+    @test isempty(codim2_special_points(cubic, result_pd; detect=[:cusp]))
+    @test isempty(codim2_special_points(cubic, result_pd;
+                                        detect=[:cusp],
+                                        base_params=[0.0, 0.0],
+                                        param_index=1, second_param_index=2))
 
     # Inconsistent multiplier widths disable multiplier interpolation without
-    # preventing coordinate/state detection.
+    # preventing coefficient-based detection.
     inconsistent_mults = [
         isodd(i) ? ComplexF64[1.0] : ComplexF64[1.0, 0.5]
-        for i in eachindex(p1)
+        for i in eachindex(s_i)
     ]
-    inconsistent = _make_c2result(
-        kind=:fold,
-        p1=p1,
-        p2=p2,
-        states=states,
-        mults=inconsistent_mults,
-    )
-    inconsistent_pts = codim2_special_points(sys, inconsistent; detect=[:cusp])
+    inconsistent = _make_c2result(kind=:fold, p1=2 .* s_i .^ 3, p2=-3 .* s_i .^ 2,
+                                  states=[[si] for si in s_i], mults=inconsistent_mults)
+    inconsistent_pts = codim2_special_points(cubic, inconsistent;
+                                             detect=[:cusp],
+                                             base_params=[0.0, 0.0],
+                                             param_index=1, second_param_index=2)
     @test !isempty(inconsistent_pts)
     @test all(isempty(point.multipliers) for point in inconsistent_pts)
 end
@@ -867,39 +923,38 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Deduplication and sorting
+# Deduplication and sorting (cusp coefficient b, two genuine zero crossings)
 # ---------------------------------------------------------------------------
-@testset "codim2_special_points — deduplication and sorting" begin
-    # Construct a fold locus with two distinct turning points.
-    # p1(t) = sin(2π t), t in [0,1]: turning points at t=0.25 and t=0.75.
-    t = range(0.0, 1.0, length=41)
-    p1 = sin.(2π .* t)
-    p2 = collect(t)
-    states = [[0.5] for _ in 1:41]
-    result = _make_c2result(kind=:fold, p1=collect(p1), p2=collect(p2), states=states)
-    sys = DiscreteMap((x, p) -> SVector(p[1] * x[1]), 1, [:p1, :p2], "test")
+@testset "codim2_special_points — cusp deduplication and sorting" begin
+    # Quintic F(x,p)=x+p1+p2 x+x^3-x^5 has b = 1/2 F'' = 3x-10x^3 = x(3-10x^2),
+    # which vanishes at x=0 and x=±sqrt(0.3).  On the fold locus
+    # (p2=-3x^2+5x^4, p1=-(p2 x+x^3-x^5), state x) sampling x in [-0.7, 0.1] brackets
+    # two genuine cusps: near x=-sqrt(0.3) (p2≈-0.45) and at x=0 (p2=0).
+    quintic = DiscreteMap((x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + x[1]^3 - x[1]^5),
+                          1, [:p1, :p2], "quintic double cusp")
+    xs  = collect(range(-0.7, 0.1, length=17))
+    p2v = -3 .* xs .^ 2 .+ 5 .* xs .^ 4
+    p1v = .-(p2v .* xs .+ xs .^ 3 .- xs .^ 5)
+    result = _make_c2result(kind=:fold, p1=p1v, p2=p2v, states=[[xi] for xi in xs])
+    sys_kwargs = (base_params=[0.0, 0.0], param_index=1, second_param_index=2)
 
-    pts = codim2_special_points(sys, result; detect=[:cusp])
-    # Expect exactly 2 cusps, one near t=0.25 (p2≈0.25) and one near t=0.75 (p2≈0.75).
+    pts = codim2_special_points(quintic, result; detect=[:cusp], sys_kwargs...)
     @test length(pts) == 2
-    @test pts[1].kind === :cusp
-    @test pts[2].kind === :cusp
+    @test all(p -> p.kind === :cusp, pts)
     # Sorted by (kind, secondary_param, primary_param): first has smaller secondary_param.
     @test pts[1].secondary_param < pts[2].secondary_param
+    @test abs(pts[1].secondary_param - (-0.45)) < 0.05   # cusp near x=-sqrt(0.3)
+    @test abs(pts[2].secondary_param) < 0.05             # cusp at x=0
+    @test pts[1].status === :interpolated
+    @test pts[1].normal_form === nothing
+    @test pts[2].status === :sampled                     # sample lands exactly on x=0
+    @test pts[2].normal_form !== nothing
 
-    # Deduplication: duplicate cusp with very close parameters is removed.
-    # Add an engineered third "cusp" at essentially the same location as the first.
-    # We do this by constructing a locus with a very tight double turning point.
-    # Use the test for explicit tolerance: two cusps within 1e-4 secondary -> one survives.
-    t_dup = [0.0, 0.1, 0.200, 0.201, 0.3, 0.4, 0.5]
-    p1_dup = [0.0, 0.5, 1.0, 1.0+1e-6, 0.5, 0.0, -0.5]  # two tiny back-forth near t=0.2
-    p2_dup = collect(t_dup)
-    states_dup = [[0.5] for _ in 1:7]
-    result_dup = _make_c2result(kind=:fold, p1=p1_dup, p2=p2_dup, states=states_dup)
-    pts_dup = codim2_special_points(sys, result_dup;
-                                     detect=[:cusp],
-                                     duplicate_secondary_tol=0.01)
-    @test length(pts_dup) <= 1   # duplicate within tol should be removed
+    # Deduplication: widening both proximity tolerances merges the two cusps into one.
+    pts_dedup = codim2_special_points(quintic, result; detect=[:cusp],
+                                      duplicate_primary_tol=1.0,
+                                      duplicate_secondary_tol=1.0, sys_kwargs...)
+    @test length(pts_dedup) == 1
 end
 
 # ---------------------------------------------------------------------------
@@ -1054,12 +1109,13 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# End-to-end cusp on the analytic fold parabola F(x,p)=x+p₁+p₂x+x²
+# End-to-end: a fold-locus turning point is not a cusp (fold parabola)
 # ---------------------------------------------------------------------------
-@testset "codim2_special_points — E2E cusp (fold parabola)" begin
+@testset "codim2_special_points — E2E fold-locus turning is not a cusp" begin
     # Fixed point: p₁ + p₂x + x² = 0.  Multiplier F′(x) = 1+p₂+2x.
-    # Fold (F′=1): x⋆ = −p₂/2.  Fold locus: p₁ = p₂²/4.
-    # Cusp (dp₁/dp₂ = 0): p₂ = 0, p₁ = 0.
+    # Fold (F′=1): x⋆ = −p₂/2.  Fold locus: p₁ = p₂²/4, which turns in p₁ at p₂=0.
+    # But F''=2 ⇒ b = 1/2 F'' = 1 everywhere, so the p₁-turning is NOT a cusp.
+    # End-to-end this must report no cusp (the old locus-turning heuristic wrongly did).
     sys = DiscreteMap(
         (x, p) -> SVector(x[1] + p[1] + p[2]*x[1] + x[1]^2),
         1, [:p1, :p2], "Fold parabola"
@@ -1069,10 +1125,8 @@ end
         max_steps=80, newton_tol=1e-12, newton_max_iter=20,
         detect_bifurcation=3, param_index=1
     )
-    # Anchor at p2=0.1 (away from the cusp vertex at p2=0).  Starting at p2=0 would
-    # place the bothside=true duplicate sample exactly at the cusp, creating a zero
-    # primary-difference that blocks sign-change detection.  At p2=0.1 the stable
-    # lower branch is x=(-0.1-sqrt(0.17))/2≈-0.256 and the fold is at p1=0.0025.
+    # Anchor at p2=0.1 (away from the turning point at p2=0).  The stable lower branch
+    # is x=(-0.1-sqrt(0.17))/2≈-0.256 and the fold is at p1=0.0025.
     config = Codim2Config(
         continuation=cont,
         second_min=-0.25, second_max=0.25, second_steps=7,
@@ -1084,20 +1138,26 @@ end
     curve = codim2_curve(sys, config; initial_point=[-0.256])
     @test curve.bifurcation_kind === :fold
     @test length(curve.primary_values) >= 5
-    # Fold locus: p₁ = p₂²/4.
+    # Fold locus: p₁ = p₂²/4 (turns in p₁ at p₂=0).
     @test maximum(abs.(curve.primary_values .- curve.secondary_values .^ 2 ./ 4)) < 1e-9
     # Fixed point x⋆ = −p₂/2.
     @test maximum(abs.(curve.states[1,:] .+ curve.secondary_values ./ 2)) < 1e-9
+    # The locus spans the p₁-turning at p₂=0.
+    @test minimum(curve.secondary_values) < 0.0 < maximum(curve.secondary_values)
 
-    pts = codim2_special_points(sys, curve; detect=[:cusp])
-    @test length(pts) >= 1
-    cusp = pts[1]
-    @test cusp.kind === :cusp
-    @test cusp.locus_kind === :fold
-    @test cusp.status === :interpolated
-    @test cusp.converged == false
-    @test abs(cusp.primary_param) < 0.005     # near p₁=0
-    @test abs(cusp.secondary_param) < 0.06    # near p₂=0
+    # No cusp: b = 1 on the whole locus even though p₁ turns at p₂=0.
+    pts = codim2_special_points(sys, curve; detect=[:cusp],
+                                base_params=[0.0, 0.0],
+                                param_index=1, second_param_index=2)
+    @test isempty(pts)
+
+    # Sanity: the fold coefficient b is nondegenerate (~1) at every locus sample.
+    for j in eachindex(curve.primary_values)
+        nf = map_normal_form(sys, :fold, curve.states[:, j],
+                             [curve.primary_values[j], curve.secondary_values[j]]; period=1)
+        @test nf.status === :ok
+        @test abs(nf.coefficient - 1.0) < 1e-6
+    end
 end
 
 # ---------------------------------------------------------------------------

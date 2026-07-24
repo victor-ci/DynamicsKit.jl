@@ -44,7 +44,8 @@ source `BifurcationMapResult`.
 - `distance`: primary Euclidean margin — distance from a cell centre to the nearest boundary cell
   centre, with the `edge_policy` applied. `NaN` where invalid. Boundary cells have `0`. This is a
   finite-grid convention: the reported distance is to the nearest boundary *cell centre*, within one
-  cell-diagonal of the true interface.
+  cell-diagonal of the true interface. Because it combines the raw `a` and `b` coordinates, it is
+  meaningful only when those axes have commensurate units/scales or were normalized beforehand.
 - `distance_a`, `distance_b`: per-axis margins — the distance to the nearest boundary cell *along the
   same grid line* (varying only `a` / only `b`). `Inf` when that grid line contains no boundary cell;
   `NaN` where invalid. These are the raw per-parameter drift margins and are not edge-capped.
@@ -387,7 +388,8 @@ end
 const _REGIME_BOUNDARY_CONVENTION = "Margin is the Euclidean distance from a cell centre to the " *
     "nearest boundary-cell centre (a boundary cell is a resolved cell 4-connected to a different " *
     "known regime or to an unknown cell); boundary cells have margin 0. Finite-grid convention with " *
-    "<= one cell-diagonal discretization error versus the true interface. Per-axis distances are the " *
+    "<= one cell-diagonal discretization error versus the true interface. The 2D distance combines " *
+    "raw axis coordinates and requires commensurate units/scales or prior normalization. Per-axis distances are the " *
     "along-grid-line (single-parameter) drift margins (Inf when the line has no boundary cell)."
 
 # --- layer A: deterministic regime-boundary margins ---
@@ -403,7 +405,9 @@ known-regime mask (`(length(a_grid), length(b_grid))` shaped, `[i, j] ↔ (a_gri
 
 Cells with `resolved[i, j] == false` are treated as unknown: they receive no margin (marked invalid)
 and form a boundary for their known neighbours. Grids must be strictly increasing (nonuniform is
-supported); the distance transform uses the true coordinates, not indices.
+supported); the distance transform uses the true coordinates, not indices. The 2D Euclidean margin
+combines those raw coordinates, so normalize the axes first unless they have commensurate units and
+scales; the per-axis margins remain expressed independently in each parameter's units.
 """
 function regime_boundary_distances(a_grid::AbstractVector{<:Real},
                                    b_grid::AbstractVector{<:Real},

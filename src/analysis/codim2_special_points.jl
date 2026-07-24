@@ -3,7 +3,7 @@ Test-function pass over a `Codim2ContinuationResult` produced by `engine=:defini
 to detect and locate organising codim-2 bifurcation points along the continued locus.
 
 Supported detection kinds and the loci they apply to:
-- `:cusp`            — fold locus turning in the primary parameter (`:fold` locus)
+- `:cusp`            — fold normal-form coefficient b = 1/2<p,B(q,q)> crossing/vanishing (`:fold` locus)
 - `:generalized_flip`— flip normal-form coefficient c crossing zero (`:pd` locus)
 - `:fold_flip`       — non-tracked second multiplier reaching the complementary ±1 value
                        (`:pd` or `:fold` locus; requires `curve_diagnostics=true`)
@@ -112,36 +112,92 @@ end
 
 # ---- per-kind detectors --------------------------------------------------
 
-# Cusp: turning point of the fold locus in the primary parameter.
+# Cusp: the fold normal-form quadratic coefficient b = 1/2<p,B(q,q)> vanishes.
 #
-# Uses a 3-point local quadratic vertex to locate the turning point between each
-# bracketing triplet.  Only strictly opposite-signed consecutive differences (no
-# zero increments) qualify so zero-step / plateau samples never produce false
-# detections.  For p1 samples [1,0,1] the vertex lands exactly at the middle
-# sample (alpha=0), not halfway toward the next sample.
-function _c2sp_detect_cusp(result::Codim2ContinuationResult)
+# A cusp is NOT a turning point of the fold locus in a chosen parameter — that is
+# coordinate-dependent and routinely occurs with b != 0 (e.g. the fold parabola of
+# x -> x+p1+p2 x+x^2 has b=1 everywhere yet its projection turns at p2=0).  A cusp is
+# the intrinsic fold degeneracy b -> 0, so it is detected by evaluating
+# map_normal_form(:fold) at each locus sample and locating where b crosses zero.
+#
+# Orientation invariant: b's sign is orientation-dependent (flipping the real critical
+# eigenvector q -> -q, with p rescaled to keep <p,q>=1, flips the sign of b), while |b|
+# is orientation-invariant.  `_oriented_eigenvectors` fixes a deterministic orientation
+# (the dominant eigenvector component made real and positive); that sign can only jump
+# where the dominant component switches index, never at a genuine cusp where |b|
+# collapses smoothly to zero.  Hence:
+#   * the sampled near-zero |b| detector is orientation-robust and carries the sample's
+#     actual (degenerate) MapNormalForm; and
+#   * an interpolated sign change is accepted only when |b| is locally minimised at the
+#     bracket (a strict |b| valley with finite samples on both outer sides).  This
+#     conservative continuity guard rejects flat-magnitude orientation flips and skips
+#     edge/unavailable brackets that cannot establish coefficient collapse.  Interpolated
+#     points carry normal_form=nothing (the nonzero bracketing form is not the b=0 form).
+function _c2sp_detect_cusp(sys::DynamicalSystem,
+                            result::Codim2ContinuationResult,
+                            base::Vector{Float64},
+                            pidx::Int, linked1::Vector{Int},
+                            sidx::Int, linked2::Vector{Int};
+                            test_tolerance::Float64,
+                            normal_form_fd_step::Float64,
+                            solver, reltol, abstol, tmax, min_crossing_time)
     result.bifurcation_kind === :fold || return Codim2SpecialPoint[]
     n = length(result.primary_values)
-    n >= 3 || return Codim2SpecialPoint[]
+    n >= 2 || return Codim2SpecialPoint[]
 
     have_mult = _c2sp_have_multipliers(result)
-    p1 = result.primary_values
+    bs  = Vector{Union{Float64, Nothing}}(nothing, n)
+    nfs = Vector{Union{Nothing, MapNormalForm}}(nothing, n)
+    for j in 1:n
+        params_j = _c2sp_sample_params(result, j, base, pidx, linked1, sidx, linked2)
+        state_j  = collect(Float64, result.states[:, j])
+        all(isfinite, state_j) && all(isfinite, params_j) || continue
+        nf = try
+            map_normal_form(sys, :fold, state_j, params_j;
+                            period=result.period,
+                            normal_form_fd_step=normal_form_fd_step,
+                            solver=solver, reltol=reltol, abstol=abstol,
+                            tmax=tmax, min_crossing_time=min_crossing_time)
+        catch err
+            err isa InterruptException && rethrow()
+            nothing
+        end
+        nfs[j] = nf
+        # Accept :ok and :degenerate: a sample sitting on the cusp reports b≈0 with
+        # status :degenerate, and that finite coefficient must still anchor a point.
+        bs[j] = (nf !== nothing && nf.coefficient !== nothing &&
+                  nf.status in (:ok, :degenerate)) ? nf.coefficient : nothing
+    end
+
     points = Codim2SpecialPoint[]
-    for j in 1:(n - 2)
-        a = p1[j + 1] - p1[j]        # forward difference at j
-        b = p1[j + 2] - p1[j + 1]    # forward difference at j+1
-        # Require strictly opposite signs; zeros are excluded to avoid
-        # false detections when the primary value momentarily stops changing.
-        (a > 0 && b < 0) || (a < 0 && b > 0) || continue
-        # 3-point quadratic vertex: fit q(s)=As²+Bs+C through
-        # (0,p1[j]), (1,p1[j+1]), (2,p1[j+2]).
-        # Vertex at s* = (3p[j] - 4p[j+1] + p[j+2]) / (2·D2),
-        # D2 = p[j] - 2p[j+1] + p[j+2].  s*-1 is alpha within [j+1, j+2].
-        D2    = p1[j] - 2 * p1[j + 1] + p1[j + 2]   # nonzero: a,b strictly opposite
-        alpha = clamp((3 * p1[j] - 4 * p1[j + 1] + p1[j + 2]) / (2 * D2) - 1.0, 0.0, 1.0)
-        push!(points, _c2sp_interp(:cusp, result, j + 1, alpha, 0.0, have_mult))
+    for j in 1:n
+        bs[j] !== nothing || continue
+        abs(bs[j]::Float64) <= test_tolerance || continue
+        push!(points, _c2sp_sample(:cusp, result, j, bs[j]::Float64, have_mult, nfs[j]))
+    end
+    for j in 1:(n - 1)
+        (bs[j] !== nothing && bs[j + 1] !== nothing) || continue
+        b_lo, b_hi = bs[j]::Float64, bs[j + 1]::Float64
+        (abs(b_lo) > test_tolerance && abs(b_hi) > test_tolerance) || continue
+        b_lo * b_hi < 0 || continue
+        _c2sp_cusp_valley(bs, j) || continue
+        alpha = b_lo / (b_lo - b_hi)
+        # Leave normal_form=nothing: the interpolated point sits at the b=0 location,
+        # so a bracketing sample's nonzero-coefficient form would be misleading.
+        push!(points, _c2sp_interp(:cusp, result, j, alpha, 0.0, have_mult, nothing))
     end
     return points
+end
+
+# |b| valley test for the interpolated cusp detector: a sign change between samples j
+# and j+1 is accepted only when finite outer neighbours establish a strict decrease
+# in |b| into both sides of the bracket. Missing/boundary neighbours cannot distinguish
+# a coefficient collapse from an orientation jump, so those brackets are skipped.
+function _c2sp_cusp_valley(bs::Vector{Union{Float64, Nothing}}, j::Int)
+    (j > 1 && j + 2 <= length(bs)) || return false
+    (bs[j - 1] !== nothing && bs[j + 2] !== nothing) || return false
+    return abs(bs[j]::Float64) < abs(bs[j - 1]::Float64) &&
+           abs(bs[j + 1]::Float64) < abs(bs[j + 2]::Float64)
 end
 
 # Fold-flip: sign change of the complementary multiplier determinant.
@@ -390,8 +446,8 @@ Test-function pass over a codimension-2 locus from `codim2_curve` with
   Valid: `:cusp`, `:generalized_flip`, `:fold_flip`, `:resonance_1_1`, `:resonance_1_2`, `:bautin`.
   When a specific applicable kind is requested explicitly and `base_params` / parameter
   indices are missing, an `ArgumentError` is thrown (see below).
-- `base_params`: full base parameter vector. Required for `:generalized_flip` and `:bautin`
-  when those kinds are explicitly listed in `detect`.
+- `base_params`: full base parameter vector. Required for `:cusp`, `:generalized_flip`, and
+  `:bautin` when those kinds are explicitly listed in `detect`.
 - `param_index`: primary parameter index in `base_params`. Required when `base_params` is non-empty.
 - `second_param_index`: secondary parameter index. Required when `base_params` is non-empty.
 - `linked_param_indices`, `second_linked_param_indices`: parameter slots tied to the primary /
@@ -407,14 +463,23 @@ Points are sorted by `(kind, secondary_param, primary_param)` and deduplicated. 
 (direct sample), or `:unavailable`. Full codim-2 normal-form classification is out of scope.
 
 # Conservative interpolation policy
-`:generalized_flip` and `:bautin` evaluate the normal-form coefficient at discrete locus
-samples and interpolate to locate the zero.  The resulting point carries `normal_form=nothing`:
-attaching the nearest bracketing sample's nonzero-coefficient form to the coefficient-zero
-location would be scientifically misleading.  All interpolated points remain `converged=false`.
+`:cusp`, `:generalized_flip`, and `:bautin` evaluate a normal-form coefficient at discrete
+locus samples and interpolate to locate the zero.  The resulting point carries
+`normal_form=nothing`: attaching the nearest bracketing sample's nonzero-coefficient form to
+the coefficient-zero location would be scientifically misleading.  All interpolated points
+remain `converged=false`.  For `:cusp`, the fold coefficient `b = 1/2<p,B(q,q)>` is
+orientation-dependent while `|b|` is not; the sampled near-zero `|b|` detector is therefore
+orientation-robust (and carries the sample's actual degenerate form), and interpolated `b`
+sign changes are accepted only when `|b|` is locally minimised at the bracket, guarding against
+spurious eigenvector-orientation flips. The first and last sample pairs are not interpolated
+because they lack two outer neighbours; a cusp there is detected only by a sampled
+`|b| <= test_tolerance` value. Extend the continuation range when a cusp is suspected near a
+locus endpoint.
 
 # ArgumentError policy
 If an applicable coefficient detector is **explicitly** listed in `detect` but `base_params`,
 `param_index`, and `second_param_index` are not provided, an `ArgumentError` is raised:
+- `:cusp` on a `:fold` locus without `base_params` → `ArgumentError`
 - `:generalized_flip` on a `:pd` locus without `base_params` → `ArgumentError`
 - `:bautin` on a `:ns` locus without `base_params` → `ArgumentError`
 Inapplicable kinds (wrong locus type) return an empty result without error so that the
@@ -423,7 +488,7 @@ default all-kinds pass (`detect=nothing`) works on any locus without requiring `
 # Applicability
 | Kind               | Locus      | Needs `curve_diagnostics` | Needs `base_params` |
 |--------------------|------------|---------------------------|---------------------|
-| `:cusp`            | `:fold`    | no                        | no                  |
+| `:cusp`            | `:fold`    | no                        | yes (see above)     |
 | `:generalized_flip`| `:pd`      | no                        | yes (see above)     |
 | `:fold_flip`       | `:pd`/`:fold`| yes (multipliers)       | no                  |
 | `:resonance_1_1`   | `:ns`      | no (phase angles)         | no                  |
@@ -494,6 +559,11 @@ function codim2_special_points(
     # without the required parameter information.  Default (detect=nothing) skips
     # silently so it works on any locus.
     if explicit_detect && !params_ready
+        :cusp in detect_syms && result.bifurcation_kind === :fold &&
+            throw(ArgumentError(
+                "codim2_special_points: detect=[:cusp] was explicitly requested on a " *
+                ":fold locus but base_params, param_index, and second_param_index are " *
+                "required for normal-form coefficient evaluation."))
         :generalized_flip in detect_syms && result.bifurcation_kind === :pd &&
             throw(ArgumentError(
                 "codim2_special_points: detect=[:generalized_flip] was explicitly requested " *
@@ -530,8 +600,12 @@ function codim2_special_points(
     # --- Detection passes -------------------------------------------------
     all_points = Codim2SpecialPoint[]
 
-    :cusp in detect_syms &&
-        append!(all_points, _c2sp_detect_cusp(result))
+    if :cusp in detect_syms && params_ready
+        append!(all_points,
+                _c2sp_detect_cusp(sys, result, base, pidx, linked1,
+                                   sidx, linked2;
+                                   test_tolerance=test_tolerance, nf_kw...))
+    end
 
     :fold_flip in detect_syms &&
         append!(all_points, _c2sp_detect_fold_flip(result, test_tolerance))

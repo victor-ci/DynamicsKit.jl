@@ -54,9 +54,11 @@ _make_island_coarse_config() = BifurcationMapConfig(
     @test cfg.total_budget == 200
     @test cfg.max_depth == 3
     @test cfg.refine_on_period_disagreement == true
+    @test AdaptiveMapConfig(max_depth=30).max_depth == 30
 
     @test_throws AssertionError AdaptiveMapConfig(total_budget=0)
     @test_throws AssertionError AdaptiveMapConfig(max_depth=-1)
+    @test_throws AssertionError AdaptiveMapConfig(max_depth=31)
     @test_throws AssertionError AdaptiveMapConfig(min_confidence=1.1)
     @test_throws AssertionError AdaptiveMapConfig(confidence_delta=-0.1)
     @test_throws AssertionError AdaptiveMapConfig(
@@ -303,20 +305,36 @@ end
     # All coarse corners are period-2 → no boundary segments if center not screened.
     @test result.split_cells == 0
     @test result.uninspected_cell_count == 1
+    @test result.budget_exhausted
+    @test count(c -> c.terminal == :uninspected, result.leaf_cells) == 1
+end
+
+@testset "Max-depth-limited center screening is uninspected but not budget exhausted" begin
+    sys    = _make_circle_map()
+    coarse = _make_island_coarse_config()
+    result = adaptive_bifurcation_map(
+        sys, coarse, AdaptiveMapConfig(total_budget=500, max_depth=0);
+        initial_point=[0.5]
+    )
+    @test result.uninspected_cell_count == 1
+    @test !result.budget_exhausted
+    @test count(c -> c.terminal == :uninspected, result.leaf_cells) == 1
 end
 
 # ─── uninspected_cell_count ──────────────────────────────────────────────────────
 
-@testset "uninspected_cell_count reflects budget limitations" begin
+@testset "uninspected_cell_count tracks unscreened leaf cells" begin
     sys    = _make_circle_map()
     coarse = _circle_coarse_config(a_steps=4, b_steps=4)
     coarse_evals = 25
 
-    # Large budget: all uniform cells should be center-screened → uninspected == 0.
+    # Large budget with finite max_depth can still leave unscreened leaves at max depth.
     result_large = adaptive_bifurcation_map(sys, coarse,
                                              AdaptiveMapConfig(total_budget=coarse_evals + 500, max_depth=3);
                                              initial_point=[0.5])
-    @test result_large.uninspected_cell_count == 0
+    @test result_large.uninspected_cell_count > 0
+    @test result_large.uninspected_cell_count ==
+          count(c -> c.terminal == :uninspected, result_large.leaf_cells)
 
     # budget_used <= total_budget always.
     @test result_large.budget_used <= result_large.total_budget
@@ -383,7 +401,7 @@ end
     result = adaptive_bifurcation_map(sys, coarse, adaptive; initial_point=[0.5])
 
     data = serialize_adaptive_map_result(result)
-    @test data["format"] == "adaptive-map-v2"
+    @test data["format"] == "adaptive-map-v3"
     @test data["totalBudget"] == result.total_budget
     @test haskey(data, "uninspectedCellCount")
     @test haskey(data, "flaggedCells")
@@ -505,6 +523,21 @@ end
     bad_budget = copy(valid_data)
     bad_budget["budgetUsed"] = valid_data["totalBudget"] + 1
     @test_throws ArgumentError deserialize_adaptive_map_result(bad_budget)
+
+    # maxDepthAllowed outside the supported safe lattice range.
+    bad_depth = copy(valid_data)
+    bad_depth["maxDepthAllowed"] = 63
+    try
+        deserialize_adaptive_map_result(bad_depth)
+        @test false
+    catch e
+        @test e isa ArgumentError
+        @test occursin("maxDepthAllowed", e.msg)
+    end
+
+    bad_depth_neg = copy(valid_data)
+    bad_depth_neg["maxDepthAllowed"] = -1
+    @test_throws ArgumentError deserialize_adaptive_map_result(bad_depth_neg)
 end
 
 # ─── Cache reuse: deduplication ──────────────────────────────────────────────────
@@ -621,9 +654,37 @@ end
     @test fieldtype(DynamicsKit._AdaptiveCrossing, :key_left) == Tuple{Int,Int}
 end
 
-# ─── v2 serialization exact roundtrip ───────────────────────────────────────────
+@testset "_adaptive_detection_fn reuses its map parameter buffer" begin
+    coarse = _circle_coarse_config(a_steps=1, b_steps=1)
+    template = map_param_template(coarse)
+    a_indices = map_a_write_indices(coarse)
+    b_indices = map_b_write_indices(coarse)
+    points_to_drop = DynamicsKit._map_transient_budget(coarse)
 
-@testset "v2 serialization exact Float64 confidence roundtrip" begin
+    observed_params = Ref{Any}(nothing)
+    discrete = DiscreteMap(
+        (x, p) -> begin
+            observed_params[] = p
+            SVector(x[1])
+        end,
+        1, [:a, :b], "Adaptive parameter-buffer fixture"
+    )
+    x0_discrete = SVector{discrete.dim, Float64}(0.5)
+    det_discrete = DynamicsKit._adaptive_detection_fn(
+        discrete, coarse, template, a_indices, b_indices, x0_discrete, points_to_drop, SVector[])
+
+    det_discrete(0.125, -0.25)
+    first_params = observed_params[]
+    @test first_params == [0.125, -0.25]
+
+    det_discrete(-0.375, 0.5)
+    @test observed_params[] === first_params
+    @test first_params == [-0.375, 0.5]
+end
+
+# ─── v3 serialization exact roundtrip ───────────────────────────────────────────
+
+@testset "v3 serialization exact Float64 confidence roundtrip" begin
     sys    = _make_circle_map()
     coarse = _circle_coarse_config(a_steps=4, b_steps=4)
     result = adaptive_bifurcation_map(sys, coarse,
@@ -655,7 +716,7 @@ end
     @test result.coarse_result.a_grid == result2.coarse_result.a_grid
 end
 
-@testset "v2 reasons bitmask all valid combinations" begin
+@testset "adaptive-map reasons bitmask all valid combinations" begin
     # Verify all reason symbols round-trip correctly.
     for sym in (:period_disagreement, :status_disagreement,
                 :low_confidence, :confidence_delta, :center_disagreement)
@@ -675,6 +736,11 @@ end
 
     # Invalid bitmask throws.
     @test_throws ArgumentError DynamicsKit._decode_reason_bitmask(1 << 7)
+end
+
+@testset "terminal encoding includes :uninspected" begin
+    @test DynamicsKit._encode_terminal(:uninspected) == 3
+    @test DynamicsKit._decode_terminal(3) == :uninspected
 end
 
 @testset "bifurcation-map-v2 roundtrip" begin

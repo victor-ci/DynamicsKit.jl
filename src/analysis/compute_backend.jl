@@ -4,7 +4,8 @@
 # self-documenting and the surface can grow (new vendors) without a breaking config change.
 #
 # Vendor GPU support ships as package extensions (weak dependencies): loading `DynamicsKit` alone
-# never pulls in a GPU stack, and a CPU-only install is fully functional. A vendor extension registers
+# loads the vendor-neutral KernelAbstractions/DiffEqGPU infrastructure but no device runtime or
+# vendor binaries, and a CPU-only install is fully functional. A vendor extension registers
 # itself by adding methods to `_dynamicskit_gpu_available` / `_dynamicskit_gpu_backend` for its
 # `Val{vendor}`; see `ext/DynamicsKitMetalExt.jl` for the (deliberately non-accelerating — see below)
 # reference implementation.
@@ -231,8 +232,12 @@ function _reject_continuous_lyapunov_gpu_backend(backend::ComputeBackend, analys
 end
 
 # Small host<->device transfer helpers shared by the GPU-kernel launch paths.
+function _gpu_allocate_like(ka_backend, arr::AbstractArray{T}) where T
+    return KernelAbstractions.allocate(ka_backend, T, size(arr)...)
+end
+
 function _gpu_upload(ka_backend, arr::AbstractArray{T}) where T
-    dev = KernelAbstractions.allocate(ka_backend, T, size(arr)...)
+    dev = _gpu_allocate_like(ka_backend, arr)
     copyto!(dev, arr)
     return dev
 end

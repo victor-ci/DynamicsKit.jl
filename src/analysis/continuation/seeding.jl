@@ -145,6 +145,7 @@ function _continuation_period_candidates(sys::ContinuousODE, config::Continuatio
                     on_error=on_error
                 )
             catch err
+                err isa InterruptException && rethrow()
                 _report_continuation_error(on_error, "Skeleton parameter $(float(skeleton_param)) for period $period failed", err)
                 BranchResult[]
             end
@@ -447,6 +448,7 @@ function _continue_seed_branch(sys::ContinuousODE, config::ContinuationConfig, p
             on_reseed=on_reseed
         )
     catch err
+        err isa InterruptException && rethrow()
         _report_continuation_error(on_error, context, err)
         return nothing
     end

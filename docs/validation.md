@@ -42,6 +42,13 @@ JULIA_NUM_THREADS=4 julia --project=. -e 'using Pkg; Pkg.test()'
 The full suite includes package-quality checks through Aqua.jl, and runs in CI on every push to
 `main` and every pull request (see `.github/workflows/CI.yml`).
 
+### GPU validation scope
+
+The CUDA and AMDGPU paths have CPU-seam and device-gated parity tests, but no physical CUDA or AMD
+GPU was available for this release audit. ContinuousODE GPU sweeps are implemented, not
+hardware-validated for this release; the device-gated tests skip unless the corresponding runtime
+and functional hardware are present.
+
 ## Scientific validation matrix
 
 | Feature | Validation approach |
@@ -67,7 +74,7 @@ The full suite includes package-quality checks through Aqua.jl, and runs in CI o
 | Map special points | Analytic Hénon period-1 flip (a=0.3675) and fold (a=−0.1225); boost-converter subharmonic period-doubling recovered where BifurcationKit emits none |
 | Border-collision classification | Simpson (2014) 1D fixtures for all four scenarios — persistence `(0.4, -0.4)`, nonsmooth fold `(2, -0.4)`, persistence-with-companion `(0.4, -1.5)`, fold-with-companion `(2, -1.5)`; 2D border-collision-normal-form fixtures with rank-one continuity; discontinuity, unusable switching normals, `±1` degeneracy, nontransversality, and marginal-stability rejections; scale/overflow checks for eigenvalue-based genericity and LU-derived determinant signs; branch-crossing location with known answer (`μ*=0`); a true period-2 cycle-phase fixture proving `q`-return handling; serialization round-trips |
 | Codim-2 curve tracking | Confirm stitched curves follow the expected slice candidates and preserve source/provenance metadata |
-| Adaptive 2D refinement | Analytic circular-boundary discrete map (`f(x,p) = x` inside `p₁² + p₂² < R²`, `f(x,p) = −x` outside; exact period-1/period-2 classification with zero closure error): verified period 1 at origin, period 2 at corner (0.5,0.5); strict budget never exceeded (tight budget stops all refinement, medium budget uses exactly what it consumes); deterministic replay (identical sample/cell/segment vectors on two independent runs); quadtree tiling: total leaf-cell area = domain area to 10⁻¹⁰, all sample indices valid, depth ≤ `max_depth`; boundary-segment monotonicity (finer budget → ≥ as many segments); canonical key ordering (`key_a ≤ key_b`); serialization round-trip (all fields bitwise equal); malformed-format rejection; cache deduplication (unique-coordinate count == budget used); CPU backend provenance. |
+| Adaptive 2D refinement | Analytic circular-boundary discrete map (`f(x,p) = x` inside `p₁² + p₂² < R²`, `f(x,p) = −x` outside; exact period-1/period-2 classification with zero closure error): verified period 1 at origin, period 2 at corner (0.5,0.5); strict budget never exceeded (tight budget stops all refinement, medium budget uses exactly what it consumes); deterministic replay (identical sample/cell/segment vectors on two independent runs); quadtree tiling: total leaf-cell area = domain area to 10⁻¹⁰, all sample indices valid, depth ≤ `max_depth`; `max_depth` constructor and wire-decoder guards enforce safe lattice range (`0..30`) with explicit overflow errors; uninspected epistemic status is explicit (`terminal = :uninspected`) for both budget-limited and max-depth-limited centre skips while `budget_exhausted` remains budget-only; boundary-segment monotonicity (finer budget → ≥ as many segments); canonical key ordering (`key_a ≤ key_b`); serialization round-trip (all fields bitwise equal); malformed-format rejection; cache deduplication (unique-coordinate count == budget used); CPU backend provenance. |
 | Cache fingerprinting | Confirm implementation/schema/input changes invalidate stale artifacts |
 
 ## Cross-method validation workflow

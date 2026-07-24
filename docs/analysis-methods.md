@@ -182,7 +182,7 @@ Supported kinds and applicable loci:
 
 | Kind | Locus | Test function | Needs `base_params` |
 | --- | --- | --- | --- |
-| `:cusp` | `:fold` | Turning point of the fold locus in the primary parameter (3-point quadratic vertex) | no |
+| `:cusp` | `:fold` | Sign change / vanishing of fold normal-form coefficient `b` at locus samples | yes |
 | `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | yes |
 | `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | no (needs `curve_diagnostics`) |
 | `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | no |
@@ -198,22 +198,32 @@ Resonance test functions: `sin(θ/2)` (1:1) and `cos(θ/2)` (1:2) respect unwrap
 periodicity, correctly detect crossings at ±2π and ±π, and do not produce cross-contamination
 between the two resonances.
 
-Cusp detection uses a 3-point local quadratic vertex estimate.  Only strictly opposite-signed
-consecutive differences qualify; zero increments and plateaux never trigger false detections.
+Cusp detection evaluates the fold normal-form coefficient `b = 1/2<p,B(q,q)>` at each locus
+sample (via `map_normal_form(:fold)`); a cusp is where `b` crosses/vanishes, not where the
+fold locus turns in a chosen parameter (turning is coordinate-dependent and routinely occurs
+with `b ≠ 0`).  `b`'s sign is orientation-dependent while `|b|` is not, so a sample with
+`|b| ≤ test_tolerance` is reported `:sampled` with its actual (degenerate) `MapNormalForm`,
+and an interpolated `b` sign change is accepted only when finite outer samples establish strict
+descent in `|b|` into both sides of the bracket — a conservative continuity guard against
+spurious eigenvector-orientation flips. Flat-magnitude sign flips are rejected. The first and last
+sample pairs are also rejected because one missing outer neighbour prevents establishing two-sided
+descent. A cusp in either edge bracket is detected only if a sampled value satisfies
+`|b| ≤ test_tolerance`; if a cusp is suspected near a locus endpoint, extend the continuation range
+so the sign-change bracket has outer neighbours.
 
 Conservative location: a sample whose scalar test magnitude is within `test_tolerance`
 (default `1e-5`) is returned with `status=:sampled`; otherwise sign-change brackets are
-returned with `status=:interpolated`. Coefficient-zero detections (`:generalized_flip`,
+returned with `status=:interpolated`. Coefficient-zero detections (`:cusp`, `:generalized_flip`,
 `:bautin`) evaluate the normal form at discrete locus samples, then interpolate the zero location.
 The resulting `Codim2SpecialPoint` carries `normal_form=nothing` — attaching the nearest
 bracketing sample's nonzero-coefficient form to the coefficient-zero point would be
 scientifically misleading.  All interpolated points carry `converged=false`.
 
-`ArgumentError` policy: if `:generalized_flip` or `:bautin` is **explicitly** listed in `detect`
-on an applicable locus (`:pd` or `:ns` respectively) but `base_params` / parameter indices are
-absent, an `ArgumentError` is raised.  The default `detect=nothing` (all kinds) silently skips
-coefficient detectors that lack parameter information, so it works on any locus without requiring
-`base_params`.
+`ArgumentError` policy: if `:cusp`, `:generalized_flip`, or `:bautin` is **explicitly** listed in
+`detect` on an applicable locus (`:fold`, `:pd`, or `:ns` respectively) but `base_params` /
+parameter indices are absent, an `ArgumentError` is raised.  The default `detect=nothing` (all
+kinds) silently skips coefficient detectors that lack parameter information, so it works on any
+locus without requiring `base_params`.
 
 `DiscreteMap` systems are fully supported. `ContinuousODE` (Poincaré return-map) systems use
 the same path; if `map_normal_form` returns `status=:fd_step_unstable` for a sample that
@@ -223,8 +233,8 @@ Full codim-2 normal-form classification is explicitly out of scope.
 
 Keyword arguments:
 - `detect`: tuple/vector of kinds to detect, or `nothing` for all six (default).
-- `base_params`, `param_index`, `second_param_index`: required for `:generalized_flip` and `:bautin`
-  when those kinds are explicitly listed (see `ArgumentError` policy above).
+- `base_params`, `param_index`, `second_param_index`: required for `:cusp`, `:generalized_flip`,
+  and `:bautin` when those kinds are explicitly listed (see `ArgumentError` policy above).
 - `linked_param_indices`, `second_linked_param_indices`: parameter slots linked to the primary / secondary axes.
 - `duplicate_primary_tol`, `duplicate_secondary_tol`: proximity thresholds for deduplication (default `1e-7`).
 - `test_tolerance`: absolute scalar-test threshold for accepting a sampled root (default `1e-5`).
@@ -597,7 +607,7 @@ regime_boundary_distances(a_grid, b_grid, labels, resolved;
 For every *known-regime* cell this reports the physical Euclidean distance to the nearest regime boundary — "how far can this operating point drift before the mode changes." Method:
 
 - **Boundary cells** are resolved cells 4-connected to a *different* known regime or to an *unknown* cell (domain edges are handled separately by the edge policy, never as an interior boundary). Boundary cells have margin `0`.
-- **`distance`** is the Euclidean distance from each cell centre to the nearest boundary *cell centre*, computed with an O(NM) generalized separable squared-Euclidean **distance transform** (Felzenszwalb–Huttenlocher lower-envelope-of-parabolas) evaluated at the **true grid coordinates**, so monotone nonuniform rectilinear grids are supported exactly with no index-distance approximation and no new dependency. This is a finite-grid convention with ≤ one cell-diagonal discretization error versus the true interface.
+- **`distance`** is the Euclidean distance from each cell centre to the nearest boundary *cell centre*, computed with an O(NM) generalized separable squared-Euclidean **distance transform** (Felzenszwalb–Huttenlocher lower-envelope-of-parabolas) evaluated at the **true grid coordinates**, so monotone nonuniform rectilinear grids are supported exactly with no index-distance approximation and no new dependency. This is a finite-grid convention with ≤ one cell-diagonal discretization error versus the true interface. Because the 2D norm combines raw axis coordinates, it is scientifically meaningful only when the two parameters have commensurate units/scales or have been normalized first; otherwise use the per-axis margins.
 - **`distance_a` / `distance_b`** are the per-axis (single-parameter) drift margins along each grid line; `Inf` where that line carries no boundary cell.
 - **Unknown cells never become a physical regime.** An unresolved cell has no margin (`distance = NaN`, `valid = false`) and forms a boundary for its known neighbours ("margin to unknown evidence").
 
@@ -675,7 +685,7 @@ result = adaptive_bifurcation_map(sys, coarse_config, adaptive_config;
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `total_budget` | `1024` | Strict upper bound on unique parameter-point evaluations (coarse + refinement) |
-| `max_depth` | `4` | Maximum quadtree subdivision depth |
+| `max_depth` | `4` | Maximum quadtree subdivision depth (`0 ≤ max_depth ≤ 30`) |
 | `refine_on_period_disagreement` | `true` | Refine when corner periods differ |
 | `refine_on_status_disagreement` | `true` | Refine when corner status codes differ |
 | `min_confidence` | `0.0` | Refine any cell whose minimum corner confidence is below this threshold (0 = disabled) |
@@ -685,7 +695,7 @@ At least one refinement trigger must be active.
 
 `coarse_config.reuse_neighbor_seeds` must be `false`: traversal-dependent neighbor modes would make the adaptive result depend on thread scheduling and are explicitly rejected.
 
-**Algorithm.** At max depth `D`, each coarse axis step spans `2^D` integer lattice units. Shared edge midpoints between adjacent cells have identical integer keys; deduplication is exact with no floating-point comparisons. The work queue has two phases: (A) all triggered cells are split first, (B) uniform-corner cells are centre-screened for enclosed-boundary detection. Both phases proceed in source order for deterministic output. If the budget is exhausted before all eligible work completes, the limitation is recorded explicitly in `budget_exhausted` and `uninspected_cell_count`; the algorithm never silently suppresses coverage gaps.
+**Algorithm.** At max depth `D`, each coarse axis step spans `2^D` integer lattice units. Shared edge midpoints between adjacent cells have identical integer keys; deduplication is exact with no floating-point comparisons. The work queue has two phases: (A) all triggered cells are split first, (B) uniform-corner cells are centre-screened for enclosed-boundary detection. Both phases proceed in source order for deterministic output. Uniform-corner cells whose center cannot be evaluated (budget exhausted or max-depth reached) are recorded explicitly as `terminal = :uninspected` and counted in `uninspected_cell_count`. `budget_exhausted` is set only when budget blocked otherwise-eligible work; max-depth-limited cells alone do not set it.
 
 **`AdaptiveMapResult` fields:**
 
@@ -698,13 +708,13 @@ At least one refinement trigger must be active.
 | `total_budget`, `budget_used` | Requested and actual evaluation counts (`budget_used ≤ total_budget` always) |
 | `coarse_evaluations`, `refinement_evaluations` | Budget breakdown |
 | `budget_exhausted` | `true` iff the budget prevented at least one otherwise-eligible refinement or centre-screening step |
-| `uninspected_cell_count` | Number of uniform-corner cells that could not be centre-screened due to budget |
+| `uninspected_cell_count` | Number of uniform-corner cells with unevaluated center (`terminal = :uninspected`) due to budget or max-depth limits |
 | `max_depth_reached`, `max_depth_allowed` | Depth provenance |
 | `flagged_cells`, `split_cells` | Refinement statistics (triggered cells, successfully split cells) |
 | `compute_backend` | Backend symbol from the coarse sweep (e.g. `:cpu`) |
 | `system_name`, `param_names`, `timestamp` | Provenance |
 
-Each `AdaptiveMapLeafCell` has `terminal` ∈ `:interior` (uniform, centre confirmed), `:boundary` (classification change present or at max depth), `:budget_limited` (could not be split due to exhausted budget).
+Each `AdaptiveMapLeafCell` has `terminal` ∈ `:interior` (uniform, centre confirmed), `:boundary` (classification change present or at max depth), `:budget_limited` (could not be split due to exhausted budget), `:uninspected` (uniform corners, centre not evaluated).
 
 Boundary segments in `AdaptiveMapSegment` store physical endpoints `(a0,b0)-(a1,b1)` plus canonical neighbouring classification keys `(key_a, key_b)` and `ambiguity` ∈ `:resolved`, `:ambiguous`, `:multi_region`. Segments are derived by categorical marching-squares on each final leaf cell — no period value interpolation. For a standard two-classification two-crossing leaf, the two edge midpoints are connected directly (`:resolved`). For a checkerboard four-crossing leaf the cell centre determines the correct pairing (`:resolved`) or spokes are used if unavailable (`:ambiguous`). For three-or-more classification regimes, each crossing is connected to the cell centre as a spoke (`:multi_region`).
 
@@ -725,7 +735,7 @@ s = adaptive_map_summary(result)
 **Serialization:**
 
 ```julia
-data = serialize_adaptive_map_result(result)       # format "adaptive-map-v2"
+data = serialize_adaptive_map_result(result)       # format "adaptive-map-v3"
 result2 = deserialize_adaptive_map_result(data)    # exact round-trip
 ```
 

@@ -9,12 +9,35 @@
 # first.  Cells not activated by those triggers are subsequently classified and,
 # when their corner classifications are uniform, center-screened in deterministic
 # source order (column-major for coarse cells, SW/SE/NW/NE for child cells).
-# If budget runs out before center-screening completes, unscreened cells are
-# recorded as uninspected in the result.
+# If budget runs out (or max depth is reached) before center-screening completes,
+# unscreened cells are recorded as uninspected in the result.
 
 # ─── Integer-lattice helpers ────────────────────────────────────────────────────
 
-@inline _adaptive_lattice_scale(max_depth::Int) = 1 << max_depth   # 2^max_depth
+@inline function _adaptive_lattice_scale(max_depth::Int)
+    (0 <= max_depth <= _ADAPTIVE_MAP_MAX_DEPTH) || throw(ArgumentError(
+        "Adaptive map max depth $max_depth is out of range [0, $(_ADAPTIVE_MAP_MAX_DEPTH)] for lattice scaling."))
+    return 1 << max_depth   # 2^max_depth
+end
+
+@inline function _adaptive_checked_mul(lhs::Int, rhs::Int, context::AbstractString)
+    try
+        return Base.checked_mul(lhs, rhs)
+    catch err
+        err isa OverflowError || rethrow()
+        throw(ArgumentError(
+            "Adaptive map integer overflow while computing $context: $lhs * $rhs exceeds Int range. " *
+            "Reduce max_depth (<= $(_ADAPTIVE_MAP_MAX_DEPTH)) or coarse grid resolution."))
+    end
+end
+
+function _adaptive_axis_lattice_coords(step_count::Int, scale::Int, axis_name::AbstractString)
+    coords = Vector{Int}(undef, step_count + 1)
+    @inbounds for idx in 0:step_count
+        coords[idx + 1] = _adaptive_checked_mul(idx, scale, "$axis_name lattice coordinate")
+    end
+    return coords
+end
 
 @inline _adaptive_class_key(status_code::Int, period::Int) = (status_code, period)
 @inline _adaptive_sample_key(s::AdaptiveMapSample) = _adaptive_class_key(s.status_code, s.period)
@@ -148,7 +171,7 @@ function _adaptive_cell_segments!(segments::Vector{AdaptiveMapSegment},
     n_cross == 0 && return
 
     ia0 = cell.ia0; ia1 = cell.ia1; ib0 = cell.ib0; ib1 = cell.ib1
-    ia_mid = (ia0 + ia1) ÷ 2; ib_mid = (ib0 + ib1) ÷ 2
+    ia_mid = ia0 + ((ia1 - ia0) ÷ 2); ib_mid = ib0 + ((ib1 - ib0) ÷ 2)
     a0 = cell.a0; a1 = cell.a1; b0 = cell.b0; b1 = cell.b1
     a_mid = (a0 + a1) * 0.5; b_mid = (b0 + b1) * 0.5
 
@@ -274,13 +297,15 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
     scale = _adaptive_lattice_scale(max_depth)
     na = length(coarse_result.a_grid)
     nb = length(coarse_result.b_grid)
+    a_lattice = _adaptive_axis_lattice_coords(na - 1, scale, "a")
+    b_lattice = _adaptive_axis_lattice_coords(nb - 1, scale, "b")
 
     leaf_cells   = AdaptiveMapLeafCell[]
     max_depth_reached = Ref(0)
     split_cells  = Ref(0)
     flagged_cells = Ref(0)
     uninspected  = Ref(0)
-    budget_limited_or_uninspected = Ref(false)   # tracks budget_exhausted semantics
+    budget_limited = Ref(false)   # tracks budget_exhausted semantics
 
     # Build initial queues from coarse cells.
     # Triggered cells → refine_queue (priority).
@@ -289,8 +314,8 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
     center_queue = _AdaptiveWorkItem[]
 
     for i in 1:(na - 1), j in 1:(nb - 1)
-        ia0 = (i - 1) * scale; ia1 = i * scale
-        ib0 = (j - 1) * scale; ib1 = j * scale
+        ia0 = a_lattice[i]; ia1 = a_lattice[i + 1]
+        ib0 = b_lattice[j]; ib1 = b_lattice[j + 1]
         si_sw = lookup[(ia0, ib0)]; si_se = lookup[(ia1, ib0)]
         si_nw = lookup[(ia0, ib1)]; si_ne = lookup[(ia1, ib1)]
         sw = samples[si_sw]; se = samples[si_se]
@@ -344,7 +369,7 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
                 continue
             end
 
-            ia_mid = (ia0 + ia1) ÷ 2; ib_mid = (ib0 + ib1) ÷ 2
+            ia_mid = ia0 + ((ia1 - ia0) ÷ 2); ib_mid = ib0 + ((ib1 - ib0) ÷ 2)
             next_depth = depth + 1
             a0 = item.a0; a1 = item.a1; b0 = item.b0; b1 = item.b1
             a_mid = (a0 + a1) * 0.5; b_mid = (b0 + b1) * 0.5
@@ -361,7 +386,7 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
 
             if budget_remaining[] < n_new
                 # Cannot afford all required evaluations; record as budget-limited.
-                budget_limited_or_uninspected[] = true
+                budget_limited[] = true
                 push!(leaf_cells, AdaptiveMapLeafCell(
                     a0, a1, b0, b1,
                     ia0, ia1, ib0, ib1, depth,
@@ -381,7 +406,7 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
 
             if any(==(0), evaluated)
                 # Budget exhausted mid-evaluation; mark budget-limited.
-                budget_limited_or_uninspected[] = true
+                budget_limited[] = true
                 push!(leaf_cells, AdaptiveMapLeafCell(
                     a0, a1, b0, b1,
                     ia0, ia1, ib0, ib1, depth,
@@ -470,8 +495,20 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
                 continue
             end
 
-            ia_cc = (ia0 + ia1) ÷ 2; ib_cc = (ib0 + ib1) ÷ 2
+            ia_cc = ia0 + ((ia1 - ia0) ÷ 2); ib_cc = ib0 + ((ib1 - ib0) ÷ 2)
             a_cc  = (item.a0 + item.a1) * 0.5; b_cc = (item.b0 + item.b1) * 0.5
+            has_distinct_center = ia0 < ia_cc < ia1 && ib0 < ib_cc < ib1
+
+            if !has_distinct_center
+                # No distinct integer-lattice center exists for this cell at the configured max depth.
+                uninspected[] += 1
+                push!(leaf_cells, AdaptiveMapLeafCell(
+                    item.a0, item.a1, item.b0, item.b1,
+                    ia0, ia1, ib0, ib1, depth,
+                    item.si_sw, item.si_se, item.si_nw, item.si_ne,
+                    0, :uninspected, Symbol[]))
+                continue
+            end
 
             # Free reuse: if the center key is already in the lookup, classify without
             # spending budget, regardless of budget_remaining or depth.
@@ -505,16 +542,14 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
             end
 
             if depth >= max_depth || budget_remaining[] <= 0
-                # Cannot center-screen; record as uninspected if below max depth.
-                if depth < max_depth && budget_remaining[] <= 0
-                    uninspected[] += 1
-                    budget_limited_or_uninspected[] = true
-                end
+                # Cannot center-screen.
+                uninspected[] += 1
+                (depth < max_depth && budget_remaining[] <= 0) && (budget_limited[] = true)
                 push!(leaf_cells, AdaptiveMapLeafCell(
                     item.a0, item.a1, item.b0, item.b1,
                     ia0, ia1, ib0, ib1, depth,
                     item.si_sw, item.si_se, item.si_nw, item.si_ne,
-                    0, :interior, Symbol[]))
+                    0, :uninspected, Symbol[]))
                 continue
             end
 
@@ -525,12 +560,12 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
             if si_cc == 0
                 # Budget ran out during center evaluation.
                 uninspected[] += 1
-                budget_limited_or_uninspected[] = true
+                budget_limited[] = true
                 push!(leaf_cells, AdaptiveMapLeafCell(
                     item.a0, item.a1, item.b0, item.b1,
                     ia0, ia1, ib0, ib1, depth,
                     item.si_sw, item.si_se, item.si_nw, item.si_ne,
-                    0, :interior, Symbol[]))
+                    0, :uninspected, Symbol[]))
                 continue
             end
 
@@ -568,7 +603,7 @@ function _run_adaptive_refinement(coarse_result::BifurcationMapResult,
     end
 
     return leaf_cells, segments, max_depth_reached[], split_cells[],
-           flagged_cells[], uninspected[], budget_limited_or_uninspected[]
+           flagged_cells[], uninspected[], budget_limited[]
 end
 
 # ─── Detection helpers ──────────────────────────────────────────────────────────
@@ -646,8 +681,9 @@ function _adaptive_detection_fn(sys::DiscreteMap,
                                  initial_point,
                                  points_to_drop::Int,
                                  multistability_seeds)
+    param_buffer = copy(param_template)
     return function(a::Float64, b::Float64)
-        params = map_params_from_template(param_template, a_indices, b_indices, a, b)
+        params = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a, b)
         return _map_adaptive_detection(sys, coarse_config, params, initial_point,
                                        points_to_drop, multistability_seeds)
     end
@@ -664,8 +700,9 @@ function _adaptive_detection_fn(sys::ContinuousODE,
                                  solver=Tsit5(),
                                  reltol::Float64=1e-8,
                                  abstol::Float64=1e-8)
+    param_buffer = copy(param_template)
     return function(a::Float64, b::Float64)
-        params = map_params_from_template(param_template, a_indices, b_indices, a, b)
+        params = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a, b)
         return _map_adaptive_detection(sys, coarse_config, params, initial_point,
                                        points_to_drop, multistability_seeds;
                                        solver=solver, reltol=reltol, abstol=abstol)
@@ -774,6 +811,8 @@ function _run_adaptive_from_coarse(sys::DynamicalSystem,
     total_budget  = adaptive.total_budget
     ref_budget    = max(total_budget - coarse_evals, 0)
     scale         = _adaptive_lattice_scale(adaptive.max_depth)
+    a_lattice     = _adaptive_axis_lattice_coords(na - 1, scale, "a")
+    b_lattice     = _adaptive_axis_lattice_coords(nb - 1, scale, "b")
 
     status_diag = get(coarse_diagnostics, "status", nothing)
     sc_mat = isnothing(status_diag) ? nothing : get(status_diag, "statusCodes", nothing)
@@ -786,7 +825,7 @@ function _run_adaptive_from_coarse(sys::DynamicalSystem,
 
     per = coarse_result.periodicity
     for i in 1:na, j in 1:nb
-        ia = (i - 1) * scale; ib = (j - 1) * scale
+        ia = a_lattice[i]; ib = b_lattice[j]
         period      = per[i, j]
         status_code = isnothing(sc_mat) ? _map_status_code(:unknown) : sc_mat[i, j]
         conf        = isnothing(cc_mat) ? 0.0 : cc_mat[i, j]
@@ -870,8 +909,8 @@ Fields:
 - `coarse_evaluations`, `refinement_evaluations`
 - `budget_exhausted` — true when budget prevented at least one eligible refinement or
   center-screening step
-- `uninspected_cell_count` — interior leaf cells whose center was not evaluated due to
-  budget (depth < max_depth_allowed)
+- `uninspected_cell_count` — uniform-corner leaf cells whose center was not evaluated
+  (`terminal == :uninspected`) due to budget or max-depth limits
 - `max_depth_reached`, `max_depth_allowed`
 - `flagged_cells`, `split_cells`
 - `leaf_cell_count`, `boundary_segment_count`
@@ -910,7 +949,7 @@ function adaptive_map_summary(result::AdaptiveMapResult)
     )
 end
 
-# ─── Serialization: adaptive-map-v2 (exact columnar format) ─────────────────────
+# ─── Serialization: adaptive-map-v3 (exact columnar format) ─────────────────────
 #
 # Closed sets for integer encoding — adding a new trigger/terminal/ambiguity value
 # requires updating these constants and the format version string.
@@ -927,6 +966,7 @@ const _ADAPTIVE_TERMINAL_CODES = (
     (:interior,      0),
     (:boundary,      1),
     (:budget_limited, 2),
+    (:uninspected,   3),
 )
 
 const _ADAPTIVE_AMBIGUITY_CODES = (
@@ -1000,7 +1040,7 @@ end
     serialize_adaptive_map_result(result::AdaptiveMapResult) -> Dict{String, Any}
 
 Produce a versioned exact columnar (JSON-compatible) representation of an
-`AdaptiveMapResult`.  Format string: `"adaptive-map-v2"`.
+`AdaptiveMapResult`.  Format string: `"adaptive-map-v3"`.
 
 Roundtrip: `deserialize_adaptive_map_result(serialize_adaptive_map_result(result))`.
 """
@@ -1021,7 +1061,7 @@ function serialize_adaptive_map_result(result::AdaptiveMapResult)
     end
 
     return Dict{String, Any}(
-        "format"                => "adaptive-map-v2",
+        "format"                => "adaptive-map-v3",
         "systemName"            => result.system_name,
         "paramNames"            => String.(collect(result.param_names)),
         "timestamp"             => _serialize_timestamp(result.timestamp),
@@ -1087,8 +1127,8 @@ Rejects malformed payloads with an `ArgumentError`.
 """
 function deserialize_adaptive_map_result(data::AbstractDict)
     fmt = get(data, "format", "")
-    fmt == "adaptive-map-v2" || throw(ArgumentError(
-        "Unrecognised adaptive map result format $(repr(fmt)); expected \"adaptive-map-v2\"."))
+    fmt == "adaptive-map-v3" || throw(ArgumentError(
+        "Unrecognised adaptive map result format $(repr(fmt)); expected \"adaptive-map-v3\"."))
 
     haskey(data, "paramNames") || throw(ArgumentError("Missing required field 'paramNames'."))
     pn_raw = data["paramNames"]
@@ -1125,10 +1165,13 @@ function deserialize_adaptive_map_result(data::AbstractDict)
     all(>=(0), sdepth) || throw(ArgumentError("'samples.depth' values must be >= 0."))
 
     max_depth_allowed = Int(data["maxDepthAllowed"])
+    (0 <= max_depth_allowed <= _ADAPTIVE_MAP_MAX_DEPTH) || throw(ArgumentError(
+        "'maxDepthAllowed' must be in [0, $(_ADAPTIVE_MAP_MAX_DEPTH)] to avoid integer-lattice overflow; got $max_depth_allowed."))
     na = length(coarse.a_grid) - 1
     nb = length(coarse.b_grid) - 1
-    max_ia = na * (1 << max_depth_allowed)
-    max_ib = nb * (1 << max_depth_allowed)
+    scale = _adaptive_lattice_scale(max_depth_allowed)
+    max_ia = _adaptive_checked_mul(na, scale, "leaf-cell a-lattice range bound")
+    max_ib = _adaptive_checked_mul(nb, scale, "leaf-cell b-lattice range bound")
 
     samples = Vector{AdaptiveMapSample}(undef, n_s)
     for i in 1:n_s

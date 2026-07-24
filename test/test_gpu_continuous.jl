@@ -127,6 +127,33 @@ using StaticArrays
         @test basins_of_attraction(sys, bcfg; backend=auto_backend()).compute_backend == :cpu
     end
 
+    @testset "public one-cell continuous GPU sweeps match CPU" begin
+        map_cfg = BifurcationMapConfig(
+            a_min=0.2, a_max=0.2, a_steps=0,
+            b_min=3.5, b_max=3.5, b_steps=0,
+            a_index=1, b_index=3,
+            base_params=[0.2, 0.2, 3.5],
+            max_period=8, iterations=140, precision=1e-3
+        )
+        map_cpu = bifurcation_map(sys, map_cfg)
+        map_gpu = bifurcation_map(sys, map_cfg; backend=seam)
+        @test size(map_gpu.periodicity) == (1, 1)
+        @test map_gpu.periodicity == map_cpu.periodicity
+        @test map_gpu.compute_backend == :_ka_cpu_test
+
+        basins_cfg = BasinsConfig(
+            bif_param=3.5, param_index=3, fixed_params=[0.2, 0.2, 3.5],
+            x_min=1.0, x_max=1.0, x_steps=0,
+            y_min=1.0, y_max=1.0, y_steps=0,
+            x_index=1, y_index=2, max_period=6, iterations=120, precision=1e-3
+        )
+        basins_cpu = basins_of_attraction(sys, basins_cfg)
+        basins_gpu = basins_of_attraction(sys, basins_cfg; backend=seam)
+        @test size(basins_gpu.periodicity) == (1, 1)
+        @test basins_gpu.periodicity == basins_cpu.periodicity
+        @test basins_gpu.compute_backend == :_ka_cpu_test
+    end
+
     @testset "low-level ensemble sweep matches the CPU detector (period + final_point)" begin
         # Directly compare `_continuous_poincare_gpu_sweep` with `_detect_continuous_poincare_period`
         # across a set of (u0, p) seeds spanning period-1/2/4 and chaos.
@@ -168,11 +195,33 @@ using StaticArrays
         @test_throws ArgumentError BE._continuous_poincare_gpu_sweep(
             sys, [copy(u0), [1.0, 1.0]], [copy(p), copy(p)], ka_cpu; sweep_kwargs...)
 
-        # A valid multi-trajectory call still runs cleanly (not over-rejected by the new checks). Single
-        # -trajectory (`n == 1`) ensembles are a separate, pre-existing DiffEqGPU/EnsembleGPUKernel
-        # limitation unrelated to this validation and are not asserted on here.
+        # A valid multi-trajectory call still runs cleanly (not over-rejected by the new checks).
         result = BE._continuous_poincare_gpu_sweep(sys, [copy(u0), copy(u0)], [copy(p), copy(p)], ka_cpu; sweep_kwargs...)
         @test length(result) == 2
+    end
+
+    @testset "_continuous_poincare_gpu_sweep supports one trajectory with concrete result eltype" begin
+        u0 = [1.0, 1.0, 1.0]
+        p = [0.2, 0.2, 3.5]
+        sweep_kwargs = (transient=20, max_period=8, precision=1e-3, reltol=1e-9, abstol=1e-9,
+                        min_crossing_time=1e-6, divergence_cutoff=Inf)
+        warmed = BE._continuous_gpu_warmup_states(
+            sys, [copy(u0)], [copy(p)];
+            solver=BE.Tsit5(), reltol=1e-9, abstol=1e-9, min_crossing_time=1e-6
+        )
+        gpu = BE._continuous_poincare_gpu_sweep(sys, warmed, [copy(p)], ka_cpu; sweep_kwargs...)
+        cpu = BE._detect_continuous_poincare_period(
+            sys, p;
+            initial_point=u0,
+            projected=true,
+            return_crossing_diagnostics=false,
+            sweep_kwargs...
+        )
+        @test length(gpu) == 1
+        @test eltype(gpu) !== Any
+        @test isconcretetype(eltype(gpu))
+        @test gpu[1].period == cpu.period
+        @test gpu[1].status == cpu.status
     end
 
     @testset "finite divergence_cutoff: excursion between crossings (not at one) is still caught" begin
@@ -212,9 +261,8 @@ using StaticArrays
         @test gpu[1].status == :diverged
         @test gpu[1].status == cpu.status
 
-        # End-to-end through the public sweep too (the path an application actually calls). A second
-        # b value pads the sweep past the single-trajectory ensemble edge case and is asserted for
-        # CPU/GPU consistency alongside the divergent cell rather than dropped.
+        # End-to-end through the public sweep too (the path an application actually calls): assert
+        # CPU/GPU consistency on both the divergent cell and a neighbouring bounded cell.
         cfg = BifurcationMapConfig(a_min=0.2, a_max=0.2, a_steps=0, b_min=5.7, b_max=5.8, b_steps=1,
                                    a_index=1, b_index=3, base_params=[0.2, 0.2, 3.0],
                                    max_period=8, iterations=29, precision=1e-3, divergence_cutoff=cutoff)

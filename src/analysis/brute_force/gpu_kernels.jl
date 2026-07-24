@@ -110,14 +110,18 @@ end
 _gpu_known_mask(cells::Nothing, na::Int, nb::Int) = fill(false, na, nb)
 _gpu_known_mask(cells, na::Int, nb::Int) = cells.known
 
-# Upload a (possibly `nothing`) cache-hook grid's current contents (so pre-seeded/known cells survive
-# the round trip), launch `kernel!` over the full (na, nb) range, then copy the results back — honoring
-# the cache hook exactly like the CPU `:fixed` path (skip known cells, mark all cells known afterwards).
+# Upload a cache-hook grid's current contents so pre-seeded cells survive the round trip, launch
+# `kernel!` over the full (na, nb) range, then copy the results back. With no cache, `known` is false
+# everywhere and every kernel passed here must write every element of every output array. That
+# full-write invariant lets the uncached path allocate output-only device storage without uploading
+# host defaults.
 function _gpu_run_2d_sweep!(ka_backend, na::Int, nb::Int, host_arrays::Tuple,
                             kernel_fn, cells, extra_args...)
     known_host = _gpu_known_mask(cells, na, nb)
     known_dev = _gpu_upload(ka_backend, known_host)
-    dev_arrays = map(arr -> _gpu_upload(ka_backend, arr), host_arrays)
+    dev_arrays = cells === nothing ?
+                 map(arr -> _gpu_allocate_like(ka_backend, arr), host_arrays) :
+                 map(arr -> _gpu_upload(ka_backend, arr), host_arrays)
 
     a_vals_dev, b_vals_dev = extra_args[1], extra_args[2]
     kernel_fn(ka_backend)(dev_arrays..., a_vals_dev, b_vals_dev, known_dev, extra_args[3:end]...; ndrange=(na, nb))

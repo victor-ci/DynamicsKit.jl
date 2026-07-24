@@ -105,6 +105,7 @@ function _section_condition_gradient(sys::ContinuousODE,
     gradient = try
         ForwardDiff.gradient(condition, u0)
     catch err
+        err isa InterruptException && rethrow()
         error("Could not differentiate the Poincaré section condition for $(sys.name): $(_continuation_error_message(err))")
     end
     all(isfinite, gradient) || error("Poincaré section gradient for $(sys.name) contains non-finite values.")
@@ -670,6 +671,7 @@ function _branch_points_with_recomputed_stability(sys::DynamicalSystem,
             stable, _ = _map_stability(sys, state, local_params, period; kwargs...)
             return _branch_point_with_stability(point, stable)
         catch err
+            err isa InterruptException && rethrow()
             error("Failed to recompute return-map stability for $(branch.system_name) period-$(branch.period) branch point $idx at $(branch.param_name)=$(point.param): $(_continuation_error_message(err))")
         end
     end

@@ -10,6 +10,7 @@
 # science, rather than skipping the vendor entirely.
 
 using Metal
+using KernelAbstractions: @kernel, @index, @Const
 
 @testset "GPU compute backend" begin
     BE = DynamicsKit
@@ -229,6 +230,56 @@ using Metal
         br2 = basins_of_attraction(sys, b_cfg; cells=bg2, backend=gpu_backend(:_ka_cpu_test))
         @test br2.periodicity == bf.periodicity
         @test all(bg2.known)
+    end
+
+    @testset "_gpu_run_2d_sweep! preserves default/cache-hook semantics on the KA CPU seam" begin
+        ka_backend = BE._dynamicskit_gpu_backend(Val(:_ka_cpu_test))
+        na, nb = 5, 4
+        a_vals = collect(10:10:(10 * na))
+        b_vals = collect(1:nb)
+        a_vals_dev = BE._gpu_upload(ka_backend, a_vals)
+        b_vals_dev = BE._gpu_upload(ka_backend, b_vals)
+
+        @kernel function sum_kernel!(out, @Const(a_axis), @Const(b_axis), @Const(known))
+            i, j = @index(Global, NTuple)
+            @inbounds if !known[i, j]
+                out[i, j] = a_axis[i] + b_axis[j]
+            end
+        end
+
+        expected = Int[a_vals[i] + b_vals[j] for i in 1:na, j in 1:nb]
+
+        host_default = fill(-999, na, nb)
+        BE._gpu_run_2d_sweep!(
+            ka_backend, na, nb, (host_default,), sum_kernel!, nothing, a_vals_dev, b_vals_dev
+        )
+        @test host_default == expected
+
+        fresh_cells = BasinsCellGrid(na, nb)
+        BE._gpu_run_2d_sweep!(
+            ka_backend, na, nb, (fresh_cells.periodicity,), sum_kernel!, fresh_cells, a_vals_dev, b_vals_dev
+        )
+        @test fresh_cells.periodicity == expected
+        @test all(fresh_cells.known)
+
+        cached_cells = BasinsCellGrid(na, nb)
+        for i in 1:na, j in 1:nb
+            if (i + j) % 2 == 0
+                cached_cells.periodicity[i, j] = 123456
+                cached_cells.known[i, j] = true
+            end
+        end
+        expected_cached = copy(cached_cells.periodicity)
+        for i in 1:na, j in 1:nb
+            if !cached_cells.known[i, j]
+                expected_cached[i, j] = expected[i, j]
+            end
+        end
+        BE._gpu_run_2d_sweep!(
+            ka_backend, na, nb, (cached_cells.periodicity,), sum_kernel!, cached_cells, a_vals_dev, b_vals_dev
+        )
+        @test cached_cells.periodicity == expected_cached
+        @test all(cached_cells.known)
     end
 
     @testset "device-array copy-back avoids an intermediate Array(dev) allocation" begin

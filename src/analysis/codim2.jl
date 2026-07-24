@@ -287,6 +287,7 @@ function codim2_curve(sys::DynamicalSystem,
                 kwargs...
             )
         catch err
+            err isa InterruptException && rethrow()
             slice_statuses[idx] = :continuation_failed
             slice_messages[idx] = sprint(showerror, err)
             return nothing
@@ -774,6 +775,7 @@ function _codim2_defining_curve(sys::DynamicalSystem,
                 continuation(build_prob(z0, p2_seed), PALC(), build_par(step);
                              normC=norminf, verbosity=0, bothside=true)
             catch err
+                err isa InterruptException && rethrow()
                 @warn "codim2 defining-system continuation attempt failed" step err
                 nothing
             end

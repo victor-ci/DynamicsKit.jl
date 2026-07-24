@@ -331,6 +331,7 @@ function _reach_branch_state_at_param(sys::DiscreteMap,
     try
         stable, _ = _map_stability(sys, state, params_at_p, period; tol=config.stability_tol)
     catch err
+        err isa InterruptException && rethrow()
         return _ReachBranchAtParam(
             index, branch_id, period, true, false, false, minimal_period, cycle, scale, confidence,
             "stability_unavailable: " * _continuation_error_message(err))
@@ -887,6 +888,7 @@ function _reach_branch_state_at_param(sys::ContinuousODE,
             reltol=config.ode_reltol, abstol=config.ode_abstol,
             tmax=tmax, min_crossing_time=config.min_crossing_time)
     catch err
+        err isa InterruptException && rethrow()
         return _ReachBranchAtParam(
             index, branch_id, period, true, false, false, minimal_period, cycle, scale, confidence,
             "stability_unavailable: " * _continuation_error_message(err))

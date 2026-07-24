@@ -228,6 +228,7 @@ function switching_event_diagnostics(sys::DynamicalSystem, states, params)
             value = try
                 _switching_guard_value(event, samples[idx], param_samples[idx])
             catch err
+                err isa InterruptException && rethrow()
                 failure_count += 1
                 push!(warnings, "switching guard $(event.name) failed at sample $idx: $(sprint(showerror, err))")
                 NaN
@@ -536,12 +537,13 @@ not evaluated.
 
 `terminal` records why this cell was not split further:
 - `:interior` — all four corners share the same classification; the center was
-  evaluated and agreed (si_center > 0), or the cell could not be center-screened
-  within the available budget (si_center == 0).
+  evaluated and agreed (si_center > 0).
 - `:boundary` — corners disagree but their disagreement triggers were disabled, or
   corners/center disagree and `max_depth` was reached.
 - `:budget_limited` — corners disagree but the remaining evaluation budget could not
   cover all required mid-point evaluations for a split.
+- `:uninspected` — corners agree but the center was not evaluated (`si_center == 0`)
+  because center-screening was blocked by budget exhaustion or the configured max depth.
 """
 struct AdaptiveMapLeafCell
     a0::Float64; a1::Float64
@@ -554,7 +556,7 @@ struct AdaptiveMapLeafCell
     si_nw::Int                # sample index — corner (a0, b1)
     si_ne::Int                # sample index — corner (a1, b1)
     si_center::Int            # sample index — center, 0 if unevaluated
-    terminal::Symbol          # :interior | :boundary | :budget_limited
+    terminal::Symbol          # :interior | :boundary | :budget_limited | :uninspected
     reasons::Vector{Symbol}   # refinement triggers that flagged this cell
 end
 
@@ -608,9 +610,9 @@ Provenance:
 - `budget_exhausted` — true when budget prevented at least one otherwise-eligible
   refinement split or center-screening step; false when all triggered and
   center-check-eligible cells were processed.
-- `uninspected_cell_count` — number of `:interior` leaf cells with `si_center == 0`
-  and `depth < max_depth_allowed`: cells that could have been center-screened but
-  were not due to budget.
+- `uninspected_cell_count` — number of `:uninspected` leaf cells (uniform corners,
+  `si_center == 0`) whose center was not evaluated due to budget exhaustion or the
+  configured max depth.
 - `max_depth_reached` — deepest subdivision level actually created.
 - `max_depth_allowed` — the configured `AdaptiveMapConfig.max_depth`.
 - `flagged_cells` — cells that triggered at least one refinement criterion
@@ -911,7 +913,7 @@ MapSpecialPoint(kind::Symbol, param::Real, state::AbstractVector,
 A codimension-2 bifurcation point detected on a `Codim2ContinuationResult` locus via
 `codim2_special_points`. Supported kinds and their applicable loci:
 
-- `:cusp` — fold locus turns in the primary parameter (`:fold` locus)
+- `:cusp` — fold normal-form coefficient `b = 1/2<p,B(q,q)>` crosses/vanishes (`:fold` locus)
 - `:generalized_flip` — flip normal-form coefficient `c` changes sign (`:pd` locus)
 - `:fold_flip` — a non-tracked second multiplier reaches ∓1 (`:pd` or `:fold` locus)
 - `:resonance_1_1` — tracked unit-circle angle crosses 0 mod 2π (`:ns` locus)
@@ -932,9 +934,9 @@ the resolution:
 - `:unavailable` — detection was requested but required data (multipliers, normal-form
   coefficients) were absent or numerically unstable.
 
-`normal_form` carries the codim-1 normal form from the nearest bracketing sample when
-available (generalized-flip/bautin only); full codim-2 normal-form classification is
-out of scope.
+`normal_form` carries the codim-1 normal form for a `:sampled` coefficient detection
+(`:cusp`, `:generalized-flip`, `:bautin`); interpolated coefficient-zero points carry
+`nothing`, and full codim-2 normal-form classification is out of scope.
 """
 struct Codim2SpecialPoint
     kind::Symbol
@@ -1010,7 +1012,7 @@ Conservative minimum of three layer scores:
 - **Basin**: `basin_chaotic_fraction × basin_resolved_fraction`
 
 # Fields
-- `param_min`, `param_max`: Certified interval (from `lyapunov.param_min/max`)
+- `param_min`, `param_max`: Audited scan interval (from `lyapunov.param_min/max`)
 - `system_name`: System name
 - `param_index`: Bifurcation parameter index shared by all three layers
 - `lyapunov_verdict`, `atlas_verdict`, `basin_verdict`, `overall_verdict`: Layer verdicts

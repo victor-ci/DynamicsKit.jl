@@ -271,6 +271,9 @@ function _continuous_poincare_gpu_sweep(sys::ContinuousODE,
     n > 0 || throw(ArgumentError(
         "_continuous_poincare_gpu_sweep requires at least one trajectory: u0_list/p_list must not be empty."))
     length(p_list) == n || throw(ArgumentError("u0_list and p_list must have equal length."))
+    # DiffEqGPU's EnsembleGPUKernel requires at least two trajectories on some backends; when the caller
+    # requests one trajectory we duplicate the solve inputs and decode only the first result.
+    solve_n = n == 1 ? 2 : n
     D = sys.dim
     P = length(sys.section.projection)
     N = _continuous_gpu_state_dim(D, P)
@@ -296,9 +299,10 @@ function _continuous_poincare_gpu_sweep(sys::ContinuousODE,
 
     # Build the augmented initial states (physical warmed state + detector registers seeded so that
     # min_error/min_threshold start at the sentinel and last-crossing coords start at the warmed state).
-    aug0 = Vector{SVector{N, Float64}}(undef, n)
-    for k in 1:n
-        u0 = u0_list[k]
+    aug0 = Vector{SVector{N, Float64}}(undef, solve_n)
+    for k in 1:solve_n
+        src = min(k, n)
+        u0 = u0_list[src]
         aug0[k] = SVector{N, Float64}(ntuple(Val(N)) do i
             if i <= D
                 Float64(u0[i])
@@ -311,7 +315,11 @@ function _continuous_poincare_gpu_sweep(sys::ContinuousODE,
             end
         end)
     end
-    p_sv = [SVector{PP, Float64}(ntuple(i -> Float64(p_list[k][i]), Val(PP))) for k in 1:n]
+    p_sv = Vector{SVector{PP, Float64}}(undef, solve_n)
+    for k in 1:solve_n
+        src = min(k, n)
+        p_sv[k] = SVector{PP, Float64}(ntuple(i -> Float64(p_list[src][i]), Val(PP)))
+    end
 
     rhs_valD = Val(D)
     rhs = (u, p, t) -> _continuous_gpu_rhs(f_oop, u, p, t, rhs_valD)
@@ -328,7 +336,7 @@ function _continuous_poincare_gpu_sweep(sys::ContinuousODE,
     eprob = EnsembleProblem(prob; prob_func = _ContinuousEnsembleProbFunc(aug0, p_sv), safetycopy = false)
 
     sol = solve(eprob, alg, EnsembleGPUKernel(ka_backend);
-                trajectories = n,
+                trajectories = solve_n,
                 adaptive = true,
                 dt = initial_dt,
                 callback = cb,
@@ -339,8 +347,16 @@ function _continuous_poincare_gpu_sweep(sys::ContinuousODE,
                 reltol = reltol,
                 abstol = abstol)
 
-    results = Vector{Any}(undef, n)
-    for k in 1:n
+    first_traj = sol.u[1]
+    first_uend = first_traj.u[end]
+    first_solver_success = SciMLBase.successful_retcode(first_traj.retcode) ||
+                           first_traj.retcode == SciMLBase.ReturnCode.Terminated
+    first_result = _decode_continuous_gpu_result(first_uend, Val(D), Val(P), transient, max_period,
+                                                 local_tmax, first_solver_success)
+    results = Vector{typeof(first_result)}(undef, n)
+    results[1] = first_result
+
+    for k in 2:n
         traj = sol.u[k]
         uend = traj.u[end]
         solver_success = SciMLBase.successful_retcode(traj.retcode) ||

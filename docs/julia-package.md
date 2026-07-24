@@ -633,7 +633,7 @@ Integration is controlled by `ode_solver` (resolved by `select_ode_solver`), `od
 
 Two separate layers post-process a classified 2D operating map (a `BifurcationMapResult`) into a component-drift robustness deliverable. Neither reruns the model.
 
-**A. Deterministic regime-boundary margins.** `regime_boundary_distances(map_result; cells=nothing, status_codes=nothing, config=RegimeBoundaryConfig()) -> RegimeBoundaryResult` gives, for each known-regime cell, the physical Euclidean distance to the nearest regime boundary (plus per-axis single-parameter margins), computed with a generalized distance transform at the true grid coordinates (monotone nonuniform grids supported; ≤ one cell-diagonal discretization error).
+**A. Deterministic regime-boundary margins.** `regime_boundary_distances(map_result; cells=nothing, status_codes=nothing, config=RegimeBoundaryConfig()) -> RegimeBoundaryResult` gives, for each known-regime cell, the physical Euclidean distance to the nearest regime boundary (plus per-axis single-parameter margins), computed with a generalized distance transform at the true grid coordinates (monotone nonuniform grids supported; ≤ one cell-diagonal discretization error). The 2D Euclidean value combines raw parameter coordinates, so it is meaningful only for commensurate units/scales or normalized axes; otherwise interpret the per-axis margins independently.
 
 ```julia
 # Vertical regime split on a uniform grid: regime 1 for a < 5, regime 2 otherwise.
@@ -827,8 +827,8 @@ Once a `Codim2ContinuationResult` has been produced, a test-function pass can lo
 codimension-2 points along the locus:
 
 ```julia
-# Default: all six kinds.  Coefficient detectors (:generalized_flip, :bautin) are skipped
-# without error when base_params is absent — safe to call on any locus.
+# Default: all six kinds.  Coefficient detectors (:cusp, :generalized_flip, :bautin) are
+# skipped without error when base_params is absent — safe to call on any locus.
 pts = codim2_special_points(sys, result)
 
 # Explicit subset with parameter info for coefficient detectors:
@@ -852,9 +852,10 @@ brackets are reported as `status=:interpolated`. Points are sorted by
 wire form (format `"codim2-special-point-v1"`).  Full codim-2 normal-form classification
 is out of scope.
 
-**ArgumentError policy**: explicitly listing `:generalized_flip` (`:pd` locus) or `:bautin`
-(`:ns` locus) in `detect` without `base_params` raises `ArgumentError`.  Inapplicable kinds
-(wrong locus) return empty without error so the default all-kinds pass works everywhere.
+**ArgumentError policy**: explicitly listing `:cusp` (`:fold` locus), `:generalized_flip`
+(`:pd` locus), or `:bautin` (`:ns` locus) in `detect` without `base_params` raises
+`ArgumentError`.  Inapplicable kinds (wrong locus) return empty without error so the default
+all-kinds pass works everywhere.
 
 ## Periodic skeleton search
 
@@ -1042,8 +1043,9 @@ result = adaptive_bifurcation_map(henon_map(),
 ```
 
 `coarse_config.reuse_neighbor_seeds` must be `false` (fixed-seed traversal is required for deterministic, topology-independent results).
+`AdaptiveMapConfig.max_depth` is bounded to `0:30` to keep dyadic lattice arithmetic in a safe integer range.
 
-`adaptive_map_summary(result)` returns a NamedTuple with provenance including `budget_used`, `budget_exhausted`, `uninspected_cell_count`, `coarse_evaluations`, `refinement_evaluations`, `flagged_cells`, `split_cells`, `max_depth_reached`, `boundary_segment_count`, and `boundary_length`. See `docs/analysis-methods.md` for the full field reference and serialization API.
+`adaptive_map_summary(result)` returns a NamedTuple with provenance including `budget_used`, `budget_exhausted`, `uninspected_cell_count`, `coarse_evaluations`, `refinement_evaluations`, `flagged_cells`, `split_cells`, `max_depth_reached`, `boundary_segment_count`, and `boundary_length`. `uninspected_cell_count` counts uniform-corner `:uninspected` leaf cells (center unevaluated due to budget or max-depth limits); `budget_exhausted` is only about budget-limited eligible work. See `docs/analysis-methods.md` for the full field reference and serialization API.
 
 ## Optional GPU acceleration
 
@@ -1083,9 +1085,11 @@ requirement; `AutoBackend` silently runs on the CPU instead. The `cells=` sweep-
 / `LyapunovCellGrid` / `BasinsCellGrid`) works the same way regardless of backend: pre-seeded/known cells
 are skipped and the grid is written back in place.
 
-**Vendor packages are weak dependencies (package extensions).** Loading `DynamicsKit` alone never pulls
-in a GPU stack; `] add CUDA` / `] add AMDGPU` and `using CUDA` (etc.) in the same session is what makes
-that vendor available. `DynamicsKit` ships extensions for the FP64-capable vendors — `DynamicsKitCUDAExt`
+**Vendor packages are weak dependencies (package extensions).** Loading `DynamicsKit` includes the
+vendor-neutral `KernelAbstractions` / `DiffEqGPU` infrastructure, but does not install or load CUDA,
+ROCm, or other device runtimes and binaries. `] add CUDA` / `] add AMDGPU` and `using CUDA` (etc.) in
+the same session is what makes that vendor available. `DynamicsKit` ships extensions for the
+FP64-capable vendors — `DynamicsKitCUDAExt`
 (`:cuda`) and `DynamicsKitAMDGPUExt` (`:amdgpu`) — which register the vendor as available whenever its
 package reports a functional device (`CUDA.functional()` / `AMDGPU.functional()`) and hand back the
 matching `KernelAbstractions` backend (`CUDA.CUDABackend()` / `AMDGPU.ROCBackend()`) used by *both* the
@@ -1175,9 +1179,9 @@ gain would justify — advertising ODE acceleration there would be misleading.
 | `bifurcation_map` (`DiscreteMap`) | ✅ | fixed-seed, no switching/multistability/linked params |
 | `lyapunov_field` (`DiscreteMap`) | ✅ | no linked params |
 | `basins_of_attraction` (`DiscreteMap`) | ✅ | always eligible |
-| `bifurcation_map` (`ContinuousODE`) | ✅ | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5` |
-| `basins_of_attraction` (`ContinuousODE`) | ✅ | GPU RHS, `precision ≥ 1.19e-5` |
-| `brute_force_diagram` (`ContinuousODE`) | ❌ | fixed-capacity buffer validated (parity ~1e-9) but the large `SVector` state a typical diagram needs blows up GPU-kernel compile time — CPU-only |
+| `bifurcation_map` (`ContinuousODE`) | Implemented; hardware-unvalidated | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5`; CUDA/AMDGPU device tests were not run for this release |
+| `basins_of_attraction` (`ContinuousODE`) | Implemented; hardware-unvalidated | GPU RHS, `precision ≥ 1.19e-5`; CUDA/AMDGPU device tests were not run for this release |
+| `brute_force_diagram` (`ContinuousODE`) | ❌ | returns a variable-size cloud of retained crossings per parameter, not the fixed-size per-trajectory summary supported by the current GPU path — CPU-only |
 | `lyapunov_field` (`ContinuousODE`) | ❌ | coupled two-trajectory Benettin — not an independent ensemble |
 | continuation / atlas | ❌ | inherently sequential (no cell-independent work) |
 | `tolerance_regime_map` / `regime_boundary_distances` | ❌ | post-processing classification, not ODE integration |
@@ -1240,7 +1244,9 @@ Supported result types include `BruteForceResult`, `LyapunovDiagramResult`, `Lya
 
 For a portable **JSON-plain** form (e.g. to embed a result in an HTTP payload or a non-JLD2 store)
 the result types also have dict serializers — `serialize_bruteforce_result` / `serialize_branch_result`
-/ `serialize_atlas_result` (and their `deserialize_*` inverses). Branch points are serialized
+/ `serialize_atlas_result` (and their `deserialize_*` inverses). Because the atlas payload does not
+duplicate its reconnaissance sweep, restore it with
+`deserialize_atlas_result(data; brute_force=restored_brute_force)`. Branch points are serialized
 columnar so no fragile `BifurcationKit` internals are persisted.
 
 ## Integration API: kernels, effective settings, and diagnostics

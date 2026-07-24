@@ -74,6 +74,32 @@
         end
     end
 
+    @testset "Continuous period detection preserves interrupts" begin
+        interrupted = ContinuousODE(
+            (du, u, p, t) -> throw(InterruptException()),
+            1,
+            PoincareSection(
+                (u, t, integrator) -> u[1];
+                direction=:up,
+                projection=[1],
+                template=[0.0],
+            ),
+            [:p],
+            "Interrupt fixture";
+            default_initial_state=[1.0],
+            default_params=[0.0],
+        )
+        @test_throws InterruptException DynamicsKit._detect_continuous_poincare_period(
+            interrupted,
+            [0.0];
+            initial_point=[1.0],
+            transient=1,
+            max_period=2,
+            precision=1e-3,
+            projected=true,
+        )
+    end
+
     @testset "Brute force with custom initial point" begin
         sys = henon_map()
         config = BruteForceConfig(param_min=0.5, param_max=1.0, param_steps=10,
