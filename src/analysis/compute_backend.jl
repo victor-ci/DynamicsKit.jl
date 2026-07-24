@@ -87,11 +87,16 @@ function _dynamicskit_gpu_backend(::Val{Vendor}) where Vendor
     throw(ArgumentError("No DynamicsKit GPU extension is loaded or available for vendor :$(Vendor)."))
 end
 
+# Optional vendor hook for runtime preparation needed only by continuous DiffEqGPU kernels. Discrete
+# KernelAbstractions sweeps never call it. Vendor extensions may adjust process-local device runtime
+# limits before the first adaptive ensemble launch.
+_prepare_continuous_gpu_backend(ka_backend, trajectories::Int) = nothing
+
 # Vendors DynamicsKit knows how to enumerate via `available_gpu_backends()`. This is not an allowlist —
 # `gpu_backend(:anything)` is always constructible — it is only the set this package actively probes
 # when listing/auto-selecting. `:cuda` and `:amdgpu` are FP64-capable and recognized as extension
-# targets; no extension for them ships in this release (no such hardware was available to validate
-# against). `:metal` ships an extension that always reports unavailable (see file header).
+# targets with package extensions. `:metal` ships an extension that always reports unavailable (see
+# file header).
 const _KNOWN_GPU_VENDORS = (:cuda, :amdgpu, :metal)
 
 """

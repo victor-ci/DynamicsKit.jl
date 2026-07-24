@@ -24,4 +24,22 @@ DynamicsKit._dynamicskit_gpu_unavailable_reason(::Val{:cuda}) =
 
 DynamicsKit._dynamicskit_gpu_backend(::Val{:cuda}) = CUDA.CUDABackend()
 
+const DEFAULT_CONTINUOUS_HEAP_MB = 256
+
+function DynamicsKit._prepare_continuous_gpu_backend(::CUDA.CUDABackend, trajectories::Int)
+    requested_mb = tryparse(Int, get(ENV, "DYNAMICSKIT_CUDA_HEAP_MB", string(DEFAULT_CONTINUOUS_HEAP_MB)))
+    requested_mb === nothing && throw(ArgumentError(
+        "DYNAMICSKIT_CUDA_HEAP_MB must be an integer number of MiB."))
+    requested_mb > 0 || throw(ArgumentError(
+        "DYNAMICSKIT_CUDA_HEAP_MB must be positive; got $(requested_mb)."))
+    requested_mb <= 16 * 1024 || throw(ArgumentError(
+        "DYNAMICSKIT_CUDA_HEAP_MB must not exceed 16384 MiB; got $(requested_mb)."))
+
+    requested_bytes = requested_mb * 1024^2
+    heap_limit = CUDA.LIMIT_MALLOC_HEAP_SIZE
+    current_bytes = CUDA.limit(heap_limit)
+    current_bytes < requested_bytes && CUDA.limit!(heap_limit, requested_bytes)
+    return nothing
+end
+
 end # module

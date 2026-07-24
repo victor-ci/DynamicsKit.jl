@@ -44,10 +44,16 @@ The full suite includes package-quality checks through Aqua.jl, and runs in CI o
 
 ### GPU validation scope
 
-The CUDA and AMDGPU paths have CPU-seam and device-gated parity tests, but no physical CUDA or AMD
-GPU was available for this release audit. ContinuousODE GPU sweeps are implemented, not
-hardware-validated for this release; the device-gated tests skip unless the corresponding runtime
-and functional hardware are present.
+All GPU kernels have vendor-neutral CPU-seam coverage, and CUDA/AMDGPU tests remain device-gated when
+their runtimes or hardware are absent. The CUDA path has additionally been validated on a physical
+NVIDIA RTX 4090 using CUDA.jl 6.2.1 and Julia 1.11.9. The hardware run verified `:cuda` backend
+provenance and exact CPU/CUDA periodicity parity for multi-resolution discrete Hénon
+`bifurcation_map` sweeps, discrete basins, standalone discrete Lyapunov fields, continuous Rössler map
+and basin sweeps, and memristive-diode-bridge P1/P3 parameter maps and coexistence basins. The expanded
+benchmark requires exponent/status/sample parity for `lyapunov_field` and exact periodicity parity for
+the other paths. AMDGPU still has no physical-device result and remains hardware-unvalidated. See
+`docs/benchmarks.md` for the reproducible CUDA benchmark, measured performance boundaries, and output
+fields.
 
 ## Scientific validation matrix
 

@@ -335,6 +335,7 @@ function _continuous_poincare_gpu_sweep(sys::ContinuousODE,
     prob = ODEProblem{false}(rhs, aug0[1], (0.0, local_tmax), p_sv[1])
     eprob = EnsembleProblem(prob; prob_func = _ContinuousEnsembleProbFunc(aug0, p_sv), safetycopy = false)
 
+    _prepare_continuous_gpu_backend(ka_backend, solve_n)
     sol = solve(eprob, alg, EnsembleGPUKernel(ka_backend);
                 trajectories = solve_n,
                 adaptive = true,

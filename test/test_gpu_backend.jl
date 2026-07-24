@@ -1,7 +1,6 @@
 # GPU-backend selection API + eligibility/parity behaviour for bifurcation_map / lyapunov_field /
-# basins_of_attraction. No real GPU vendor extension ships in this release (see
-# docs/julia-package.md, "Optional GPU acceleration"), so the GPU *kernel* code path is exercised via
-# a private, non-public test seam (`GPUBackend(:_ka_cpu_test)`) that resolves to
+# basins_of_attraction. The GPU *kernel* code path is exercised unconditionally via a private,
+# non-public test seam (`GPUBackend(:_ka_cpu_test)`) that resolves to
 # `KernelAbstractions.CPU()` — this validates the exact upload/launch/copy-back/cache-hook-merge
 # machinery a real vendor backend would run through, without requiring GPU hardware.
 #

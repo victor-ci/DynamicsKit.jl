@@ -11,6 +11,7 @@ using StaticArrays
     BE = DynamicsKit
     seam = gpu_backend(:_ka_cpu_test)
     ka_cpu = BE._dynamicskit_gpu_backend(Val(:_ka_cpu_test))
+    @test isnothing(BE._prepare_continuous_gpu_backend(ka_cpu, 2))
 
     @testset "GPU out-of-place RHS accessor" begin
         for ctor in (rossler_oscillator, vilnius_oscillator, memristive_diode_bridge,
@@ -413,7 +414,7 @@ using StaticArrays
         if !loaded
             @info "Skipping device-gated $(vendor) parity test ($(pkg) is not installed in this environment)."
             @test_skip "vendor package $(pkg) not installed"
-        elseif !gpu_backend_available(vendor)
+        elseif !Base.invokelatest(gpu_backend_available, vendor)
             # The package imported (so its extension load did not error) but reports no functional
             # device — a legitimate, distinct "device unavailable" skip, not a package-absence skip.
             @test Base.get_extension(DynamicsKit, Symbol("DynamicsKit$(pkg)Ext")) !== nothing
@@ -421,15 +422,31 @@ using StaticArrays
             @test_skip "vendor $(vendor) device not available"
         else
             r_cpu = bifurcation_map(sys, cascade)
-            r_gpu = bifurcation_map(sys, cascade; backend=gpu_backend(vendor))
+            r_gpu = Base.invokelatest(bifurcation_map, sys, cascade; backend=gpu_backend(vendor))
             @test r_gpu.compute_backend == vendor
             @test r_gpu.periodicity == r_cpu.periodicity           # FP64 scientific parity on real hardware
-            b_gpu = basins_of_attraction(sys,
-                BasinsConfig(bif_param=5.0, param_index=3, fixed_params=[0.2, 0.2, 5.0],
-                             x_min=-6.0, x_max=6.0, x_steps=6, y_min=0.0, y_max=6.0, y_steps=6,
-                             x_index=1, y_index=3, max_period=6, iterations=120, precision=1e-3);
-                backend=gpu_backend(vendor))
+            b_cfg = BasinsConfig(bif_param=5.0, param_index=3, fixed_params=[0.2, 0.2, 5.0],
+                                 x_min=-6.0, x_max=6.0, x_steps=6, y_min=0.0, y_max=6.0, y_steps=6,
+                                 x_index=1, y_index=3, max_period=6, iterations=120, precision=1e-3)
+            b_gpu = Base.invokelatest(basins_of_attraction, sys, b_cfg; backend=gpu_backend(vendor))
             @test b_gpu.compute_backend == vendor
+
+            mdb = memristive_diode_bridge(c=6.02e-6, k=0.05)
+            mdb_cfg = BasinsConfig(
+                bif_param=0.0155, param_index=1, fixed_params=[0.0155, 6.02e-6, 0.05],
+                x_min=-4.2, x_max=-3.0, x_steps=15, y_min=0.0, y_max=0.6, y_steps=15,
+                x_index=1, y_index=3, max_period=6, iterations=250, precision=1e-3,
+            )
+            mdb_cpu = basins_of_attraction(mdb, mdb_cfg)
+            mdb_gpu = Base.invokelatest(basins_of_attraction, mdb, mdb_cfg; backend=gpu_backend(vendor))
+            @test mdb_gpu.compute_backend == vendor
+            @test mdb_gpu.periodicity == mdb_cpu.periodicity
+            @test sort(unique(mdb_gpu.periodicity)) == [1, 3]
+            if vendor == :cuda
+                cuda = @eval CUDA
+                requested_mb = parse(Int, get(ENV, "DYNAMICSKIT_CUDA_HEAP_MB", "256"))
+                @test cuda.limit(cuda.LIMIT_MALLOC_HEAP_SIZE) >= requested_mb * 1024^2
+            end
         end
     end
 end

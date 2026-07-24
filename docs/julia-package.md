@@ -1094,12 +1094,17 @@ FP64-capable vendors — `DynamicsKitCUDAExt`
 package reports a functional device (`CUDA.functional()` / `AMDGPU.functional()`) and hand back the
 matching `KernelAbstractions` backend (`CUDA.CUDABackend()` / `AMDGPU.ROCBackend()`) used by *both* the
 discrete `KernelAbstractions` kernels and the continuous DiffEqGPU `EnsembleGPUKernel` path. These
-extensions are dormant until the vendor package is loaded, and no accelerated run was validated against
-real CUDA/AMDGPU hardware in this release (the device-gated parity tests skip when no device is present),
-so treat those paths as ready-but-unvalidated until exercised on hardware. The kernels are written
-against the vendor-agnostic `KernelAbstractions.jl` / `DiffEqGPU.jl` (lightweight, CPU-capable
-dependencies with no GPU stack of their own), so a new vendor is a small extension following
-`ext/DynamicsKitCUDAExt.jl`'s pattern, not a rewrite of the kernels.
+extensions are dormant until the vendor package is loaded. The CUDA path has been exercised on a
+physical NVIDIA RTX 4090 with CUDA.jl 6.2.1 under Julia 1.11.9: eligible discrete
+`bifurcation_map`/`basins_of_attraction` sweeps and continuous Rössler map/basin sweeps reported
+`compute_backend == :cuda` and matched their CPU periodicity matrices exactly. Standalone discrete
+`lyapunov_field` was also exercised physically with exponent, classification/estimation-code, and
+sample-count parity. AMDGPU remains hardware-unvalidated; its device-gated tests run only when a
+functional ROCm device is present. See `docs/validation.md` and `docs/benchmarks.md` for the validation
+scope, performance boundaries, and reproducible benchmark command. The kernels are written against the vendor-agnostic
+`KernelAbstractions.jl` / `DiffEqGPU.jl` (lightweight, CPU-capable dependencies with no GPU stack of
+their own), so a new vendor is a small extension following `ext/DynamicsKitCUDAExt.jl`'s pattern, not a
+rewrite of the kernels.
 
 **Apple/Metal is a recognized vendor that is permanently disqualified, not just "not installed".** Metal
 GPUs have no double-precision (Float64) hardware support at all (Metal Shading Language has no `double`
@@ -1141,6 +1146,14 @@ Continuous GPU eligibility, in addition to the same structural rules as the disc
   localization. The value is recorded on GPU-computed diagnostics as `gpuRootfindAbstol`, and the
   configured `precision`/solver as `closurePrecision` / `gpuSolver` provenance.
 
+On CUDA, the extension raises the process-local CUDA device malloc heap to at least 256 MiB before a
+continuous DiffEqGPU ensemble launch. DiffEqGPU's adaptive per-trajectory integrators use dynamic
+device memory, and the CUDA driver's 8 MiB default can be exhausted by moderate operating-map grids
+despite ample ordinary VRAM. Override the minimum with `DYNAMICSKIT_CUDA_HEAP_MB` (a positive integer,
+at most 16384 MiB) before starting Julia. This setting is CUDA-context-local and does not affect the
+discrete KernelAbstractions kernels. Lower values may make continuous sweeps fail with a device-heap
+allocation error; larger values reserve more of the device context's memory budget.
+
 Scientific parity: classifications are **exact** on robustly-classified fixtures (e.g. Rössler's
 period-doubling cascade) and match across a full representative grid given an adequate transient. In
 deep-chaos cells a *near-threshold* closure (period ≈ `max_period`) can flip between a marginal period
@@ -1176,11 +1189,11 @@ gain would justify — advertising ODE acceleration there would be misleading.
 
 | Analysis (system) | GPU | Notes |
 | --- | --- | --- |
-| `bifurcation_map` (`DiscreteMap`) | ✅ | fixed-seed, no switching/multistability/linked params |
-| `lyapunov_field` (`DiscreteMap`) | ✅ | no linked params |
-| `basins_of_attraction` (`DiscreteMap`) | ✅ | always eligible |
-| `bifurcation_map` (`ContinuousODE`) | Implemented; hardware-unvalidated | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5`; CUDA/AMDGPU device tests were not run for this release |
-| `basins_of_attraction` (`ContinuousODE`) | Implemented; hardware-unvalidated | GPU RHS, `precision ≥ 1.19e-5`; CUDA/AMDGPU device tests were not run for this release |
+| `bifurcation_map` (`DiscreteMap`) | ✅; CUDA-validated | fixed-seed, no switching/multistability/linked params; exact CPU/CUDA parity measured on physical hardware |
+| `lyapunov_field` (`DiscreteMap`) | ✅; CUDA-validated | no linked params; exponent/status/sample parity and acceleration measured on physical hardware |
+| `basins_of_attraction` (`DiscreteMap`) | ✅; CUDA-validated | always eligible; exact CPU/CUDA parity measured on physical hardware |
+| `bifurcation_map` (`ContinuousODE`) | ✅; CUDA-validated | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5`; exact Rössler CPU/CUDA parity measured on physical hardware |
+| `basins_of_attraction` (`ContinuousODE`) | ✅; CUDA-validated | GPU RHS, `precision ≥ 1.19e-5`; exact Rössler CPU/CUDA parity measured on physical hardware |
 | `brute_force_diagram` (`ContinuousODE`) | ❌ | returns a variable-size cloud of retained crossings per parameter, not the fixed-size per-trajectory summary supported by the current GPU path — CPU-only |
 | `lyapunov_field` (`ContinuousODE`) | ❌ | coupled two-trajectory Benettin — not an independent ensemble |
 | continuation / atlas | ❌ | inherently sequential (no cell-independent work) |
