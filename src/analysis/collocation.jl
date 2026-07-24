@@ -256,7 +256,7 @@ function orbit_branch_multipliers(result::OrbitBranchResult, sys::ContinuousODE,
     t, states = orbit_branch_orbit(result, i)
     section_state = _orbit_section_point(sys, t, states)
     projected = _project_section_state(sys.section, section_state)
-    pv = _inject_param(result.base_params, result.param_index,
+    pv = inject_param(result.base_params, result.param_index,
                        Float64(result.branch.sol[i].p), result.linked_param_indices)
     return _map_multipliers(sys, projected, pv, result.period;
                             ode_jacobian_method=ode_jacobian_method, kwargs...)

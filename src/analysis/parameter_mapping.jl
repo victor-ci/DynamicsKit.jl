@@ -1,7 +1,6 @@
 """
 Parameter mapping: maps swept parameter values into the full parameter vectors the analysis
-kernels consume. Stable public API; the underscore names (`_inject_param`, `_build_params`, …)
-remain as aliases for internal call sites.
+kernels consume.
 """
 
 """
@@ -165,15 +164,3 @@ function build_map_params(config::BifurcationMapConfig, a_val::Float64, b_val::F
         b_val
     )
 end
-
-# --- backward-compatible aliases (remove once all internal call sites use the public names) ---
-const _inject_param            = inject_param
-const _build_params            = build_sweep_params
-const _build_basins_params     = build_basins_params
-const _basins_ic_template      = basins_ic_template
-const _map_param_template      = map_param_template
-const _map_a_write_indices     = map_a_write_indices
-const _map_b_write_indices     = map_b_write_indices
-const _map_params_from_template = map_params_from_template
-const _map_params_from_buffer! = map_params_from_buffer!
-const _build_map_params         = build_map_params

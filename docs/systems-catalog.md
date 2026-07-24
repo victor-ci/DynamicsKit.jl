@@ -65,13 +65,40 @@ Typical uses:
 
 Basin analysis is rarely useful for this model; the default workflow focuses on the monostable cascade.
 
+A description-based equivalent that produces the same `DiscreteMap` is available via
+`switching_map(boost_converter_description())` (see the switching-map generator below).
+
+## Switching-map generator
+
+`switching_map(desc)` generates a `DiscreteMap` from a `SwitchingCircuitDescription` — an ordered
+list of `AffineModeSpec` values (per-mode affine state-space `{A, b}` plus timing) — without
+hand-deriving the period-advance formula.
+
+| Constructor/type | Purpose |
+| --- | --- |
+| `AffineModeSpec(A, b; duration, boundary, events)` | One operating mode |
+| `SwitchingCircuitDescription(modes, period; param_names, name)` | Ordered list of modes + clock |
+| `switching_map(desc)` | Generate a ForwardDiff-compatible `DiscreteMap` |
+| `buck_converter_description()` | Description reproducing `buck_converter()` |
+| `boost_converter_description()` | Description reproducing `boost_converter()` |
+
+`A` and `b` are constant `SMatrix`/`SVector` values or parameter-dependent callables
+`p -> SMatrix` / `p -> SVector`. The optional `boundary = (x_flow, p) -> SVector{2}` overrides the
+state at the end of an intermediate mode — used, for example, to enforce the comparator trip
+condition `I = Iref` in the buck converter. Intermediate-mode durations are clamped to
+`[0, remaining]`; the final mode consumes the remaining period exactly.
+
+The generated map handles under-, over-, and critically-damped 2-D circuit matrices, as well as
+singular `A` (boost ON stage, one zero eigenvalue), via the `ψ₀`/`ψ₁` matrix-exponential
+decomposition and the Duhamel integral for the singular case.
+
 ## Vilnius oscillator
 
 Continuous ODE oscillator with a Poincare-section workflow. Supports phase portrait, brute-force, continuation, atlas, skeleton, power-spectrum, codim-2, and 2D map analyses.
 
 Typical uses:
 
-- ODE continuation on a native Poincare map;
+- ODE continuation on a Poincare map;
 - adaptive atlas discovery;
 - phase-portrait inspection;
 - paired time-tail / FFT spectra at fixed parameter points;

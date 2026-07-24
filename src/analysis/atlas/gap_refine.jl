@@ -132,7 +132,7 @@ function _atlas_branch_switching_skeleton(sys::DiscreteMap,
                                           atlas_config::AtlasConfig;
                                           kwargs...)
     lo, hi, seed_points = _atlas_branch_switching_seed_box(seed_state, atlas_config)
-    local_params = _inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
     seeds = find_periodic_skeleton(
         sys,
         [period],
@@ -165,7 +165,7 @@ function _atlas_branch_switching_skeleton(sys::ContinuousODE,
                                           min_crossing_time::Float64=1e-6,
                                           kwargs...)
     lo, hi, seed_points = _atlas_branch_switching_seed_box(seed_state, atlas_config)
-    local_params = _inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, param, cont_config.linked_param_indices)
     seeds = find_periodic_skeleton(
         sys,
         [period],
@@ -265,6 +265,7 @@ function _atlas_probe_branch_switch(sys::DynamicalSystem,
             kwargs...
         )
     catch err
+        err isa InterruptException && rethrow()
         return BranchResult[], Dict{String, Any}(
             "status" => "skeleton_failed",
             "sourceBranchId" => record.id,
@@ -275,7 +276,7 @@ function _atlas_probe_branch_switch(sys::DynamicalSystem,
         )
     end
 
-    local_params = _inject_param(base_params, cont_config.param_index, special.param, cont_config.linked_param_indices)
+    local_params = inject_param(base_params, cont_config.param_index, special.param, cont_config.linked_param_indices)
     branches = BranchResult[]
     continuation_attempts = Dict{String, Any}[]
     for (seed_idx, seed) in enumerate(skeleton_seeds)
@@ -295,6 +296,7 @@ function _atlas_probe_branch_switch(sys::DynamicalSystem,
                 "seedPoint" => copy(seed.point)
             ))
         catch err
+            err isa InterruptException && rethrow()
             push!(continuation_attempts, Dict(
                 "seedIndex" => seed_idx,
                 "status" => "failed",
@@ -1060,6 +1062,7 @@ function continuation_atlas(sys::DynamicalSystem,
         try
             return _load_cached_atlas_result(cache_path; cache_key=cache_key, log=log)
         catch err
+            err isa InterruptException && rethrow()
             bt = catch_backtrace()
             _atlas_log!(log, "Atlas cache load failed for '$cache_path'; recomputing. $(sprint(io -> showerror(io, err, bt)))")
         end
@@ -1337,6 +1340,7 @@ function continuation_atlas(sys::DynamicalSystem,
         try
             _store_cached_atlas_result(result, cache_path; cache_key=cache_key, log=log)
         catch err
+            err isa InterruptException && rethrow()
             bt = catch_backtrace()
             _atlas_log!(log, "WARNING: Atlas cache store failed for '$cache_path'. $(sprint(io -> showerror(io, err, bt)))")
         end

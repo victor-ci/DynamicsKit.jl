@@ -90,22 +90,31 @@ function DiscreteMap(f::F, dim::Int, param_names::Vector{Symbol}, name::String;
 end
 
 """
-    ContinuousODE{F,S} <: DynamicalSystem
+    ContinuousODE{F,S,G} <: DynamicalSystem
 
 A continuous-time ODE system `du/dt = f(u, p, t)` with a Poincaré section.
 
 # Fields
-- `f`: ODE right-hand side `(du, u, p, t) -> nothing` (in-place)
+- `f`: ODE right-hand side `(du, u, p, t) -> nothing` (in-place; the CPU integration path)
 - `dim`: Full state space dimension
 - `section`: Poincaré section definition
 - `param_names`: Names of bifurcation parameters
 - `name`: Human-readable system name
 - `tspan_hint`: Suggested integration time span for one return to section
-- `default_initial_state`: Native default state used by brute-force and skeleton searches
-- `default_params`: Native default parameter vector used when callers omit `params`
+- `default_initial_state`: Default state used by brute-force and skeleton searches
+- `default_params`: Default parameter vector used when callers omit `params`
 - `switching_events`: Optional guard functions for nonsmooth borders/grazing events
+- `f_svector`: Optional GPU-compatible out-of-place right-hand side
+  `(u::SVector, p, t) -> SVector` (`nothing` when unavailable). This is a *native* second
+  form, not a wrapper around `f`: the in-place `f` stays the zero-overhead CPU hot-loop path,
+  while `f_svector` is what the GPU ensemble path (`EnsembleGPUKernel`) requires (out-of-place,
+  StaticArray in/out). Built-in continuous systems provide it; user/imported systems that only
+  supply `f` leave it `nothing`, which makes them GPU-ineligible (never silently downgraded).
+
+The extra `G` type parameter keeps `f_svector` concretely typed so it participates in GPU kernel
+specialization; `G === Nothing` marks a system with no GPU right-hand side.
 """
-struct ContinuousODE{F,S<:PoincareSection} <: DynamicalSystem
+struct ContinuousODE{F,S<:PoincareSection,G} <: DynamicalSystem
     f::F
     dim::Int
     section::S
@@ -115,14 +124,16 @@ struct ContinuousODE{F,S<:PoincareSection} <: DynamicalSystem
     default_initial_state::Vector{Float64}
     default_params::Vector{Float64}
     switching_events::Vector{SwitchingEvent}
+    f_svector::G
 end
 
 function ContinuousODE(f::F, dim::Int, section::S, param_names::Vector{Symbol}, name::String;
                        tspan_hint::Float64=20.0,
                        default_initial_state::AbstractVector=zeros(Float64, dim),
                        default_params::AbstractVector=Float64[],
-                       switching_events::AbstractVector{SwitchingEvent}=SwitchingEvent[]) where {F, S<:PoincareSection}
-    ContinuousODE{F,S}(
+                       switching_events::AbstractVector{SwitchingEvent}=SwitchingEvent[],
+                       f_svector::G=nothing) where {F, S<:PoincareSection, G}
+    ContinuousODE{F,S,G}(
         f,
         dim,
         section,
@@ -131,9 +142,25 @@ function ContinuousODE(f::F, dim::Int, section::S, param_names::Vector{Symbol}, 
         tspan_hint,
         collect(Float64, default_initial_state),
         collect(Float64, default_params),
-        collect(SwitchingEvent, switching_events)
+        collect(SwitchingEvent, switching_events),
+        f_svector
     )
 end
+
+"""
+    continuous_gpu_rhs(sys::ContinuousODE)
+
+The system's GPU-compatible out-of-place SVector right-hand side, or `nothing` if it has none.
+"""
+continuous_gpu_rhs(sys::ContinuousODE) = sys.f_svector
+
+"""
+    has_continuous_gpu_rhs(sys::ContinuousODE) -> Bool
+
+Whether `sys` carries a GPU-compatible out-of-place SVector right-hand side (`f_svector`), a
+precondition for GPU-accelerating its Poincaré-map sweeps.
+"""
+has_continuous_gpu_rhs(sys::ContinuousODE) = sys.f_svector !== nothing
 
 state_dim(sys::DiscreteMap) = sys.dim
 state_dim(sys::ContinuousODE) = length(sys.section.projection)
@@ -201,6 +228,7 @@ function switching_event_diagnostics(sys::DynamicalSystem, states, params)
             value = try
                 _switching_guard_value(event, samples[idx], param_samples[idx])
             catch err
+                err isa InterruptException && rethrow()
                 failure_count += 1
                 push!(warnings, "switching guard $(event.name) failed at sample $idx: $(sprint(showerror, err))")
                 NaN
@@ -375,16 +403,23 @@ struct BasinsResult
     x_index::Int
     y_index::Int
     ic_template::Vector{Float64}
+    compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this grid
 end
 
-function BasinsResult(x_grid::Vector{Float64},
-                      y_grid::Vector{Float64},
-                      periodicity::Matrix{Int},
-                      bif_param::Float64,
-                      max_period::Int,
-                      system_name::String,
-                      timestamp::DateTime)
-    return BasinsResult(x_grid, y_grid, periodicity, bif_param, max_period, system_name, timestamp, 1, 2, Float64[])
+function BasinsResult(x_grid::AbstractVector{<:Real},
+                      y_grid::AbstractVector{<:Real},
+                      periodicity::AbstractMatrix{<:Integer},
+                      bif_param::Real,
+                      max_period::Integer,
+                      system_name::AbstractString,
+                      timestamp::DateTime,
+                      x_index::Integer=1,
+                      y_index::Integer=2,
+                      ic_template::AbstractVector{<:Real}=Float64[];
+                      compute_backend::Symbol=:cpu)
+    return BasinsResult(collect(Float64, x_grid), collect(Float64, y_grid), Matrix{Int}(periodicity),
+                        Float64(bif_param), Int(max_period), String(system_name), timestamp,
+                        Int(x_index), Int(y_index), collect(Float64, ic_template), compute_backend)
 end
 
 """
@@ -426,6 +461,22 @@ struct LyapunovFieldResult
     system_name::String
     param_names::Tuple{Symbol, Symbol}
     timestamp::DateTime
+    compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this field
+end
+
+function LyapunovFieldResult(a_grid::Vector{Float64},
+                             b_grid::Vector{Float64},
+                             exponents::Matrix{Float64},
+                             classification_status_codes::Matrix{Int},
+                             estimation_status_codes::Matrix{Int},
+                             sample_counts::Matrix{Int},
+                             neutral_tolerance::Float64,
+                             system_name::String,
+                             param_names::Tuple{Symbol, Symbol},
+                             timestamp::DateTime;
+                             compute_backend::Symbol=:cpu)
+    return LyapunovFieldResult(a_grid, b_grid, exponents, classification_status_codes, estimation_status_codes,
+                               sample_counts, neutral_tolerance, system_name, param_names, timestamp, compute_backend)
 end
 
 """
@@ -443,6 +494,7 @@ struct BifurcationMapResult
     param_names::Tuple{Symbol, Symbol}
     timestamp::DateTime
     lyapunov::Union{Nothing, LyapunovFieldResult}
+    compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this grid
 end
 
 function BifurcationMapResult(a_grid::Vector{Float64},
@@ -451,8 +503,141 @@ function BifurcationMapResult(a_grid::Vector{Float64},
                               max_period::Int,
                               system_name::String,
                               param_names::Tuple{Symbol, Symbol},
-                              timestamp::DateTime)
-    return BifurcationMapResult(a_grid, b_grid, periodicity, max_period, system_name, param_names, timestamp, nothing)
+                              timestamp::DateTime;
+                              lyapunov::Union{Nothing, LyapunovFieldResult}=nothing,
+                              compute_backend::Symbol=:cpu)
+    return BifurcationMapResult(a_grid, b_grid, periodicity, max_period, system_name, param_names, timestamp, lyapunov, compute_backend)
+end
+
+"""
+    AdaptiveMapSample
+
+A single uniquely-evaluated sample produced by `adaptive_bifurcation_map`.
+`depth == 0` identifies coarse-grid samples shared with the underlying
+`BifurcationMapResult`; higher depths are refinement samples.
+"""
+struct AdaptiveMapSample
+    a::Float64
+    b::Float64
+    period::Int
+    status_code::Int
+    confidence::Float64
+    depth::Int
+end
+
+"""
+    AdaptiveMapLeafCell
+
+A terminal (leaf) cell in the adaptive quadtree produced by
+`adaptive_bifurcation_map`.
+
+Sample indices reference the `samples` vector of the containing
+`AdaptiveMapResult` (1-based). `si_center` is `0` when the cell center was
+not evaluated.
+
+`terminal` records why this cell was not split further:
+- `:interior` — all four corners share the same classification; the center was
+  evaluated and agreed (si_center > 0).
+- `:boundary` — corners disagree but their disagreement triggers were disabled, or
+  corners/center disagree and `max_depth` was reached.
+- `:budget_limited` — corners disagree but the remaining evaluation budget could not
+  cover all required mid-point evaluations for a split.
+- `:uninspected` — corners agree but the center was not evaluated (`si_center == 0`)
+  because center-screening was blocked by budget exhaustion or the configured max depth.
+"""
+struct AdaptiveMapLeafCell
+    a0::Float64; a1::Float64
+    b0::Float64; b1::Float64
+    ia0::Int; ia1::Int        # integer-lattice a coordinates
+    ib0::Int; ib1::Int        # integer-lattice b coordinates
+    depth::Int
+    si_sw::Int                # sample index — corner (a0, b0)
+    si_se::Int                # sample index — corner (a1, b0)
+    si_nw::Int                # sample index — corner (a0, b1)
+    si_ne::Int                # sample index — corner (a1, b1)
+    si_center::Int            # sample index — center, 0 if unevaluated
+    terminal::Symbol          # :interior | :boundary | :budget_limited | :uninspected
+    reasons::Vector{Symbol}   # refinement triggers that flagged this cell
+end
+
+"""
+    AdaptiveMapSegment
+
+A classification boundary segment produced by categorical marching-squares
+applied to the leaf cells of `adaptive_bifurcation_map`.
+
+Physical endpoints: `(a0, b0)` – `(a1, b1)`, stored in canonical order
+(`(a0, b0) <= (a1, b1)` lexicographically).
+
+`key_a` and `key_b` are the two classification keys on either side,
+each a `(status_code::Int, period::Int)` tuple in canonical order
+(`key_a <= key_b`). Period values are not interpolated.
+
+`ambiguity`:
+- `:resolved` — two-key ordinary or center-disambiguated checkerboard cell.
+- `:ambiguous` — checkerboard cell without a center evaluation; endpoints connect
+  to the physical cell center as a conservative approximation.
+- `:multi_region` — three or more distinct classifications present, or odd crossing
+  count; each crossing midpoint connects to the physical cell center.
+"""
+struct AdaptiveMapSegment
+    a0::Float64
+    b0::Float64
+    a1::Float64
+    b1::Float64
+    key_a::Tuple{Int,Int}
+    key_b::Tuple{Int,Int}
+    ambiguity::Symbol
+end
+
+"""
+    AdaptiveMapResult
+
+First-class result of `adaptive_bifurcation_map`. Contains the full set of
+uniquely-evaluated samples, all quadtree leaf cells, extracted boundary segments,
+and provenance summary.
+
+The `coarse_result` field holds the standard `BifurcationMapResult` from the
+initial uniform sweep. All `AdaptiveMapSample` entries at `depth == 0` correspond
+exactly to the coarse grid, in column-major order `(i, j)` with `i` along the
+a-axis and `j` along the b-axis.
+
+Provenance:
+- `total_budget` — requested upper bound on unique evaluations.
+- `budget_used` — actual unique evaluations (coarse + refinement); always ≤ total_budget.
+- `coarse_evaluations` — number of coarse-grid samples.
+- `refinement_evaluations` — unique refinement-only samples evaluated.
+- `budget_exhausted` — true when budget prevented at least one otherwise-eligible
+  refinement split or center-screening step; false when all triggered and
+  center-check-eligible cells were processed.
+- `uninspected_cell_count` — number of `:uninspected` leaf cells (uniform corners,
+  `si_center == 0`) whose center was not evaluated due to budget exhaustion or the
+  configured max depth.
+- `max_depth_reached` — deepest subdivision level actually created.
+- `max_depth_allowed` — the configured `AdaptiveMapConfig.max_depth`.
+- `flagged_cells` — cells that triggered at least one refinement criterion
+  (corner disagreement or center disagreement).
+- `split_cells` — cells that were actually split.
+"""
+struct AdaptiveMapResult
+    samples::Vector{AdaptiveMapSample}
+    leaf_cells::Vector{AdaptiveMapLeafCell}
+    boundary_segments::Vector{AdaptiveMapSegment}
+    coarse_result::BifurcationMapResult
+    total_budget::Int
+    budget_used::Int
+    coarse_evaluations::Int
+    refinement_evaluations::Int
+    budget_exhausted::Bool
+    uninspected_cell_count::Int
+    max_depth_reached::Int
+    max_depth_allowed::Int
+    flagged_cells::Int
+    split_cells::Int
+    compute_backend::Symbol
+    system_name::String
+    param_names::Tuple{Symbol,Symbol}
+    timestamp::DateTime
 end
 
 """
@@ -584,15 +769,124 @@ struct OrbitBranchResult
 end
 
 """
+    HomoclinicOrbitRecord
+
+One normalized orbit sampled from a homoclinic continuation branch. `states`
+is a `dim × length(t)` matrix. The branch index ties the stored trajectory back
+to the full parameter locus without retaining backend-specific BVP objects.
+"""
+struct HomoclinicOrbitRecord
+    branch_index::Int
+    t::Vector{Float64}
+    states::Matrix{Float64}
+    saddle::Vector{Float64}
+    primary_param::Float64
+    secondary_param::Float64
+    return_time::Float64
+    epsilon_start::Float64
+    epsilon_end::Float64
+end
+
+"""
+    HomoclinicSpecialPoint
+
+Typed event detected along a connecting-orbit locus. `kind` uses the standard
+AUTO/HomCont test-function codes in lowercase (`:nns`, `:sh`, `:bt`, `:ofu`,
+`:ifs`, and related values); `label` provides a stable human-readable
+description. `status` records whether the test function was `:available`,
+`:unavailable` (the geometry cannot support that codimension — e.g. an
+inclination flip needs at least two stable or two unstable eigenvalues), or
+`:degenerate`. `quality` is a bounded numerical-confidence indicator in `[0, 1]`
+derived from how cleanly the test function crossed zero.
+"""
+struct HomoclinicSpecialPoint
+    kind::Symbol
+    label::String
+    branch_index::Int
+    primary_param::Float64
+    secondary_param::Float64
+    test_value::Float64
+    status::Symbol
+    quality::Float64
+end
+
+"""
+    HomoclinicBranchResult
+
+Plain-data connecting-orbit continuation result (homoclinic, heteroclinic, or
+homoclinic-to-saddle-cycle). The full two-parameter locus and saddle
+diagnostics are retained columnarly; bounded `orbits` preserve selected
+trajectories for inspection.
+
+Numerical provenance is explicit: `residuals` is the converged projection
+boundary-value residual norm at each locus sample, `corrector_paths` records
+whether the primary Newton corrector or the damped-pseudoinverse fallback
+produced each point, `connection_kind` is `:homoclinic`, `:heteroclinic`, or
+`:saddle_cycle`, and `target_saddles` stores the target equilibrium (equal to
+`saddles` for a homoclinic connection). `test_statuses` preserves the
+`:available`, `:unavailable`, or `:degenerate` status of every test function at
+every locus sample. `diagnostics` carries free-form provenance (mesh size,
+epsilon policy, seed origin, fallback counts, warnings). `source_period` and
+`source_index` identify a collocation source orbit; both are zero for an explicit
+seed. `source_primary_value` is always the primary parameter of the corrected
+seed point, independent of continuation direction.
+"""
+struct HomoclinicBranchResult
+    primary_values::Vector{Float64}
+    secondary_values::Vector{Float64}
+    return_times::Vector{Float64}
+    epsilon_start_values::Vector{Float64}
+    epsilon_end_values::Vector{Float64}
+    saddles::Matrix{Float64}
+    target_saddles::Matrix{Float64}
+    test_functions::Dict{Symbol, Vector{Float64}}
+    test_statuses::Dict{Symbol, Vector{Symbol}}
+    special_points::Vector{HomoclinicSpecialPoint}
+    orbits::Vector{HomoclinicOrbitRecord}
+    residuals::Vector{Float64}
+    corrector_paths::Vector{Symbol}
+    connection_kind::Symbol
+    source_period::Int
+    source_index::Int
+    source_primary_value::Float64
+    base_params::Vector{Float64}
+    primary_param_index::Int
+    secondary_param_index::Int
+    system_name::String
+    param_names::Tuple{Symbol, Symbol}
+    diagnostics::Dict{String, Any}
+    timestamp::DateTime
+end
+
+"""
+    MapNormalForm
+
+Plain-data normal-form classification for a map bifurcation. `coefficient_name` is `:b`
+for a fold, `:c` for a flip, and `:d` for a Neimark-Sacker point. `coefficient` is
+`nothing` whenever the coefficient cannot be computed reliably; `status` and
+`criticality` then state why no classification was made. `convention` records the
+normalization and formula convention used for the coefficient.
+"""
+struct MapNormalForm
+    kind::Symbol
+    coefficient_name::Symbol
+    coefficient::Union{Nothing, Float64}
+    criticality::Symbol
+    status::Symbol
+    convention::String
+end
+
+"""
     MapSpecialPoint
 
-A period-doubling (`:pd`, multiplier crossing −1) or fold (`:fold`, multiplier crossing
-+1) special point located on a continued map / Poincaré return-map branch, using
-map-aware test functions rather than BifurcationKit's equilibrium-convention detection
-(which misses map period-doublings). `critical_multiplier` is the multiplier nearest the
-bifurcation value; `test_value` is the map test function `∏(μᵢ ∓ 1)` at the located point
-(≈ 0); `converged` reports whether the critical multiplier reached the bifurcation value
-within tolerance during refinement.
+A period-doubling (`:pd`, multiplier crossing -1), fold (`:fold`, multiplier crossing
++1), or Neimark-Sacker (`:ns`, a complex-conjugate pair crossing the unit circle)
+special point located on a continued map / Poincare return-map branch.
+`critical_multiplier` is the representative critical multiplier; `test_value` is the
+map test function at the located point; `converged` reports whether refinement reached
+the bifurcation tolerance. Simultaneous Neimark-Sacker pairs are represented by separate
+points distinguished by `critical_multiplier`. `normal_form` is the optional local
+classification.
 """
 struct MapSpecialPoint
     kind::Symbol
@@ -603,6 +897,59 @@ struct MapSpecialPoint
     test_value::Float64
     period::Int
     converged::Bool
+    normal_form::Union{Nothing, MapNormalForm}
+end
+
+MapSpecialPoint(kind::Symbol, param::Real, state::AbstractVector,
+                multipliers::AbstractVector, critical_multiplier::Number,
+                test_value::Real, period::Integer, converged::Bool) =
+    MapSpecialPoint(kind, Float64(param), collect(Float64, state),
+                    collect(ComplexF64, multipliers), ComplexF64(critical_multiplier),
+                    Float64(test_value), Int(period), converged, nothing)
+
+"""
+    Codim2SpecialPoint
+
+A codimension-2 bifurcation point detected on a `Codim2ContinuationResult` locus via
+`codim2_special_points`. Supported kinds and their applicable loci:
+
+- `:cusp` — fold normal-form coefficient `b = 1/2<p,B(q,q)>` crosses/vanishes (`:fold` locus)
+- `:generalized_flip` — flip normal-form coefficient `c` changes sign (`:pd` locus)
+- `:fold_flip` — a non-tracked second multiplier reaches ∓1 (`:pd` or `:fold` locus)
+- `:resonance_1_1` — tracked unit-circle angle crosses 0 mod 2π (`:ns` locus)
+- `:resonance_1_2` — tracked unit-circle angle crosses π mod 2π (`:ns` locus)
+- `:bautin` — NS normal-form coefficient `d` changes sign (`:ns` locus)
+
+`locus_kind` records which locus produced this point. `primary_param` and
+`secondary_param` are the two-parameter coordinates of the located point. `state`
+is the fixed-point state vector; `multipliers` is the full multiplier set (empty when
+`Codim2Config.curve_diagnostics` was `false`). `test_value` is the scalar test
+function at the located point (zero for interpolated detections). `converged` is
+`true` only when Newton correction to the defining locus succeeded. `status` records
+the resolution:
+
+- `:interpolated` — point located by linear interpolation between two bracketing locus
+  samples; state is not corrected back to the locus.
+- `:sampled` — reported directly from the closest locus sample; no interpolation.
+- `:unavailable` — detection was requested but required data (multipliers, normal-form
+  coefficients) were absent or numerically unstable.
+
+`normal_form` carries the codim-1 normal form for a `:sampled` coefficient detection
+(`:cusp`, `:generalized-flip`, `:bautin`); interpolated coefficient-zero points carry
+`nothing`, and full codim-2 normal-form classification is out of scope.
+"""
+struct Codim2SpecialPoint
+    kind::Symbol
+    locus_kind::Symbol
+    primary_param::Float64
+    secondary_param::Float64
+    state::Vector{Float64}
+    multipliers::Vector{ComplexF64}
+    test_value::Float64
+    period::Int
+    converged::Bool
+    status::Symbol
+    normal_form::Union{Nothing, MapNormalForm}
 end
 
 """
@@ -615,4 +962,423 @@ struct BifurcationResult
     branches::Vector{BranchResult}
     system_name::String
     timestamp::DateTime
+end
+
+"""
+    StableWindowEvidence
+
+Plain-data record of a stable low-period orbit found on an atlas branch within a
+`robust_chaos_certificate` search. Any such evidence means the region may not be
+robustly chaotic under the configured search.
+
+# Fields
+- `branch_id`: Atlas branch record identifier (`AtlasBranchRecord.id`)
+- `window_id`: Atlas window identifier (`AtlasWindow.id`)
+- `period`: Period of the orbit
+- `param_min`: Lower bound of the parameter sub-interval over which stability was confirmed
+- `param_max`: Upper bound of that interval
+- `stable_sample_count`: Number of branch points on this record classified as stable
+"""
+struct StableWindowEvidence
+    branch_id::String
+    window_id::String
+    period::Int
+    param_min::Float64
+    param_max::Float64
+    stable_sample_count::Int
+end
+
+"""
+    RobustChaosCertificate
+
+Conservative certificate for a robust-chaos region, produced by `robust_chaos_certificate`.
+Three analysis layers — Lyapunov sweep, continuation-atlas window search, and basin-of-attraction
+Lyapunov re-estimation — are orchestrated and issue layered verdicts.
+
+**Bounded semantics**: certification is bounded to the configured sampling, search periods, and
+parameter range. It does **not** mathematically prove the absence of stable orbits or chaotic
+behaviour outside the configured search.
+
+# Overall verdicts
+- `:certified`: all three layers passed with sufficient resolved coverage
+- `:fragile`: at least one layer found positive evidence against chaos (stable periodic orbit, or
+  chaotic fraction definitively too low)
+- `:inconclusive`: no layer failed but coverage was insufficient to issue a certificate
+
+# Robustness score ∈ [0, 1]
+Conservative minimum of three layer scores:
+- **Lyapunov**: `lyapunov_positive_fraction × lyapunov_resolved_fraction`
+- **Atlas**: `0` if any stable evidence was found; otherwise the atlas coverage/effort measure
+- **Basin**: `basin_chaotic_fraction × basin_resolved_fraction`
+
+# Fields
+- `param_min`, `param_max`: Audited scan interval (from `lyapunov.param_min/max`)
+- `system_name`: System name
+- `param_index`: Bifurcation parameter index shared by all three layers
+- `lyapunov_verdict`, `atlas_verdict`, `basin_verdict`, `overall_verdict`: Layer verdicts
+- `lyapunov_positive_fraction`: Fraction of *resolved* Lyapunov samples that are `:chaotic_candidate`
+- `lyapunov_resolved_fraction`: Fraction of all Lyapunov samples with a finite estimate
+- `lyapunov_min_resolved_exponent`: Minimum exponent among resolved samples (can be negative)
+- `lyapunov_n_total`, `lyapunov_n_resolved`, `lyapunov_n_positive`: Lyapunov sample counts
+- `atlas_searched_periods`: Periods searched by the atlas recon
+- `atlas_search_complete`: Whether the atlas ran to completion without time-budget exhaustion
+- `atlas_coverage_effort`: Bounded [0, 1] measure of atlas window coverage effort
+- `atlas_n_windows`, `atlas_n_covered`, `atlas_n_partial`, `atlas_n_unresolved`, `atlas_n_gaps`
+- `atlas_unresolved_stability_count`: Branch samples whose stability could not be evaluated
+- `stable_evidence`: `StableWindowEvidence` records (empty when atlas layer passes or is inconclusive)
+- `basin_param`: Representative parameter value used for basin evaluation
+- `basin_chaotic_fraction`: Fraction of *resolved* basin seeds classified as chaotic
+- `basin_resolved_fraction`: Fraction of all basin seeds that were resolved
+- `basin_n_total`, `basin_n_resolved`, `basin_n_chaotic`: Basin seed counts
+- `basin_class_counts`: Classification → count for all basin seeds
+- `robustness_score`: Conservative [0, 1] score (see above)
+- `certificate_items`: Ordered audit trail (Vector of plain-data Dicts)
+- `timestamp`: When the certificate was computed
+"""
+struct RobustChaosCertificate
+    param_min::Float64
+    param_max::Float64
+    system_name::String
+    param_index::Int
+
+    lyapunov_verdict::Symbol
+    atlas_verdict::Symbol
+    basin_verdict::Symbol
+    overall_verdict::Symbol
+
+    lyapunov_positive_fraction::Float64
+    lyapunov_resolved_fraction::Float64
+    lyapunov_min_resolved_exponent::Float64
+    lyapunov_n_total::Int
+    lyapunov_n_resolved::Int
+    lyapunov_n_positive::Int
+
+    atlas_searched_periods::Vector{Int}
+    atlas_search_complete::Bool
+    atlas_coverage_effort::Float64
+    atlas_n_windows::Int
+    atlas_n_covered::Int
+    atlas_n_partial::Int
+    atlas_n_unresolved::Int
+    atlas_n_gaps::Int
+    atlas_unresolved_stability_count::Int
+    stable_evidence::Vector{StableWindowEvidence}
+
+    basin_param::Float64
+    basin_chaotic_fraction::Float64
+    basin_resolved_fraction::Float64
+    basin_n_total::Int
+    basin_n_resolved::Int
+    basin_n_chaotic::Int
+    basin_class_counts::Dict{Symbol, Int}
+
+    robustness_score::Float64
+    certificate_items::Vector{Dict{String, Any}}
+    timestamp::DateTime
+end
+
+"""
+    ChaosDesignVariable
+
+One scalar design-parameter axis for `design_chaos_source`.
+"""
+struct ChaosDesignVariable
+    name::Symbol
+    param_index::Int
+    lower::Float64
+    upper::Float64
+
+    function ChaosDesignVariable(name::Symbol, param_index::Int, lower::Real, upper::Real)
+        isempty(String(name)) && throw(ArgumentError("ChaosDesignVariable.name must not be empty."))
+        param_index >= 1 || throw(ArgumentError(
+            "ChaosDesignVariable.param_index must be >= 1; got $param_index."))
+        lo = Float64(lower)
+        hi = Float64(upper)
+        isfinite(lo) && isfinite(hi) && hi > lo || throw(ArgumentError(
+            "ChaosDesignVariable requires finite bounds with upper > lower; got [$lo, $hi]."))
+        return new(name, param_index, lo, hi)
+    end
+end
+
+"""
+    ChaosDesignTarget
+
+Amplitude, spectral-flatness, and certificate-robustness requirements applied to
+every design candidate.
+"""
+struct ChaosDesignTarget
+    min_amplitude::Float64
+    max_amplitude::Float64
+    min_spectral_flatness::Float64
+    min_robustness_score::Float64
+
+    function ChaosDesignTarget(;
+        min_amplitude::Real=0.0,
+        max_amplitude::Real=Inf,
+        min_spectral_flatness::Real=0.0,
+        min_robustness_score::Real=0.0,
+    )
+        min_amp = Float64(min_amplitude)
+        max_amp = Float64(max_amplitude)
+        flatness = Float64(min_spectral_flatness)
+        robustness = Float64(min_robustness_score)
+        isfinite(min_amp) && min_amp >= 0.0 || throw(ArgumentError(
+            "ChaosDesignTarget.min_amplitude must be finite and >= 0."))
+        (isfinite(max_amp) || max_amp == Inf) && max_amp > min_amp || throw(ArgumentError(
+            "ChaosDesignTarget.max_amplitude must be greater than min_amplitude and finite or Inf."))
+        0.0 <= flatness <= 1.0 || throw(ArgumentError(
+            "ChaosDesignTarget.min_spectral_flatness must be in [0, 1]."))
+        0.0 <= robustness <= 1.0 || throw(ArgumentError(
+            "ChaosDesignTarget.min_robustness_score must be in [0, 1]."))
+        return new(min_amp, max_amp, flatness, robustness)
+    end
+end
+
+"""
+    ChaosDesignCandidate
+
+One evaluated design-space candidate. `objective` is the product of the robust,
+amplitude, and spectral desirability scores; feasibility is reported separately
+so a near miss cannot be mistaken for a design satisfying every target.
+"""
+struct ChaosDesignCandidate
+    design_values::Vector{Float64}
+    certificate::RobustChaosCertificate
+    signal_status::Symbol
+    amplitude::Union{Nothing, Float64}
+    spectral_flatness_value::Union{Nothing, Float64}
+    feasible::Bool
+    robust_score::Float64
+    amplitude_score::Float64
+    flatness_score::Float64
+    objective::Float64
+end
+
+"""
+    ChaosDesignResult
+
+Bounded deterministic search result from `design_chaos_source`.
+"""
+struct ChaosDesignResult
+    system_name::String
+    operating_band::Tuple{Float64, Float64}
+    operating_param_index::Int
+    variables::Vector{ChaosDesignVariable}
+    target::ChaosDesignTarget
+    candidates::Vector{ChaosDesignCandidate}
+    ranked_candidates::Vector{ChaosDesignCandidate}
+    best_candidate::Union{Nothing, ChaosDesignCandidate}
+    n_evaluated::Int
+    n_feasible::Int
+    budget_reached::Bool
+    refinement_levels_completed::Int
+    timestamp::DateTime
+end
+
+const _BORDER_COLLISION_CONVENTION =
+    "Feigin/Simpson/di Bernardo border-collision classification for continuous piecewise-smooth " *
+    "maps. Persistence vs nonsmooth fold from sign(det(I-A_L)*det(I-A_R)); companion 2q-cycle " *
+    "creation from sign(det(I+A_L)*det(I+A_R)). A_L, A_R are the one-sided q-return Jacobians " *
+    "(guard-negative and guard-positive branch at the colliding phase) and differ only at the " *
+    "colliding phase. Stability is reported separately; the classification never infers chaos, " *
+    "robust chaos, period-adding, torus creation, or any spectral-radius verdict."
+
+"""
+    BorderCollisionClassification
+
+Plain-data classification of a border-collision bifurcation (BCB) of a **continuous**
+piecewise-smooth map, following the Feigin/Simpson/di Bernardo determinant-sign theory.
+
+`A_L`/`A_R` are the two one-sided ordered *q*-return Jacobians at the colliding phase
+(`jacobian_L` = guard-negative branch, `jacobian_R` = guard-positive branch); for a
+period-`q` collision they differ only in the colliding phase's one-sided factor.
+
+# Scenario (only when `status === :ok`)
+- `:persistence` — `sign(det(I-A_L)·det(I-A_R)) > 0`, no companion cycle
+- `:nonsmooth_fold` — `sign(det(I-A_L)·det(I-A_R)) < 0`, no companion cycle
+- `:persistence_with_companion_cycle` — persistence plus a companion `2q`-cycle
+  (`sign(det(I+A_L)·det(I+A_R)) < 0`)
+- `:nonsmooth_fold_with_companion_cycle` — nonsmooth fold plus a companion `2q`-cycle
+- `:undetermined` — no scenario issued (see `status`)
+
+# Status
+- `:ok` — a generic scenario was issued
+- `:noncontinuous` — the map is not continuous at the border (rank-one continuity/normal
+  condition violated); classification is refused for discontinuous maps
+- `:nontransversal` — the border/eigenvalue crossing is not transverse
+- `:degenerate` — a `+1` or `-1` eigenvalue makes the determinant sign(s) ambiguous
+- `:multiple_border_phases` — more than one phase/guard component sits on the border
+- `:invalid` — non-square, mismatched, or non-finite Jacobians, or an unusable switching normal
+- `:unavailable` — the one-sided return Jacobians could not be formed
+
+Determinant invariants (`det_I_minus_*`, `det_I_plus_*`) and their sign products are the
+robust classifiers. The `sigma_plus_*`/`sigma_minus_*` counts (real eigenvalues `> 1` and
+`< -1`) are tolerance-aware diagnostics; `sigma_reliable` flags whether they are trustworthy.
+Stability (`stable_L`/`stable_R`, `spectral_radius_*`) is reported separately and is `nothing`
+when marginal. Companion-cycle fields are populated only when `status === :ok`;
+`companion_admissible` remains `nothing` because admissibility is not decidable from the return
+Jacobians alone.
+"""
+struct BorderCollisionClassification
+    scenario::Symbol
+    status::Symbol
+    period::Int
+
+    det_I_minus_L::Float64
+    det_I_minus_R::Float64
+    det_I_plus_L::Float64
+    det_I_plus_R::Float64
+    persistence_product::Float64
+    persistence_sign::Int
+    companion_product::Float64
+    companion_sign::Int
+
+    sigma_plus_L::Union{Nothing, Int}
+    sigma_plus_R::Union{Nothing, Int}
+    sigma_minus_L::Union{Nothing, Int}
+    sigma_minus_R::Union{Nothing, Int}
+    sigma_reliable::Bool
+
+    spectrum_L::Vector{ComplexF64}
+    spectrum_R::Vector{ComplexF64}
+
+    stable_L::Union{Nothing, Bool}
+    stable_R::Union{Nothing, Bool}
+    spectral_radius_L::Float64
+    spectral_radius_R::Float64
+
+    companion_exists::Union{Nothing, Bool}
+    companion_admissible::Union{Nothing, Bool}
+    companion_stable::Union{Nothing, Bool}
+    companion_spectral_radius::Union{Nothing, Float64}
+    companion_multipliers::Vector{ComplexF64}
+
+    transversal::Union{Nothing, Bool}
+    transversality_measure::Union{Nothing, Float64}
+
+    continuous::Union{Nothing, Bool}
+    continuity_residual::Union{Nothing, Float64}
+    continuity_tolerance::Float64
+
+    generic::Bool
+
+    jacobian_L::Matrix{Float64}
+    jacobian_R::Matrix{Float64}
+
+    inference::String
+    warnings::Vector{String}
+    convention::String
+end
+
+function BorderCollisionClassification(;
+        scenario::Symbol,
+        status::Symbol,
+        period::Integer=1,
+        det_I_minus_L::Real=NaN,
+        det_I_minus_R::Real=NaN,
+        det_I_plus_L::Real=NaN,
+        det_I_plus_R::Real=NaN,
+        persistence_product::Real=NaN,
+        persistence_sign::Integer=0,
+        companion_product::Real=NaN,
+        companion_sign::Integer=0,
+        sigma_plus_L::Union{Nothing, Integer}=nothing,
+        sigma_plus_R::Union{Nothing, Integer}=nothing,
+        sigma_minus_L::Union{Nothing, Integer}=nothing,
+        sigma_minus_R::Union{Nothing, Integer}=nothing,
+        sigma_reliable::Bool=false,
+        spectrum_L::AbstractVector=ComplexF64[],
+        spectrum_R::AbstractVector=ComplexF64[],
+        stable_L::Union{Nothing, Bool}=nothing,
+        stable_R::Union{Nothing, Bool}=nothing,
+        spectral_radius_L::Real=NaN,
+        spectral_radius_R::Real=NaN,
+        companion_exists::Union{Nothing, Bool}=nothing,
+        companion_admissible::Union{Nothing, Bool}=nothing,
+        companion_stable::Union{Nothing, Bool}=nothing,
+        companion_spectral_radius::Union{Nothing, Real}=nothing,
+        companion_multipliers::AbstractVector=ComplexF64[],
+        transversal::Union{Nothing, Bool}=nothing,
+        transversality_measure::Union{Nothing, Real}=nothing,
+        continuous::Union{Nothing, Bool}=nothing,
+        continuity_residual::Union{Nothing, Real}=nothing,
+        continuity_tolerance::Real=NaN,
+        generic::Bool=false,
+        jacobian_L::AbstractMatrix=Matrix{Float64}(undef, 0, 0),
+        jacobian_R::AbstractMatrix=Matrix{Float64}(undef, 0, 0),
+        inference::AbstractString="",
+        warnings::AbstractVector=String[],
+        convention::AbstractString=_BORDER_COLLISION_CONVENTION)
+    return BorderCollisionClassification(
+        scenario, status, Int(period),
+        Float64(det_I_minus_L), Float64(det_I_minus_R),
+        Float64(det_I_plus_L), Float64(det_I_plus_R),
+        Float64(persistence_product), Int(persistence_sign),
+        Float64(companion_product), Int(companion_sign),
+        sigma_plus_L === nothing ? nothing : Int(sigma_plus_L),
+        sigma_plus_R === nothing ? nothing : Int(sigma_plus_R),
+        sigma_minus_L === nothing ? nothing : Int(sigma_minus_L),
+        sigma_minus_R === nothing ? nothing : Int(sigma_minus_R),
+        sigma_reliable,
+        collect(ComplexF64, spectrum_L), collect(ComplexF64, spectrum_R),
+        stable_L, stable_R, Float64(spectral_radius_L), Float64(spectral_radius_R),
+        companion_exists, companion_admissible, companion_stable,
+        companion_spectral_radius === nothing ? nothing : Float64(companion_spectral_radius),
+        collect(ComplexF64, companion_multipliers),
+        transversal, transversality_measure === nothing ? nothing : Float64(transversality_measure),
+        continuous, continuity_residual === nothing ? nothing : Float64(continuity_residual),
+        Float64(continuity_tolerance),
+        generic,
+        Matrix{Float64}(jacobian_L), Matrix{Float64}(jacobian_R),
+        String(inference), collect(String, warnings), String(convention))
+end
+
+"""
+    BorderCollisionPoint
+
+A located border-collision of a period-`q` cycle on a continued map / return-map branch,
+together with its `BorderCollisionClassification`.
+
+# Fields
+- `param`: Bifurcation parameter value at the collision (`NaN` when classifying a bare cycle
+  without a swept parameter)
+- `orbit`: The reconstructed `q`-cycle phases at the collision
+- `colliding_phase`: 1-based index of the single phase sitting on the border
+- `itinerary`: Sign of the colliding guard component at each phase (`0` at the colliding phase)
+- `event_name`: Name of the `SwitchingEvent` whose guard collided
+- `guard_component`: 1-based index of the guard component that collided (`1` for a scalar guard)
+- `guard_values`: Colliding guard-component value at each phase
+- `period`: Cycle period `q`
+- `classification`: The determinant-sign classification
+- `converged`: Whether both the collision refinement and the one-sided Jacobians converged
+"""
+struct BorderCollisionPoint
+    param::Float64
+    orbit::Vector{Vector{Float64}}
+    colliding_phase::Int
+    itinerary::Vector{Int}
+    event_name::String
+    guard_component::Int
+    guard_values::Vector{Float64}
+    period::Int
+    classification::BorderCollisionClassification
+    converged::Bool
+end
+
+function BorderCollisionPoint(param::Real, orbit::AbstractVector, colliding_phase::Integer,
+                              itinerary::AbstractVector, event_name::AbstractString,
+                              guard_component::Integer, guard_values::AbstractVector,
+                              period::Integer, classification::BorderCollisionClassification,
+                              converged::Bool)
+    return BorderCollisionPoint(
+        Float64(param),
+        [collect(Float64, phase) for phase in orbit],
+        Int(colliding_phase),
+        collect(Int, itinerary),
+        String(event_name),
+        Int(guard_component),
+        collect(Float64, guard_values),
+        Int(period),
+        classification,
+        converged)
 end

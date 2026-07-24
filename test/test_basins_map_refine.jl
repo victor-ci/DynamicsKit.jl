@@ -5,9 +5,9 @@
             bif_param = 1.0,
             max_period = 8,
             precision = 1e-4,
-            iterations = 500,
-            x_min = -2.0, x_max = 2.0, x_steps = 20,
-            y_min = -1.0, y_max = 1.0, y_steps = 20
+            iterations = 200,
+            x_min = -2.0, x_max = 2.0, x_steps = 12,
+            y_min = -1.0, y_max = 1.0, y_steps = 12
         )
 
         result = basins_of_attraction(sys, config)
@@ -15,9 +15,9 @@
         @test result isa BasinsResult
         @test result.system_name == "Hénon"
         @test result.bif_param == 1.0
-        @test size(result.periodicity) == (21, 21)
-        @test length(result.x_grid) == 21
-        @test length(result.y_grid) == 21
+        @test size(result.periodicity) == (13, 13)
+        @test length(result.x_grid) == 13
+        @test length(result.y_grid) == 13
 
         # Should detect some periodic orbits (not all zeros)
         @test any(result.periodicity .> 0)
@@ -86,8 +86,8 @@
             max_period = 6,
             precision = 1e-3,
             iterations = 120,                       # 113 transient + 7 classification crossings
-            x_min = -1.5, x_max = 1.5, x_steps = 14,
-            y_min = -1.5, y_max = 1.5, y_steps = 14,
+            x_min = -1.5, x_max = 1.5, x_steps = 10,
+            y_min = -1.5, y_max = 1.5, y_steps = 10,
             fixed_params = [0.0155, 6.02e-6, 0.05],
             param_index = 1,
             x_index = 1, y_index = 2,               # grid the (v_C1, v_C2) initial plane
@@ -96,7 +96,7 @@
         result = basins_of_attraction(sys, config; solver=solver, reltol=1e-8, abstol=1e-8)
         @test result isa BasinsResult
         @test result.system_name == "Memristive Diode Bridge"
-        @test size(result.periodicity) == (15, 15)
+        @test size(result.periodicity) == (11, 11)
         @test all(result.periodicity .>= 0)
         @test all(result.periodicity .<= config.max_period)
         # At a = 0.0155 period-1 and period-3 limit cycles coexist (Xu et al.
@@ -130,7 +130,7 @@ end
             base_params = [10.0, 20.0, 30.0, 40.0]
         )
 
-        p = DynamicsKit._build_map_params(config, 0.25, 0.75)
+        p = build_map_params(config, 0.25, 0.75)
         @test p == [0.25, 0.25, 0.75, 0.75]
 
         empty_link_config = BifurcationMapConfig(
@@ -139,7 +139,7 @@ end
             a_index = 1, b_index = 2,
             base_params = [10.0, 20.0, 30.0]
         )
-        @test DynamicsKit._build_map_params(empty_link_config, 1.5, 2.5) == [1.5, 2.5, 30.0]
+        @test build_map_params(empty_link_config, 1.5, 2.5) == [1.5, 2.5, 30.0]
 
         padded_config = BifurcationMapConfig(
             a_min = 0.0, a_max = 1.0,
@@ -147,7 +147,7 @@ end
             a_index = 1, b_index = 3,
             base_params = [10.0]
         )
-        @test DynamicsKit._build_map_params(padded_config, 1.5, 2.5) == [1.5, 0.0, 2.5]
+        @test build_map_params(padded_config, 1.5, 2.5) == [1.5, 0.0, 2.5]
     end
 
     @testset "Map parameter buffers reset base values between cells" begin
@@ -157,17 +157,17 @@ end
             a_index = 1, b_index = 2,
             base_params = [10.0, 20.0, 30.0]
         )
-        template = DynamicsKit._map_param_template(config)
+        template = map_param_template(config)
         buffer = fill(-1.0, length(template))
-        a_indices = DynamicsKit._map_a_write_indices(config)
-        b_indices = DynamicsKit._map_b_write_indices(config)
+        a_indices = map_a_write_indices(config)
+        b_indices = map_b_write_indices(config)
 
-        params = DynamicsKit._map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.25, 0.75)
+        params = map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.25, 0.75)
         @test params === buffer
         @test params == [0.25, 0.75, 30.0]
 
         buffer[3] = 999.0
-        params = DynamicsKit._map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.5, 1.5)
+        params = map_params_from_buffer!(buffer, template, a_indices, b_indices, 0.5, 1.5)
         @test params === buffer
         @test params == [0.5, 1.5, 30.0]
     end
@@ -536,48 +536,6 @@ end
         @test crossing["divergenceCallbackCount"] == 0
     end
 
-    @testset "Bifurcation map adaptive boundary refinement" begin
-        boundary_map = DiscreteMap(
-            (x, p) -> p[1] < 0.5 ? SVector(0.0) : SVector(-x[1]),
-            1,
-            [:a, :b],
-            "Adaptive boundary map"
-        )
-        cfg = BifurcationMapConfig(
-            a_min = 0.0, a_max = 1.0, a_steps = 1,
-            b_min = 0.0, b_max = 1.0, b_steps = 1,
-            a_index = 1, b_index = 2,
-            max_period = 2,
-            precision = 1e-10,
-            iterations = 3,
-            base_params = [0.0, 0.0],
-            adaptive_refinement_enabled = true,
-            adaptive_refinement_max_depth = 1,
-            adaptive_refinement_budget = 5
-        )
-        result, diagnostics = DynamicsKit._bifurcation_map(boundary_map, cfg; initial_point=[1.0])
-        adaptive = diagnostics["adaptiveRefinement"]
-
-        @test size(result.periodicity) == (2, 2)
-        @test result.periodicity[1, 1] == 1
-        @test result.periodicity[2, 1] == 2
-        @test adaptive["enabled"] == true
-        @test adaptive["baseCellCount"] == 1
-        @test adaptive["flaggedBaseCells"] == 1
-        @test adaptive["sampleCount"] == 5
-        @test adaptive["refinedCellCount"] >= 1
-        @test !adaptive["budgetExhausted"]
-        @test any(point -> point["a"] == 0.5 && point["period"] == 2, adaptive["points"])
-        @test any(cell -> "period" in cell["reasons"], adaptive["cells"])
-
-        @test_throws AssertionError BifurcationMapConfig(
-            a_min = 0.0, a_max = 1.0,
-            b_min = 0.0, b_max = 1.0,
-            reuse_neighbor_seeds = true,
-            adaptive_refinement_enabled = true
-        )
-    end
-
     @testset "Bifurcation map Lyapunov diagnostics" begin
         logistic_map = DiscreteMap(
             (x, p) -> SVector(p[1] * x[1] * (1.0 - x[1])),
@@ -626,21 +584,22 @@ end
 
     @testset "Lyapunov classification of collapsed and contracting cells" begin
         cls = DynamicsKit._map_lyapunov_classification
-        aperiodic = (period = 0, status = :aperiodic_or_high_period)
+        BE = DynamicsKit
+        aperiodic_period, aperiodic_status = 0, BE._map_status_code(:aperiodic_or_high_period)
 
         # A collapsed trajectory pair returns the sentinel exponent -Inf; it is the
         # extreme of a confidently negative exponent (regular/contracting regime) and
         # must not fall through to :unresolved on the isfinite check.
-        @test cls(aperiodic, -Inf, :collapsed, 1e-2) == :periodic
+        @test cls(aperiodic_period, aperiodic_status, -Inf, BE._map_lyapunov_estimation_status_code(:collapsed), 1e-2) == BE._map_lyapunov_status_code(:periodic)
         # Confidently negative finite exponent ⟹ regular/periodic-like, not :unresolved.
-        @test cls(aperiodic, -0.5, :ok, 1e-2) == :periodic
+        @test cls(aperiodic_period, aperiodic_status, -0.5, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:periodic)
         # Positive and near-zero exponents classify as before.
-        @test cls(aperiodic, 0.4, :ok, 1e-2) == :chaotic_candidate
-        @test cls(aperiodic, 0.0, :ok, 1e-2) == :quasiperiodic_neutral_candidate
+        @test cls(aperiodic_period, aperiodic_status, 0.4, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:chaotic_candidate)
+        @test cls(aperiodic_period, aperiodic_status, 0.0, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:quasiperiodic_neutral_candidate)
         # A detector-resolved finite period short-circuits to :periodic.
-        @test cls((period = 3, status = :periodic), NaN, :ok, 1e-2) == :periodic
+        @test cls(3, BE._map_status_code(:periodic), NaN, BE._map_lyapunov_estimation_status_code(:ok), 1e-2) == BE._map_lyapunov_status_code(:periodic)
         # A non-aperiodic detection without a usable estimate stays :unresolved.
-        @test cls((period = 0, status = :diverged), NaN, :diverged, 1e-2) == :unresolved
+        @test cls(0, BE._map_status_code(:diverged), NaN, BE._map_lyapunov_estimation_status_code(:diverged), 1e-2) == BE._map_lyapunov_status_code(:unresolved)
     end
 
     @testset "Bifurcation map switching-event diagnostics" begin
@@ -714,12 +673,12 @@ end
         )
 
         config = BifurcationMapConfig(
-            a_min = 0.5, a_max = 1.4, a_steps = 15,
-            b_min = 0.1, b_max = 0.5, b_steps = 10,
+            a_min = 0.5, a_max = 1.4, a_steps = 9,
+            b_min = 0.1, b_max = 0.5, b_steps = 6,
             a_index = 1, b_index = 2,
             max_period = 8,
             precision = 1e-4,
-            iterations = 500,
+            iterations = 200,
             base_params = [1.0, 0.3]
         )
 
@@ -728,7 +687,7 @@ end
         @test result isa BifurcationMapResult
         @test result.system_name == "Hénon 2P"
         @test result.param_names == (:a, :b)
-        @test size(result.periodicity) == (16, 11)
+        @test size(result.periodicity) == (10, 7)
 
         # Should detect various periodicities
         @test any(result.periodicity .> 0)

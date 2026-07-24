@@ -172,7 +172,7 @@ function _branch_stability_flags(sys::DynamicalSystem, br::BranchResult,
     period = max(br.period, 1)
     flags = Vector{Bool}(undef, length(branch_points))
     for (i, pt) in enumerate(branch_points)
-        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        local_params = inject_param(base_params, param_index, pt.param, linked_param_indices)
         state = _branch_point_state(pt, proj_dim)
         flags[i] = try
             first(_map_stability(sys, state, local_params, period;
@@ -274,7 +274,7 @@ function _branch_plot_traces(sys::DiscreteMap, br::BranchResult;
     has_previous = false
 
     for pt in branch_points
-        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        local_params = inject_param(base_params, param_index, pt.param, linked_param_indices)
         current = _branch_point_state(pt, dim)
         for phase in 1:period
             orbit[phase] .= current
@@ -332,7 +332,7 @@ function _branch_plot_traces(sys::ContinuousODE, br::BranchResult;
     has_previous = false
 
     for pt in branch_points
-        local_params = _inject_param(base_params, param_index, pt.param, linked_param_indices)
+        local_params = inject_param(base_params, param_index, pt.param, linked_param_indices)
         current = _branch_point_state(pt, proj_dim)
         valid = true
         for phase in 1:period
@@ -702,6 +702,99 @@ function plot_bifurcation_map(result::BifurcationMapResult;
         title=something(title, "$(result.system_name) — 2D Bifurcation Map"),
         size=figsize, colorbar_title="Period",
         kwargs...)
+    return p
+end
+
+"""
+    plot_mode_sequence_alignment(result::ModeSequenceAlignment; figsize=(900, 360), kwargs...)
+
+Plot the computed and measured mode routes on aligned parameter coordinates.
+Mismatched, unresolved, and out-of-coverage measurements are marked explicitly.
+"""
+function plot_mode_sequence_alignment(result::ModeSequenceAlignment;
+                                      figsize=(900, 360),
+                                      title::Union{Nothing, String}=nothing,
+                                      kwargs...)
+    theory = result.predicted.sequence
+    experiment = result.experimental
+    all_modes = unique(vcat(
+        _mode_comparison_key.(theory.modes),
+        _mode_comparison_key.(experiment.modes),
+    ))
+    colors = palette(:tab10, max(length(all_modes), 1))
+    mode_colors = Dict(
+        mode => colors[index]
+        for (index, mode) in enumerate(all_modes)
+    )
+    seen = Set{String}()
+    p = plot(;
+        xlabel=String(theory.parameter_name),
+        yticks=([1.0, 2.0], [experiment.source, theory.source]),
+        ylims=(0.55, 2.45),
+        title=something(title, "$(result.predicted.system_name) — mode-sequence alignment"),
+        size=figsize,
+        legend=:outerright,
+        kwargs...,
+    )
+
+    function add_route!(values, modes, y; linewidth, markershape)
+        for index in 1:(length(values) - 1)
+            key = _mode_comparison_key(modes[index])
+            label = key in seen ? "" : modes[index]
+            push!(seen, key)
+            plot!(
+                p,
+                values[index:(index + 1)],
+                [y, y];
+                color=mode_colors[key],
+                linewidth,
+                label,
+            )
+        end
+        for mode in unique(modes)
+            key = _mode_comparison_key(mode)
+            indices = findall(candidate -> _mode_comparison_key(candidate) == key, modes)
+            label = key in seen ? "" : mode
+            push!(seen, key)
+            scatter!(
+                p,
+                values[indices],
+                fill(y, length(indices));
+                color=mode_colors[key],
+                marker=markershape,
+                markersize=4,
+                label,
+            )
+        end
+    end
+
+    add_route!(theory.parameter_values, theory.modes, 2.0;
+               linewidth=3.0, markershape=:rect)
+    add_route!(result.aligned_parameter_values, experiment.modes, 1.0;
+               linewidth=2.0, markershape=:circle)
+
+    mismatch_indices = findall(==(:mismatched), result.observation_statuses)
+    unresolved_indices = findall(status -> status in (:unresolved_prediction, :outside_coverage),
+                                 result.observation_statuses)
+    isempty(mismatch_indices) || scatter!(
+        p,
+        result.aligned_parameter_values[mismatch_indices],
+        fill(1.0, length(mismatch_indices));
+        marker=:xcross,
+        markersize=8,
+        color=:black,
+        label="Mode mismatch",
+    )
+    isempty(unresolved_indices) || scatter!(
+        p,
+        result.aligned_parameter_values[unresolved_indices],
+        fill(1.0, length(unresolved_indices));
+        marker=:diamond,
+        markersize=6,
+        markercolor=:white,
+        markerstrokecolor=:black,
+        label="Not comparable",
+    )
     return p
 end
 

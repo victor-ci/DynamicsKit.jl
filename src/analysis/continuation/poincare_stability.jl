@@ -105,6 +105,7 @@ function _section_condition_gradient(sys::ContinuousODE,
     gradient = try
         ForwardDiff.gradient(condition, u0)
     catch err
+        err isa InterruptException && rethrow()
         error("Could not differentiate the Poincaré section condition for $(sys.name): $(_continuation_error_message(err))")
     end
     all(isfinite, gradient) || error("Poincaré section gradient for $(sys.name) contains non-finite values.")
@@ -356,7 +357,7 @@ function _estimate_section_bounds(sys::ContinuousODE, param_value::Float64, para
                                   crossings::Int=40,
                                   padding::Float64=0.15,
                                   min_half_width::Float64=0.5)
-    local_params = _inject_param(params, param_index, param_value, linked_param_indices)
+    local_params = inject_param(params, param_index, param_value, linked_param_indices)
     sample = _collect_poincare_points(
         sys,
         local_params;
@@ -485,7 +486,7 @@ function _collect_trajectory_seed_points(sys::ContinuousODE, param_value::Float6
                                          abstol::Float64=1e-8,
                                          tmax::Union{Nothing, Float64}=nothing,
                                          min_crossing_time::Float64=1e-6)
-    local_params = _inject_param(params, param_index, param_value, linked_param_indices)
+    local_params = inject_param(params, param_index, param_value, linked_param_indices)
     return _collect_poincare_points(
         sys,
         local_params;
@@ -555,7 +556,10 @@ function _map_multipliers(sys::DiscreteMap,
         end
         Array(current) .- x
     end
-    return eigvals(ForwardDiff.jacobian(F, x0) + Matrix{Float64}(I, dim, dim))
+    map_jacobian = ForwardDiff.jacobian(F, x0) + Matrix{Float64}(I, dim, dim)
+    all(isfinite, map_jacobian) || error(
+        "Discrete return-map Jacobian contains non-finite values for $(sys.name).")
+    return eigvals(map_jacobian)
 end
 
 function _map_multipliers(sys::ContinuousODE,
@@ -585,6 +589,8 @@ function _map_multipliers(sys::ContinuousODE,
             min_crossing_time=min_crossing_time
         )
         found || error("Variational Poincaré derivative failed to find a period-$period return for $(sys.name).")
+        all(isfinite, map_jacobian) || error(
+            "Variational Poincare return-map Jacobian contains non-finite values for $(sys.name).")
         return eigvals(map_jacobian)
     elseif ode_jacobian_method != :finite_difference
         throw(ArgumentError("Unknown ODE Jacobian method $(repr(ode_jacobian_method)); expected :finite_difference or :variational."))
@@ -605,7 +611,10 @@ function _map_multipliers(sys::ContinuousODE,
         found || return fill(NaN, map_dim)
         next_point .- x
     end
-    return eigvals(_fd_jacobian(F, x0, fd_step) + Matrix{Float64}(I, map_dim, map_dim))
+    map_jacobian = _fd_jacobian(F, x0, fd_step) + Matrix{Float64}(I, map_dim, map_dim)
+    all(isfinite, map_jacobian) || error(
+        "Finite-difference Poincare return-map Jacobian contains non-finite values for $(sys.name).")
+    return eigvals(map_jacobian)
 end
 
 function _map_stability(sys::DynamicalSystem,
@@ -656,12 +665,13 @@ function _branch_points_with_recomputed_stability(sys::DynamicalSystem,
             require_state && error("Cannot recompute branch stability for $(branch.system_name) period-$(branch.period) point $idx: recorded state fields x1..x$projected_dim are incomplete.")
             return point
         end
-        local_params = _inject_param(base, param_index, Float64(point.param), linked_param_indices)
+        local_params = inject_param(base, param_index, Float64(point.param), linked_param_indices)
         state = _branch_point_state(point, projected_dim)
         try
             stable, _ = _map_stability(sys, state, local_params, period; kwargs...)
             return _branch_point_with_stability(point, stable)
         catch err
+            err isa InterruptException && rethrow()
             error("Failed to recompute return-map stability for $(branch.system_name) period-$(branch.period) branch point $idx at $(branch.param_name)=$(point.param): $(_continuation_error_message(err))")
         end
     end

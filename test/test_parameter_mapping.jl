@@ -69,9 +69,4 @@
         @test t == [0.0, 0.0, 9.0]                                # template not mutated by template form
     end
 
-    @testset "underscore aliases still resolve" begin
-        @test DynamicsKit._inject_param === inject_param
-        @test DynamicsKit._map_params_from_buffer! === map_params_from_buffer!
-        @test DynamicsKit._build_map_params === build_map_params
-    end
 end

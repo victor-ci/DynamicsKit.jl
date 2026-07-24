@@ -207,6 +207,87 @@ of the return map.
 end
 
 """
+    ConnectingOrbitConfig
+
+Configuration for continuing a connecting orbit with the projection
+boundary-condition method. Covers homoclinic connections to an equilibrium,
+heteroclinic connections between two saddles, and homoclinic connections to a
+saddle periodic orbit.
+
+The orbit is discretized on a uniform trapezoidal mesh of `n_mesh` intervals in
+rescaled time; the saddle equilibria (or the saddle cycle's Floquet data) are
+solved alongside the orbit and the endpoints are pinned to the linear
+stable/unstable subspaces by projection boundary conditions. A damped
+pseudo-inverse fallback corrector (`use_fallback`) rescues predictor points
+where the primary Newton corrector stalls, and its use is recorded in the
+result provenance.
+
+# Fields
+- `continuation`: Secondary-axis continuation settings (`param_index`,
+  `p_min`/`p_max`, `ds`/`dsmax`/`dsmin`, `max_steps`, `newton_tol`,
+  `newton_max_iter`). `param_index` selects the free secondary parameter.
+- `kind`: `:homoclinic`, `:heteroclinic`, or `:saddle_cycle`.
+- `n_mesh`: Number of trapezoidal mesh intervals for the truncated orbit.
+- `max_return_time`: Cap on the truncation time `T`.
+- `detect_events`: Evaluate the standard HomCont eigenvalue test functions and
+  record sign-crossing special points along the locus.
+- `test_orbit_flip` / `test_inclination_flip`: Also evaluate the orbit-flip and
+  adjoint-transport inclination-flip test functions. Inclination-flip test
+  functions are only available when the relevant manifold has at least two
+  stable (or two unstable) eigenvalues; otherwise they are reported with an
+  `:unavailable` status rather than a fabricated value.
+- `use_fallback`: Enable the damped pseudo-inverse fallback corrector.
+- `fallback_max_iter`: Iteration budget for the fallback corrector.
+- `projector_refresh`: Recompute the frozen stable/unstable projectors every
+  `projector_refresh` Newton iterations during correction (`1` = every iteration,
+  default). Higher values freeze projectors for more iterations; this can speed
+  up costly corrections at the risk of slower convergence if the saddle moves
+  significantly between refreshes. Projectors are frozen to `Float64` because
+  `eigen`/`schur` cannot differentiate through `ForwardDiff.Dual` matrices.
+- `orbit_save_stride` / `max_saved_orbits`: Bounded retention of normalized
+  trajectories along the locus.
+- `bothside`: Continue in both secondary-parameter directions from the seed.
+- `source_index`: Which stored orbit of a source `OrbitBranchResult` seeds the
+  connection (`0` selects the long-period endpoint).
+- `provenance`: Free-form provenance string stored in the result diagnostics.
+- `epsilon_start` / `epsilon_end`: Endpoint distance from the source/target
+  saddle (equilibrium) or reference phase point (saddle-cycle). The BVP
+  boundary condition pins `|u(0) - xs|` to `epsilon_start` and
+  `|u(T) - xt|` to `epsilon_end`. `NaN` (the default) means derive the radius
+  from the seed orbit's natural endpoint distance; use an explicit positive
+  value to override it. Zero and negative values are rejected.
+"""
+@with_kw struct ConnectingOrbitConfig
+    continuation::ContinuationConfig
+    kind::Symbol = :homoclinic
+    n_mesh::Int = 120
+    epsilon_start::Float64 = NaN
+    epsilon_end::Float64 = NaN
+    max_return_time::Float64 = Inf
+    detect_events::Bool = true
+    test_orbit_flip::Bool = true
+    test_inclination_flip::Bool = true
+    use_fallback::Bool = true
+    fallback_max_iter::Int = 150
+    projector_refresh::Int = 1
+    orbit_save_stride::Int = 10
+    max_saved_orbits::Int = 25
+    bothside::Bool = false
+    source_index::Int = 0
+    provenance::String = ""
+    @assert kind in (:homoclinic, :heteroclinic, :saddle_cycle) "ConnectingOrbitConfig.kind must be :homoclinic, :heteroclinic, or :saddle_cycle"
+    @assert n_mesh >= 10 "ConnectingOrbitConfig.n_mesh must be >= 10"
+    @assert isnan(epsilon_start) || (isfinite(epsilon_start) && epsilon_start > 0.0) "ConnectingOrbitConfig.epsilon_start must be a positive finite value or NaN (derive from seed)"
+    @assert isnan(epsilon_end) || (isfinite(epsilon_end) && epsilon_end > 0.0) "ConnectingOrbitConfig.epsilon_end must be a positive finite value or NaN (derive from seed)"
+    @assert (isfinite(max_return_time) || max_return_time == Inf) && max_return_time > 0.0 "ConnectingOrbitConfig.max_return_time must be positive and finite or Inf"
+    @assert fallback_max_iter >= 1 "ConnectingOrbitConfig.fallback_max_iter must be >= 1"
+    @assert projector_refresh >= 1 "ConnectingOrbitConfig.projector_refresh must be >= 1"
+    @assert source_index >= 0 "ConnectingOrbitConfig.source_index must be >= 0 (0 selects the source endpoint)"
+    @assert orbit_save_stride >= 1 "ConnectingOrbitConfig.orbit_save_stride must be >= 1"
+    @assert max_saved_orbits >= 2 "ConnectingOrbitConfig.max_saved_orbits must be >= 2"
+end
+
+"""
     ReseedConfig
 
 Controls automatic re-seeding when a continuation direction terminates prematurely in the
@@ -313,11 +394,6 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
  - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation
  - `lyapunov_neutral_tolerance`: Absolute exponent threshold for neutral/quasiperiodic candidates
  - `min_crossing_time`: Ignore section crossings before this time for continuous-time maps and Lyapunov-field runs
- - `adaptive_refinement_enabled`: Refine boundary/low-confidence 2D map cells into a sparse overlay
- - `adaptive_refinement_max_depth`: Maximum recursive subdivision depth for adaptive refinement
- - `adaptive_refinement_budget`: Maximum number of extra sparse samples; `0` selects a conservative automatic budget
- - `adaptive_refinement_min_confidence`: Refine cells with any corner below this confidence; `0` disables this trigger
- - `adaptive_refinement_confidence_delta`: Refine cells whose corner confidence range exceeds this value; `0` disables this trigger
 """
 @with_kw struct BifurcationMapConfig
     a_min::Float64
@@ -346,11 +422,6 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     lyapunov_perturbation::Float64 = 1e-8
     lyapunov_neutral_tolerance::Float64 = 1e-3
     min_crossing_time::Float64 = 1e-6
-    adaptive_refinement_enabled::Bool = false
-    adaptive_refinement_max_depth::Int = 1
-    adaptive_refinement_budget::Int = 0
-    adaptive_refinement_min_confidence::Float64 = 0.0
-    adaptive_refinement_confidence_delta::Float64 = 0.0
     @assert isnothing(neighbor_transient) || neighbor_transient >= 0 "BifurcationMapConfig.neighbor_transient must be nothing or >= 0"
     @assert neighbor_tile_size_a >= 0 "BifurcationMapConfig.neighbor_tile_size_a must be >= 0"
     @assert neighbor_tile_size_b >= 0 "BifurcationMapConfig.neighbor_tile_size_b must be >= 0"
@@ -361,11 +432,6 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     @assert isfinite(lyapunov_perturbation) && lyapunov_perturbation > 0.0 "BifurcationMapConfig.lyapunov_perturbation must be finite and > 0"
     @assert isfinite(lyapunov_neutral_tolerance) && lyapunov_neutral_tolerance >= 0.0 "BifurcationMapConfig.lyapunov_neutral_tolerance must be finite and >= 0"
     @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BifurcationMapConfig.min_crossing_time must be finite and >= 0"
-    @assert adaptive_refinement_max_depth >= 0 "BifurcationMapConfig.adaptive_refinement_max_depth must be >= 0"
-    @assert adaptive_refinement_budget >= 0 "BifurcationMapConfig.adaptive_refinement_budget must be >= 0"
-    @assert isfinite(adaptive_refinement_min_confidence) && adaptive_refinement_min_confidence >= 0.0 && adaptive_refinement_min_confidence <= 1.0 "BifurcationMapConfig.adaptive_refinement_min_confidence must be finite and in [0, 1]"
-    @assert isfinite(adaptive_refinement_confidence_delta) && adaptive_refinement_confidence_delta >= 0.0 && adaptive_refinement_confidence_delta <= 1.0 "BifurcationMapConfig.adaptive_refinement_confidence_delta must be finite and in [0, 1]"
-    @assert !adaptive_refinement_enabled || !reuse_neighbor_seeds "BifurcationMapConfig.adaptive_refinement_enabled requires fixed-seed traversal (reuse_neighbor_seeds=false)"
 end
 
 """
@@ -626,4 +692,413 @@ with finer step sizes to capture missed details.
     @assert isfinite(a) && a > 0.0 "RefinementConfig.a must be finite and > 0"
     @assert save_sol_every_step > 0 "RefinementConfig.save_sol_every_step must be > 0"
     @assert ode_jacobian_method in (:finite_difference, :variational) "RefinementConfig.ode_jacobian_method must be :finite_difference or :variational"
+end
+
+"""
+    RobustChaosConfig
+
+Configuration for `robust_chaos_certificate`. Nests the three analysis-layer configs and adds
+per-layer threshold fractions for conservative pass/fail verdicts.
+
+All three nested configs must describe the same physical parameter slice: matching parameter
+indices, linked-parameter indices, non-varied base parameters, and Lyapunov/atlas intervals.
+`basins.bif_param` must lie within `[lyapunov.param_min, lyapunov.param_max]`. The atlas must
+carry non-`nothing` `brute_force` and `continuation` sub-configs.
+
+# Fields
+- `lyapunov`: `LyapunovConfig` for the parameter sweep; defines the certified interval
+- `atlas`: `AtlasConfig` for the continuation-atlas window search; must have a `brute_force`
+- `basins`: `BasinsConfig` for basin evaluation at `basins.bif_param`
+- `min_lyapunov_positive_fraction`: Required fraction of *resolved* Lyapunov samples that must
+  be `:chaotic_candidate`. Applied after the resolved-coverage threshold. Default `1.0`.
+- `min_lyapunov_resolved_fraction`: Minimum fraction of all Lyapunov samples that must yield a
+  finite estimate. If below this, the verdict is inconclusive unless failure is already
+  provable. Default `1.0`.
+- `min_chaotic_basin_fraction`: Required fraction of *resolved* basin seeds classified as
+  chaotic. Applied after the basin resolved-coverage threshold. Default `1.0`.
+- `min_basin_resolved_fraction`: Minimum fraction of all basin seeds that must be resolved
+  (Lyapunov estimation succeeded or periodicity was detected). Default `1.0`.
+"""
+function _robust_float_repr_equal(a, b)
+    a == b && return true
+    a isa Real && b isa Real || return false
+    af = Float64(a)
+    bf = Float64(b)
+    return abs(af - bf) <= 8 * eps(Float64) * max(abs(af), abs(bf), 1.0)
+end
+
+function _robust_config_base_params_match(
+   lhs::AbstractVector,
+   rhs::AbstractVector,
+   varied_indices::AbstractVector{Int},
+)
+   # Parameter builders throughout the package define omitted trailing entries as zero;
+   # compare against that same canonical zero-padded representation.
+   n = max(length(lhs), length(rhs))
+   varied = Set(varied_indices)
+   for idx in 1:n
+       idx in varied && continue
+       left = idx <= length(lhs) ? lhs[idx] : 0.0
+       right = idx <= length(rhs) ? rhs[idx] : 0.0
+       _robust_float_repr_equal(left, right) || return false
+   end
+   return true
+end
+
+@with_kw struct RobustChaosConfig
+    lyapunov::LyapunovConfig
+    atlas::AtlasConfig
+    basins::BasinsConfig
+    min_lyapunov_positive_fraction::Float64 = 1.0
+    min_lyapunov_resolved_fraction::Float64 = 1.0
+    min_chaotic_basin_fraction::Float64      = 1.0
+    min_basin_resolved_fraction::Float64     = 1.0
+    @assert 0.0 <= min_lyapunov_positive_fraction <= 1.0 "RobustChaosConfig.min_lyapunov_positive_fraction must be in [0, 1]"
+    @assert 0.0 <= min_lyapunov_resolved_fraction <= 1.0 "RobustChaosConfig.min_lyapunov_resolved_fraction must be in [0, 1]"
+    @assert 0.0 <= min_chaotic_basin_fraction <= 1.0 "RobustChaosConfig.min_chaotic_basin_fraction must be in [0, 1]"
+    @assert 0.0 <= min_basin_resolved_fraction <= 1.0 "RobustChaosConfig.min_basin_resolved_fraction must be in [0, 1]"
+    @assert !isnothing(atlas.brute_force) "RobustChaosConfig: atlas must carry a non-nothing brute_force (required to locate periodic windows)"
+    @assert !isnothing(atlas.continuation) "RobustChaosConfig: atlas must carry a non-nothing continuation (required to verify the full certificate interval)"
+    @assert atlas.brute_force.param_index == lyapunov.param_index "RobustChaosConfig: atlas.brute_force.param_index must match lyapunov.param_index"
+    @assert atlas.continuation.param_index == lyapunov.param_index "RobustChaosConfig: atlas.continuation.param_index must match lyapunov.param_index"
+    @assert basins.param_index == lyapunov.param_index "RobustChaosConfig: basins.param_index must match lyapunov.param_index"
+    @assert atlas.brute_force.param_min == lyapunov.param_min && atlas.brute_force.param_max == lyapunov.param_max "RobustChaosConfig: atlas.brute_force must cover exactly the lyapunov parameter interval"
+    @assert atlas.continuation.p_min <= lyapunov.param_min && atlas.continuation.p_max >= lyapunov.param_max "RobustChaosConfig: atlas.continuation must cover the full lyapunov parameter interval"
+    @assert sort(unique(atlas.brute_force.linked_param_indices)) == sort(unique(lyapunov.linked_param_indices)) "RobustChaosConfig: atlas.brute_force linked parameters must match lyapunov.linked_param_indices"
+    @assert sort(unique(atlas.continuation.linked_param_indices)) == sort(unique(lyapunov.linked_param_indices)) "RobustChaosConfig: atlas.continuation linked parameters must match lyapunov.linked_param_indices"
+    @assert _robust_config_base_params_match(
+        atlas.brute_force.fixed_params,
+        lyapunov.fixed_params,
+        unique(vcat([lyapunov.param_index], lyapunov.linked_param_indices)),
+    ) "RobustChaosConfig: atlas.brute_force and lyapunov must use the same non-varied base parameters"
+    @assert all(
+        idx <= length(basins.fixed_params) && basins.fixed_params[idx] == basins.bif_param
+        for idx in lyapunov.linked_param_indices
+    ) "RobustChaosConfig: basins.fixed_params must set every linked parameter to basins.bif_param"
+    @assert _robust_config_base_params_match(
+        basins.fixed_params,
+        lyapunov.fixed_params,
+        unique(vcat([lyapunov.param_index], lyapunov.linked_param_indices)),
+    ) "RobustChaosConfig: basins and lyapunov must use the same non-varied base parameters"
+    @assert lyapunov.param_min <= basins.bif_param <= lyapunov.param_max "RobustChaosConfig: basins.bif_param must lie within [lyapunov.param_min, lyapunov.param_max]"
+end
+
+"""
+    ChaosDesignSignalConfig
+
+Representative signal-measurement settings for `design_chaos_source`.
+Discrete maps use the transient, sample count, interval, and window fields.
+Continuous systems use `continuous`, or a documented default
+`PowerSpectrumConfig` when it is `nothing`.
+"""
+@with_kw struct ChaosDesignSignalConfig
+    state_index::Int = 1
+    discrete_transient::Int = 500
+    discrete_samples::Int = 2048
+    discrete_sample_interval::Int = 1
+    discrete_window::Symbol = :hann
+    continuous::Union{Nothing, PowerSpectrumConfig} = nothing
+    divergence_cutoff::Float64 = 1e6
+    @assert state_index >= 1 "ChaosDesignSignalConfig.state_index must be >= 1"
+    @assert discrete_transient >= 0 "ChaosDesignSignalConfig.discrete_transient must be >= 0"
+    @assert discrete_samples >= 4 "ChaosDesignSignalConfig.discrete_samples must be >= 4 for spectrum estimation"
+    @assert discrete_sample_interval >= 1 "ChaosDesignSignalConfig.discrete_sample_interval must be >= 1"
+    @assert discrete_window in (:hann, :none) "ChaosDesignSignalConfig.discrete_window must be :hann or :none"
+    @assert isfinite(divergence_cutoff) && divergence_cutoff > 0.0 "ChaosDesignSignalConfig.divergence_cutoff must be finite and > 0"
+end
+
+"""
+    ChaosDesignConfig
+
+Configuration for a deterministic bounded coarse-to-fine search over one to
+three system parameter slots. `operating_config` defines the target robust-chaos
+band and its representative basin parameter.
+"""
+@with_kw struct ChaosDesignConfig
+    operating_config::RobustChaosConfig
+    variables::Vector{ChaosDesignVariable}
+    target::ChaosDesignTarget
+    signal::ChaosDesignSignalConfig
+    samples_per_axis::Int = 5
+    refinement_levels::Int = 2
+    survivors_per_level::Int = 5
+    max_evaluations::Int = 200
+    @assert 1 <= length(variables) <= 3 "ChaosDesignConfig requires 1-3 design variables"
+    @assert allunique(v.param_index for v in variables) "ChaosDesignConfig: design variable param_index values must be distinct"
+    @assert let lya = operating_config.lyapunov
+        swept = Set{Int}(vcat([lya.param_index], lya.linked_param_indices))
+        all(!(v.param_index in swept) for v in variables)
+    end "ChaosDesignConfig: design variable param_index must not overlap the operating bifurcation parameter slot or its linked slots"
+    @assert samples_per_axis >= 2 "ChaosDesignConfig.samples_per_axis must be >= 2"
+    @assert refinement_levels >= 0 "ChaosDesignConfig.refinement_levels must be >= 0"
+    @assert survivors_per_level >= 1 "ChaosDesignConfig.survivors_per_level must be >= 1"
+    @assert max_evaluations >= 1 "ChaosDesignConfig.max_evaluations must be >= 1"
+end
+
+"""
+    BranchReachabilityConfig
+
+Configuration for `branch_reachability` (multistability-aware continuation). Pairs a
+set of continuation branches with a per-parameter basin initial-condition census so each coexisting
+branch is reported with the basin fraction that actually reaches it, not merely as stable/unstable.
+
+The analysis evaluates a basin census on the `(x, y)` initial-condition grid at each parameter knot
+in `param_samples`, assigns every seed's terminal periodic orbit to a stable branch identity using
+period-gated, phase-invariant state-space geometry, and accounts for every seed in exactly one
+category (`matched` / `unmatched` / `aperiodic` / `diverged` / `unresolved` / `stability_mismatch` /
+`outside_coverage`).
+
+# Fields
+- `param_samples`: Explicit list of parameter knots to evaluate (non-empty). Branch states are
+  selected/solved at each knot; a branch is `covered` at a knot only when the knot lies within its
+  continued parameter range (± `param_tolerance`).
+- `param_index`: Parameter slot holding the varied continuation parameter
+- `linked_param_indices`: Additional parameter slots set to the same varied value
+- `base_params`: Base parameter vector (varied + linked slots are overwritten per knot). Empty ⇒ a
+  zero vector sized to the referenced parameter slots.
+- `x_min`, `x_max`, `x_steps`: Grid bounds and number of intervals for the first
+  initial-condition axis (`x_steps + 1` seed points)
+- `y_min`, `y_max`, `y_steps`: Grid bounds and number of intervals for the second
+  initial-condition axis (`y_steps + 1` seed points)
+- `x_index`, `y_index`: State dimensions the grid axes vary
+- `ic_template`: Full-state fill for the non-gridded dimensions (empty ⇒ zeros)
+- `max_period`: Maximum period to detect for a seed's terminal orbit
+- `precision`: Amplitude-relative tolerance for period detection (matches `BasinsConfig.precision`)
+- `iterations`: Total iterations per seed (must be at least `max_period + 1`)
+- `divergence_cutoff`: State-amplitude cutoff flagging a diverged seed; `Inf` disables bailout
+- `param_tolerance`: How far outside a branch's recorded parameter range a knot may lie and still be
+  treated as covered (guards against using a branch point far from the requested sample)
+- `match_tolerance`: Amplitude-relative phase-invariant distance below which a seed cycle matches a
+  branch cycle
+- `ambiguity_ratio`: A seed with two same-period stable branches within `match_tolerance` is
+  `matched` to the nearest only when the best distance is at most `ambiguity_ratio` times the
+  second-best; otherwise it is `unresolved`. Must lie in `(0, 1)`.
+- `stability_tol`: Unit-circle tolerance for branch multiplier stability at each knot
+- `newton_max_iter`, `newton_tol`: Newton settings for solving the exact branch fixed point at a knot
+- `branch_ids`: Optional stable IDs aligned to the input branches; empty ⇒ deterministic
+  `"branch-<k>"` fallback IDs by input order
+- `threaded`: Thread the per-cell census (assignment is deterministic and thread-parity safe)
+
+## Continuous-time (`ContinuousODE`) fields
+
+For a `ContinuousODE`, seeds are full-state initial conditions, terminal orbits are detected on the
+Poincaré section, and branch states are the section-*projected* coordinates. These configure the
+shared ODE/Poincaré kernels (they are ignored for `DiscreteMap`):
+
+- `ode_solver`: solver key resolved by `select_ode_solver` (`"auto"`, `"tsit5"`, `"rosenbrock23"`);
+  `"auto"` is the stiff/non-stiff auto-switcher. Resolution is strict — an unknown key throws.
+- `ode_reltol`, `ode_abstol`: integrator tolerances for section-return integration
+- `min_crossing_time`: ignore section crossings before this time (drops the launch crossing)
+- `ode_fd_step`: finite-difference step for the return-map Newton/Jacobian (projected fixed-point
+  correction and multiplier stability)
+- `ode_tmax`: maximum integration horizon per Poincaré segment; `Inf` (the default) uses the
+  internal `tspan_hint`-scaled horizon, matching `basins_of_attraction`
+"""
+@with_kw struct BranchReachabilityConfig
+    param_samples::Vector{Float64}
+    param_index::Int = 1
+    linked_param_indices::Vector{Int} = Int[]
+    base_params::Vector{Float64} = Float64[]
+    x_min::Float64
+    x_max::Float64
+    x_steps::Int = 50
+    y_min::Float64
+    y_max::Float64
+    y_steps::Int = 50
+    x_index::Int = 1
+    y_index::Int = 2
+    ic_template::Vector{Float64} = Float64[]
+    max_period::Int = 10
+    precision::Float64 = 1e-4
+    iterations::Int = 1000
+    divergence_cutoff::Float64 = Inf
+    param_tolerance::Float64 = 1e-6
+    match_tolerance::Float64 = 1e-3
+    ambiguity_ratio::Float64 = 0.5
+    stability_tol::Float64 = 1e-7
+    newton_max_iter::Int = 25
+    newton_tol::Float64 = 1e-10
+    branch_ids::Vector{String} = String[]
+    threaded::Bool = true
+    ode_solver::String = "auto"
+    ode_reltol::Float64 = 1e-8
+    ode_abstol::Float64 = 1e-8
+    min_crossing_time::Float64 = 1e-6
+    ode_fd_step::Float64 = 1e-6
+    ode_tmax::Float64 = Inf
+    @assert !isempty(param_samples) "BranchReachabilityConfig.param_samples must be non-empty"
+    @assert all(isfinite, param_samples) "BranchReachabilityConfig.param_samples must be finite"
+    @assert param_index >= 1 "BranchReachabilityConfig.param_index must be >= 1"
+    @assert all(>=(1), linked_param_indices) "BranchReachabilityConfig.linked_param_indices must be >= 1"
+    @assert x_steps >= 1 "BranchReachabilityConfig.x_steps must be >= 1"
+    @assert y_steps >= 1 "BranchReachabilityConfig.y_steps must be >= 1"
+    @assert isfinite(x_min) && isfinite(x_max) && x_min < x_max "BranchReachabilityConfig requires finite x_min < x_max"
+    @assert isfinite(y_min) && isfinite(y_max) && y_min < y_max "BranchReachabilityConfig requires finite y_min < y_max"
+    @assert x_index >= 1 && y_index >= 1 && x_index != y_index "BranchReachabilityConfig requires distinct positive grid indices"
+    @assert max_period >= 1 "BranchReachabilityConfig.max_period must be >= 1"
+    @assert isfinite(precision) && precision > 0.0 "BranchReachabilityConfig.precision must be finite and > 0"
+    @assert iterations >= max_period + 1 "BranchReachabilityConfig.iterations must be at least max_period + 1"
+    @assert !isnan(divergence_cutoff) && divergence_cutoff > 0.0 "BranchReachabilityConfig.divergence_cutoff must be > 0 (use Inf to disable)"
+    @assert isfinite(param_tolerance) && param_tolerance >= 0.0 "BranchReachabilityConfig.param_tolerance must be finite and >= 0"
+    @assert isfinite(match_tolerance) && match_tolerance > 0.0 "BranchReachabilityConfig.match_tolerance must be finite and > 0"
+    @assert 0.0 < ambiguity_ratio < 1.0 "BranchReachabilityConfig.ambiguity_ratio must lie in (0, 1)"
+    @assert isfinite(stability_tol) && stability_tol >= 0.0 "BranchReachabilityConfig.stability_tol must be finite and >= 0"
+    @assert newton_max_iter >= 1 "BranchReachabilityConfig.newton_max_iter must be >= 1"
+    @assert isfinite(newton_tol) && newton_tol > 0.0 "BranchReachabilityConfig.newton_tol must be finite and > 0"
+    @assert !isempty(ode_solver) "BranchReachabilityConfig.ode_solver must be a non-empty solver key (resolved by select_ode_solver)"
+    @assert isfinite(ode_reltol) && ode_reltol > 0.0 "BranchReachabilityConfig.ode_reltol must be finite and > 0"
+    @assert isfinite(ode_abstol) && ode_abstol > 0.0 "BranchReachabilityConfig.ode_abstol must be finite and > 0"
+    @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BranchReachabilityConfig.min_crossing_time must be finite and >= 0"
+    @assert isfinite(ode_fd_step) && ode_fd_step > 0.0 "BranchReachabilityConfig.ode_fd_step must be finite and > 0"
+    @assert !isnan(ode_tmax) && ode_tmax > 0.0 "BranchReachabilityConfig.ode_tmax must be > 0 (use Inf for the tspan_hint-scaled horizon)"
+end
+
+"""
+    RegimeBoundaryConfig
+
+Configuration for `regime_boundary_distances` (deterministic regime-boundary margins over a
+classified 2D operating map).
+
+The margin field measures, for every *known-regime* cell, the physical Euclidean distance to the
+nearest regime boundary; a cell whose regime cannot be resolved is marked invalid rather than being
+silently assigned a physical regime.
+
+# Fields
+- `edge_policy`: how the sampled-domain edge is treated.
+    - `:censored` (default, "open"): the reported margin is capped at the physical distance to the
+      sampled edge and `edge_censored` is set, marking the value as a *lower bound* — a regime change
+      may lie just outside the sampled window.
+    - `:boundary`: the sampled edge is treated as a genuine regime boundary (leaving the domain is a
+      mode change); the margin is capped at the edge distance but *not* flagged as censored.
+    - `:ignore`: the edge is ignored; the margin is the raw distance to the nearest interior boundary
+      cell (`Inf` when the region has no boundary in the sampled window).
+- `aperiodic_is_regime`: when status-code evidence is supplied, treat detected-aperiodic
+  (`:aperiodic_or_high_period`) cells as a distinct known regime (chaos is a physical mode). Default
+  `true`.
+- `diverged_is_regime`: when status-code evidence is supplied, treat diverged (`:diverged`) cells as
+  a distinct known regime (escape/unbounded is a physical outcome). Default `true`.
+"""
+@with_kw struct RegimeBoundaryConfig
+    edge_policy::Symbol = :censored
+    aperiodic_is_regime::Bool = true
+    diverged_is_regime::Bool = true
+    @assert edge_policy in (:censored, :boundary, :ignore) "RegimeBoundaryConfig.edge_policy must be :censored, :boundary, or :ignore"
+end
+
+"""
+    AbstractTolerance
+
+Supertype for zero-inclusive component-tolerance distributions used by `tolerance_regime_map`.
+A tolerance with scale `0` is an exact Dirac delta (no perturbation, no RNG
+draw). See `UniformTolerance` and `GaussianTolerance`.
+"""
+abstract type AbstractTolerance end
+
+"""
+    UniformTolerance(half_width)
+
+Symmetric uniform component tolerance: offsets are drawn from `U(-half_width, +half_width)`.
+`half_width` must be finite and `>= 0`; `UniformTolerance(0.0)` is an exact Dirac delta.
+"""
+struct UniformTolerance <: AbstractTolerance
+    half_width::Float64
+    function UniformTolerance(half_width::Real)
+        (isfinite(half_width) && half_width >= 0) || throw(ArgumentError(
+            "UniformTolerance half_width must be finite and >= 0; got $half_width."))
+        return new(Float64(half_width))
+    end
+end
+
+"""
+    GaussianTolerance(std)
+
+Gaussian component tolerance: offsets are drawn from `Normal(0, std)`. `std` must be finite and
+`>= 0`; `GaussianTolerance(0.0)` is an exact Dirac delta.
+"""
+struct GaussianTolerance <: AbstractTolerance
+    std::Float64
+    function GaussianTolerance(std::Real)
+        (isfinite(std) && std >= 0) || throw(ArgumentError(
+            "GaussianTolerance std must be finite and >= 0; got $std."))
+        return new(Float64(std))
+    end
+end
+
+"""
+    ToleranceConfig
+
+Configuration for `tolerance_regime_map` (probabilistic component-tolerance propagation through the
+classified 2D operating map).
+
+At each nominal grid cell the two parameters are independently perturbed by `tolerance_a` /
+`tolerance_b`, and each perturbed operating point is classified by *nearest physical-grid-cell
+lookup* over the supplied classified map (integer regime labels are never interpolated). The result
+is a per-cell categorical distribution over regimes plus unknown and out-of-domain mass.
+
+# Fields
+- `tolerance_a`, `tolerance_b`: the per-parameter tolerance distributions (`AbstractTolerance`). A
+  zero tolerance is an exact Dirac delta and draws no random offset on that axis. When *both* are
+  zero the analysis returns the deterministic exact classification (probability `1`, entropy `0`,
+  Wilson interval `[1, 1]`, `n_effective = 0`) with no sampling error.
+- `n_samples`: Monte-Carlo samples per cell (`>= 1`).
+- `seed`: global `UInt64` seed. Each cell mixes `(seed, i, j)` through a stable `UInt64` mixer into
+  an independent `Xoshiro` stream, so results are bitwise-identical regardless of thread count or
+  scheduling.
+- `threaded`: thread the per-cell sweep (bitwise thread-parity safe).
+- `aperiodic_is_regime`, `diverged_is_regime`: as in `RegimeBoundaryConfig` — whether
+  detected-aperiodic / diverged status cells count as distinct known regimes when status evidence is
+  supplied.
+"""
+@with_kw struct ToleranceConfig
+    tolerance_a::AbstractTolerance = UniformTolerance(0.0)
+    tolerance_b::AbstractTolerance = UniformTolerance(0.0)
+    n_samples::Int = 2000
+    seed::UInt64 = 0x00000000004469df
+    threaded::Bool = true
+    aperiodic_is_regime::Bool = true
+    diverged_is_regime::Bool = true
+    @assert n_samples >= 1 "ToleranceConfig.n_samples must be >= 1"
+end
+
+"""
+    AdaptiveMapConfig
+
+Configuration for first-class adaptive 2D bifurcation-map refinement via
+`adaptive_bifurcation_map`. See `docs/analysis-methods.md` for scientific details.
+
+Adaptive refinement applies dyadic (quadtree) subdivision to the coarse
+bifurcation map produced by `BifurcationMapConfig`, spending evaluations where
+classification boundaries or low-confidence cells are detected and leaving
+uniform regions at coarse resolution.
+
+# Fields
+- `total_budget`: Strict upper bound on the **total** number of unique parameter-point
+  evaluations — coarse grid plus all refinement evaluations combined. Must be at least
+  `(a_steps+1)*(b_steps+1)` for the coarse grid to run; any surplus is available for
+  refinement. Default `1024`.
+- `max_depth`: Maximum quadtree subdivision depth. At depth `d`, each coarse cell
+  has been split into `4^d` sub-cells. Must be in `[0, 30]`. Default `4`.
+- `refine_on_period_disagreement`: Split a cell when its four corners carry at least
+  two distinct detected periods. Enabled by default.
+- `refine_on_status_disagreement`: Split a cell when its four corners carry at least
+  two distinct status codes (e.g. periodic vs. aperiodic). Enabled by default.
+- `min_confidence`: Split a cell when any corner's closure confidence is below this
+  threshold. `0.0` disables this trigger (default).
+- `confidence_delta`: Split a cell when the range of corner confidences exceeds this
+  value. `0.0` disables this trigger (default).
+"""
+const _ADAPTIVE_MAP_MAX_DEPTH = 30
+
+@with_kw struct AdaptiveMapConfig
+    total_budget::Int = 1024
+    max_depth::Int = 4
+    refine_on_period_disagreement::Bool = true
+    refine_on_status_disagreement::Bool = true
+    min_confidence::Float64 = 0.0
+    confidence_delta::Float64 = 0.0
+    @assert total_budget >= 1 "AdaptiveMapConfig.total_budget must be >= 1"
+    @assert 0 <= max_depth <= _ADAPTIVE_MAP_MAX_DEPTH "AdaptiveMapConfig.max_depth must be in [0, $(_ADAPTIVE_MAP_MAX_DEPTH)]"
+    @assert isfinite(min_confidence) && min_confidence >= 0.0 && min_confidence <= 1.0 "AdaptiveMapConfig.min_confidence must be in [0, 1]"
+    @assert isfinite(confidence_delta) && confidence_delta >= 0.0 && confidence_delta <= 1.0 "AdaptiveMapConfig.confidence_delta must be in [0, 1]"
+    @assert refine_on_period_disagreement || refine_on_status_disagreement || min_confidence > 0.0 || confidence_delta > 0.0 "AdaptiveMapConfig: at least one refinement trigger must be active"
 end

@@ -106,7 +106,7 @@ function _canonicalize_branch_representatives(sys::DiscreteMap,
     changed = false
 
     for point in points
-        local_params = _inject_param(base, param_index, Float64(point.param), linked_param_indices)
+        local_params = inject_param(base, param_index, Float64(point.param), linked_param_indices)
         orbit = _branch_point_orbit(sys, point, branch.period, local_params)
         isempty(orbit) && (push!(aligned_points, point); previous_orbit = nothing; continue)
         shift = isnothing(previous_orbit) ? _canonical_orbit_shift(orbit) : _orbit_phase_alignment_shift(previous_orbit, orbit)
@@ -125,7 +125,7 @@ function _canonicalize_branch_representatives(sys::DiscreteMap,
     aligned_specials = Any[]
     for point in special_points
         hasproperty(point, :param) || (push!(aligned_specials, point); continue)
-        local_params = _inject_param(base, param_index, Float64(point.param), linked_param_indices)
+        local_params = inject_param(base, param_index, Float64(point.param), linked_param_indices)
         orbit = _branch_point_orbit(sys, point, branch.period, local_params)
         isempty(orbit) && (push!(aligned_specials, point); continue)
         shift = _canonical_orbit_shift(orbit)
@@ -366,7 +366,7 @@ function _trim_branch_to_period(sys::DynamicalSystem, branch::BranchResult,
     minimal_periods = fill(N, npts)
     classify(i) = begin
         pt = pts[i]
-        p = _inject_param(base, param_index, Float64(pt.param), linked_param_indices)
+        p = inject_param(base, param_index, Float64(pt.param), linked_param_indices)
         state = _branch_point_state(pt)
         sys isa ContinuousODE ?
             _orbit_minimal_period(sys, state, p, N; precision=tol, solver=solver,
@@ -792,7 +792,7 @@ function refine_branch(sys::ContinuousODE, original::BranchResult, config::Refin
     seed_point = _branch_point_state(points[seed_idx])
     seed_param = Float64(points[seed_idx].param)
     base_params = _resolve_continuous_params(sys, params)
-    local_params = _inject_param(base_params, param_index, seed_param, linked_param_indices)
+    local_params = inject_param(base_params, param_index, seed_param, linked_param_indices)
 
     local_config = ContinuationConfig(
         p_min=min(config.from_param, config.to_param),
@@ -1112,7 +1112,7 @@ function refine_branch(sys::DiscreteMap, original::BranchResult, config::Refinem
 
     # Use Newton to get exact fixed point at start_param
     F_start = (x) -> begin
-        pv = _inject_param(params, param_index, start_param, linked_param_indices)
+        pv = inject_param(params, param_index, start_param, linked_param_indices)
         sv = SVector{dim}(x)
         for _ in 1:period
             sv = sys.f(sv, pv)
@@ -1155,12 +1155,12 @@ function refine_branch(sys::DiscreteMap, original::BranchResult, config::Refinem
     # F for fixed-point continuation
     if period == 1
         F = (x, p) -> begin
-            pv = _inject_param(params, param_index, p.p, linked_param_indices)
+            pv = inject_param(params, param_index, p.p, linked_param_indices)
             Array(sys.f(SVector{dim}(x), pv)) .- x
         end
     else
         F = (x, p) -> begin
-            pv = _inject_param(params, param_index, p.p, linked_param_indices)
+            pv = inject_param(params, param_index, p.p, linked_param_indices)
             sv = SVector{dim}(x)
             for _ in 1:period
                 sv = sys.f(sv, pv)
@@ -1184,7 +1184,7 @@ function refine_branch(sys::DiscreteMap, original::BranchResult, config::Refinem
         save_sol_every_step=config.save_sol_every_step
     )
     # Inject the start_param into params so _run_discrete_continuation seeds at start_param.
-    local_params = _inject_param(params, param_index, start_param, linked_param_indices)
+    local_params = inject_param(params, param_index, start_param, linked_param_indices)
 
     branch = _run_discrete_continuation(sys, local_config, period, x0, F, _default_record,
                                         local_params, reseed, on_reseed)

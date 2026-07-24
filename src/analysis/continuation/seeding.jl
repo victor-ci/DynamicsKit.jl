@@ -145,6 +145,7 @@ function _continuation_period_candidates(sys::ContinuousODE, config::Continuatio
                     on_error=on_error
                 )
             catch err
+                err isa InterruptException && rethrow()
                 _report_continuation_error(on_error, "Skeleton parameter $(float(skeleton_param)) for period $period failed", err)
                 BranchResult[]
             end
@@ -288,7 +289,7 @@ function _branch_search_for_skeleton_param(sys::ContinuousODE, config::Continuat
                                            on_error::Union{Nothing, Function}=nothing,
                                            reseed::ReseedConfig=ReseedConfig(),
                                            on_reseed::Union{Nothing, Function}=nothing)
-    local_params = _inject_param(base_params, config.param_index, skeleton_param, config.linked_param_indices)
+    local_params = inject_param(base_params, config.param_index, skeleton_param, config.linked_param_indices)
     sampled_seed_points = trajectory_seed_points ? _collect_trajectory_seed_points(
         sys,
         skeleton_param,
@@ -447,6 +448,7 @@ function _continue_seed_branch(sys::ContinuousODE, config::ContinuationConfig, p
             on_reseed=on_reseed
         )
     catch err
+        err isa InterruptException && rethrow()
         _report_continuation_error(on_error, context, err)
         return nothing
     end
@@ -506,4 +508,3 @@ function _branches_for_skeleton_param(sys::ContinuousODE, config::ContinuationCo
         on_error=on_error
     ).branches
 end
-

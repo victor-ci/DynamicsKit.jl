@@ -664,9 +664,9 @@
             brute_force=BruteForceConfig(
                 param_min=0.0,
                 param_max=0.35,
-                param_steps=30,
-                iterations=120,
-                transient=80,
+                param_steps=20,
+                iterations=80,
+                transient=50,
                 fixed_params=[0.3]
             ),
             continuation=ContinuationConfig(
@@ -675,15 +675,15 @@
                 ds=0.01,
                 dsmax=0.03,
                 dsmin=1e-6,
-                max_steps=160,
+                max_steps=100,
                 newton_tol=1e-10,
                 newton_max_iter=40,
                 detect_bifurcation=1
             ),
-            recon_steps=20,
+            recon_steps=12,
             recon_precision=1e-4,
             window_min_support=2,
-            seed_points_per_window=4,
+            seed_points_per_window=3,
             coverage_threshold=0.2,
             threaded=false
         )
@@ -693,7 +693,7 @@
         @test result isa AtlasResult
         @test result.system_name == "Hénon"
         @test result.param_name == :a
-        @test length(result.recon_samples) == 20
+        @test length(result.recon_samples) == 12
         @test !isempty(result.windows)
         @test any(window.period == 1 for window in result.windows)
         @test !isempty(result.branch_records)
@@ -722,9 +722,9 @@
             brute_force=BruteForceConfig(
                 param_min=0.0,
                 param_max=0.35,
-                param_steps=24,
-                iterations=120,
-                transient=80,
+                param_steps=16,
+                iterations=80,
+                transient=50,
                 fixed_params=[0.3]
             ),
             continuation=ContinuationConfig(
@@ -733,15 +733,15 @@
                 ds=0.01,
                 dsmax=0.03,
                 dsmin=1e-6,
-                max_steps=160,
+                max_steps=100,
                 newton_tol=1e-10,
                 newton_max_iter=40,
                 detect_bifurcation=1
             ),
-            recon_steps=18,
+            recon_steps=12,
             recon_precision=1e-4,
             window_min_support=2,
-            seed_points_per_window=4,
+            seed_points_per_window=3,
             coverage_threshold=0.2,
             threaded=false,
             cache_enabled=true

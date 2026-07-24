@@ -41,6 +41,10 @@ function map_effective_settings(config::BifurcationMapConfig;
 end
 
 # --- 2D-map / Poincaré diagnostics producers ---
+"""    map_status_code(status::Symbol) -> Int — stable numeric code used by map result payloads."""
+const map_status_code = _map_status_code
+"""    map_status_label(code::Integer) -> String — label for a map result status code."""
+const map_status_label = _map_status_label
 """    map_lyapunov_diagnostics(...) -> Dict — Lyapunov-field summary for the diagnostics payload."""
 const map_lyapunov_diagnostics = _map_lyapunov_diagnostics
 """    map_neighbor_seed_diagnostics(...) -> Dict — neighbor-seed acceleration summary."""

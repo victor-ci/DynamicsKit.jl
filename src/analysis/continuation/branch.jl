@@ -136,7 +136,7 @@ function continuation_branch(sys::DiscreteMap, config::ContinuationConfig;
 
     # F(x, p) = 0 at fixed points: f(x,p) - x = 0
     F = (x, p) -> begin
-        pv = _inject_param(params, config.param_index, p.p, config.linked_param_indices)
+        pv = inject_param(params, config.param_index, p.p, config.linked_param_indices)
         Array(sys.f(SVector{dim}(x), pv)) .- x
     end
 
@@ -233,16 +233,24 @@ function _run_discrete_continuation(sys::DiscreteMap, config::ContinuationConfig
         save_sol_every_step = config.save_sol_every_step
     )
     safe_run(ds) = try
-        continuation(prob_from_seed(x0, p0), PALC(), build_par(ds); normC = norminf, verbosity = 0)
-    catch
-        nothing
+        (
+            continuation(prob_from_seed(x0, p0), PALC(), build_par(ds); normC = norminf, verbosity = 0),
+            nothing,
+        )
+    catch err
+        err isa InterruptException && rethrow()
+        (nothing, sprint(showerror, err))
     end
 
-    backward = run_backward ? safe_run(-abs(config.ds)) : nothing
-    forward = run_forward ? safe_run(abs(config.ds)) : nothing
+    backward, backward_error = run_backward ? safe_run(-abs(config.ds)) : (nothing, nothing)
+    forward, forward_error = run_forward ? safe_run(abs(config.ds)) : (nothing, nothing)
 
     if isnothing(backward) && isnothing(forward)
-        error("No continuation steps converged for the period-$period branch of $(sys.name).")
+        failures = String[]
+        !isnothing(backward_error) && push!(failures, "backward: $backward_error")
+        !isnothing(forward_error) && push!(failures, "forward: $forward_error")
+        details = isempty(failures) ? "" : " " * join(failures, "; ")
+        error("No continuation steps converged for the period-$period branch of $(sys.name).$details")
     end
     merged = if isnothing(backward)
         forward
@@ -284,7 +292,7 @@ function continuation_branch(sys::DiscreteMap, config::ContinuationConfig, perio
 
     # F^period(x, p) - x = 0
     F = (x, p) -> begin
-        pv = _inject_param(params, config.param_index, p.p, config.linked_param_indices)
+        pv = inject_param(params, config.param_index, p.p, config.linked_param_indices)
         sv = SVector{dim}(x)
         for _ in 1:period
             sv = sys.f(sv, pv)
@@ -305,7 +313,7 @@ end
                         initial_point=nothing, params=Float64[], record=nothing, kwargs...) -> BranchResult
 
 Compute a continuation branch for a continuous-time system by continuing fixed points of its
-Poincaré return map. If `initial_point` is omitted, a seed is found automatically via the native
+Poincaré return map. If `initial_point` is omitted, a seed is found automatically via the
 periodic skeleton search at `params[config.param_index]`.
 """
 function continuation_branch(sys::ContinuousODE, config::ContinuationConfig;
@@ -374,7 +382,7 @@ function continuation_branch(sys::ContinuousODE, config::ContinuationConfig, per
     )
 
     F = (x, p) -> begin
-        pv = _inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
+        pv = inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
         next_point, found = _poincare_projected(
             sys,
             x,
@@ -392,7 +400,7 @@ function continuation_branch(sys::ContinuousODE, config::ContinuationConfig, per
 
     J = if config.ode_jacobian_method == :variational
         (x, p) -> begin
-            pv = _inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
+            pv = inject_param(base_params, config.param_index, p.p, config.linked_param_indices)
             map_jacobian, found = _poincare_projected_jacobian_variational(
                 sys,
                 x,
@@ -543,6 +551,7 @@ function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, p
                         signature_state_tol
                     )
                 catch err
+                    err isa InterruptException && rethrow()
                     _report_continuation_error(on_error, "Continuation batch for period $period failed", err)
                     BranchResult[]
                 end
@@ -590,6 +599,7 @@ function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, p
                 signature_state_tol
             ))
         catch err
+            err isa InterruptException && rethrow()
             _report_continuation_error(on_error, "Continuation batch for period $period failed", err)
         end
     end

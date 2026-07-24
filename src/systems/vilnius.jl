@@ -27,6 +27,20 @@ function _vilnius_ode!(du, u, p, t)
     nothing
 end
 
+# Out-of-place StaticArray form of `_vilnius_ode!` for the GPU ensemble path (see the
+# ContinuousODE `f_svector` field). Same math and the same `z ≤ 500` exp-clamp; native, not a wrapper.
+@inline function _vilnius_svector(u::SVector{S, T}, p, t) where {S, T}
+    x = u[1]; y = u[2]; z = u[3]
+    a = p[1]
+    b = length(p) >= 2 ? p[2] : 30.0
+    ε = length(p) >= 3 ? p[3] : 0.2
+    return SVector{S, T}(
+        y,
+        a * y - x - z,
+        (b + y - 4e-9 * (exp(min(z, 500.0)) - 1)) / ε,
+    )
+end
+
 """
     vilnius_oscillator(; b=30.0, ε=0.2) -> ContinuousODE
 
@@ -46,6 +60,7 @@ function vilnius_oscillator(; b::Float64=30.0, ε::Float64=0.2)
         _vilnius_ode!, 3, section, [:a, :b, :ε], "Vilnius";
         tspan_hint = 20.0,
         default_initial_state = [0.0, 0.1, 0.0],
-        default_params = [0.2, b, ε]
+        default_params = [0.2, b, ε],
+        f_svector = _vilnius_svector
     )
 end

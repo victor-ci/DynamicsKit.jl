@@ -104,6 +104,187 @@ plot_lyapunov_field(field)
 
 `lyapunov_field(result::BifurcationMapResult)` still works for combined map+field runs that were computed via `bifurcation_map(..., lyapunov_enabled=true)`. Use the direct `lyapunov_field(sys, config)` method when you want the exponent field itself as the primary artifact and want to avoid paying for a full period map first.
 
+## Robust-chaos certificate
+
+`robust_chaos_certificate` combines three independently limited evidence layers over one
+parameter interval: a largest-Lyapunov sweep, continuation-atlas recovery of stable
+low-period windows, and a basin census at one representative operating point. A basin
+seed with no detected low period counts as chaotic only when a separate finite-time
+Lyapunov estimate is resolved and positive.
+
+```julia
+sys = henon_map()
+lyap = LyapunovConfig(
+    param_min=1.1, param_max=1.2, param_steps=80,
+    param_index=1, fixed_params=[1.15, 0.3],
+    transient=300, iterations=500,
+)
+atlas = AtlasConfig(
+    periods=collect(1:8),
+    brute_force=BruteForceConfig(
+        param_min=1.1, param_max=1.2, param_steps=120,
+        param_index=1, fixed_params=[1.15, 0.3],
+        transient=300, iterations=500,
+    ),
+    continuation=ContinuationConfig(
+        p_min=1.1, p_max=1.2, param_index=1,
+        ds=0.001, dsmax=0.005,
+    ),
+)
+basins = BasinsConfig(
+    bif_param=1.15, param_index=1, fixed_params=[1.15, 0.3],
+    x_min=-1.5, x_max=1.5, y_min=-0.5, y_max=0.5,
+    x_steps=30, y_steps=30, max_period=8, iterations=600,
+)
+
+certificate = robust_chaos_certificate(
+    sys,
+    RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins);
+    initial_point=[0.1, 0.1],
+)
+certificate.overall_verdict  # :certified, :fragile, or :inconclusive
+certificate.certificate_items
+```
+
+When an audit or visualization needs the exact supporting results, call
+`robust_chaos_evidence` with the same arguments:
+
+```julia
+evidence = robust_chaos_evidence(
+    sys,
+    RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins);
+    initial_point=[0.1, 0.1],
+)
+evidence.certificate.overall_verdict
+evidence.lyapunov
+evidence.atlas
+evidence.basins
+evidence.basin_classifications
+```
+
+`basin_classifications` is the final per-seed certificate decision and is not
+the same as `evidence.basins.periodicity`: undetected-period seeds have been
+classified further as chaotic, non-chaotic, or unresolved by finite-time
+Lyapunov estimation.
+
+### Source-result reuse (optional)
+
+If you have already computed a Lyapunov diagram or atlas with identical
+system/parameter settings, pass it as a keyword to skip that layer's sweep:
+
+```julia
+# Pre-compute the atlas independently (e.g., from an earlier interactive session).
+existing_atlas = continuation_atlas(sys, atlas; initial_point=[0.1, 0.1])
+
+# The certificate reuses the atlas result; only the Lyapunov and basin layers run fresh.
+certificate = robust_chaos_certificate(
+    sys,
+    RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins);
+    atlas_result=existing_atlas,
+    initial_point=[0.1, 0.1],
+)
+```
+
+Available keywords: `lyapunov_result::LyapunovDiagramResult` and
+`atlas_result::AtlasResult`. Each is validated before use; an `ArgumentError` is thrown on
+system-name mismatch, interval/grid mismatch, or missing period coverage.
+Validation uses floating-point representation tolerance only (tight, ~8 ULP), not scientific
+tolerance, so scientifically different values are always rejected.
+
+**Bounded responsibility:** atlas reuse requires exact interval endpoint match — zoomed
+subinterval certificates rerun the atlas until subset coverage accounting exists. Brute-force
+and continuation sources cannot replace the full atlas reconnaissance, so no reuse is offered
+for those. Basin results are not accepted for reuse because `BasinsResult` does not yet retain
+enough parameter-injection metadata to prove that a supplied grid represents the same physical
+slice; the basin layer therefore always runs from `config.basins`.
+
+`:certified` means all three layers passed their configured thresholds. `:fragile`
+means at least one layer found contrary evidence; `:inconclusive` means the available
+coverage could not support either conclusion. The claim is always bounded to the
+sampled interval, atlas period ceiling and search effort, basin grid, finite-time
+Lyapunov settings, and selected initial conditions. It is not a mathematical proof
+that no stable orbit exists outside those limits. Use
+`serialize_robust_chaos_certificate` and
+`deserialize_robust_chaos_certificate` for the compact versioned summary, or
+`serialize_robust_chaos_evidence` and `deserialize_robust_chaos_evidence` for
+the complete versioned evidence bundle.
+
+## Chaos-source inverse design
+
+`design_chaos_source` searches design-component parameter space for
+configurations that satisfy a target robust-chaos specification. Given a system,
+a `RobustChaosConfig` describing the desired operating band, bounded design
+variable ranges, and signal quality thresholds, it runs a deterministic
+coarse-to-fine Cartesian grid search. Every candidate is evaluated with
+`robust_chaos_certificate`; a representative orbit is then used to compute
+peak-to-peak amplitude and Wiener spectral flatness.
+
+```julia
+sys = vilnius_oscillator()
+lyap = LyapunovConfig(
+    param_min=0.20, param_max=0.50, param_steps=40,
+    param_index=1, fixed_params=[0.3, 30.0, 0.07],
+    transient=500, iterations=800,
+)
+atlas = AtlasConfig(
+    periods=collect(1:6),
+    brute_force=BruteForceConfig(
+        param_min=0.20, param_max=0.50, param_steps=60,
+        param_index=1, fixed_params=[0.3, 30.0, 0.07],
+        transient=500, iterations=800,
+    ),
+    continuation=ContinuationConfig(
+        p_min=0.18, p_max=0.52, param_index=1,
+        ds=0.001, dsmax=0.005,
+    ),
+)
+basins = BasinsConfig(
+    bif_param=0.35, param_index=1, fixed_params=[0.35, 30.0, 0.07],
+    x_min=-30.0, x_max=30.0, y_min=15.0, y_max=30.0,
+    x_steps=20, y_steps=20, x_index=1, y_index=3,
+    ic_template=[0.0, 0.0, 0.0], max_period=6, iterations=800,
+)
+rc_cfg = RobustChaosConfig(lyapunov=lyap, atlas=atlas, basins=basins)
+
+# Search the Vilnius time-scale component epsilon while certifying an a-band.
+design_cfg = ChaosDesignConfig(
+    operating_config=rc_cfg,
+    variables=[ChaosDesignVariable(:ε, 3, 0.05, 0.25)],
+    target=ChaosDesignTarget(
+        min_amplitude=20.0, max_amplitude=80.0,
+        min_spectral_flatness=0.10,
+        min_robustness_score=0.6,
+    ),
+    signal=ChaosDesignSignalConfig(state_index=1),
+    samples_per_axis=5,
+    refinement_levels=2,
+    survivors_per_level=3,
+    max_evaluations=30,
+)
+
+result = design_chaos_source(sys, design_cfg; initial_point=[0.1, 0.1, 0.0])
+result.best_candidate          # best ChaosDesignCandidate, or nothing
+result.n_feasible              # number meeting all thresholds
+result.ranked_candidates       # feasible first, then descending objective
+chaos_design_summary(result)   # plain Dict for display/logging
+```
+
+Each `ChaosDesignCandidate` holds the full `RobustChaosCertificate` summary,
+signal status (`:ok`, `:diverged`, or `:insufficient_samples`),
+peak-to-peak amplitude, spectral flatness, component scores, and a `feasible`
+flag that is true only when the certificate is `:certified`, robustness meets
+the configured floor, amplitude is in range, spectral flatness meets the floor,
+and the signal resolved without divergence.
+
+`spectral_flatness(power)` is also available directly: it computes the standard
+Wiener metric (geometric mean / arithmetic mean of non-DC power bins), returning
+values in [0, 1] with 1 indicating a perfectly flat spectrum.
+
+Serialization uses `serialize_chaos_design_result` /
+`deserialize_chaos_design_result` (versioned, plain-Dict format compatible with
+JSON serialization). Heavy evidence arrays are not stored; each candidate
+retains only its `RobustChaosCertificate` summary.
+
 ## Continuation branch
 
 Continuation traces periodic solutions with pseudo-arclength continuation.
@@ -184,6 +365,154 @@ on the stiff memristive diode bridge the collocation branch — which return-map
 automatic seeder does not converge on — agrees with an independent shooting Newton solve
 to ~1e-4 in both the fixed point and the multipliers.
 
+## Connecting-orbit continuation (homoclinic / heteroclinic / saddle-cycle)
+
+`homoclinic_orbit_continuation`, `heteroclinic_orbit_continuation`, and
+`saddle_cycle_homoclinic_continuation` continue connecting orbits with a
+projection boundary-value solver. Everything — the typed configuration, the
+numerics, the normalized result, event labels, provenance, and versioned
+serialization — lives inside DynamicsKit; there is no optional plugin and no
+external package to install. `connecting_orbit_continuation` is the generalized
+entry point.
+
+### Numerical formulation
+
+The truncated orbit is discretized on a uniform trapezoidal mesh of `n_mesh`
+intervals in rescaled time. The unknown vector packs the mesh states, the source
+saddle (and, for a heteroclinic connection, the target saddle), the truncation
+time, and the two continuation parameters:
+
+```
+z = [ vec(U) ; xs ; (xt) ; T ; α ; β ]
+```
+
+The residual combines the trapezoidal ODE conditions
+`U_{i+1} − U_i − (T/2M)(f(U_i,p) + f(U_{i+1},p))`, the saddle equation(s)
+`f(xs,p) = 0`, projection boundary conditions that force the start endpoint into
+the unstable subspace and the end endpoint into the stable subspace of the
+saddle(s), and two distance conditions pinning the endpoints at their
+seed-derived offsets. The stable/unstable projectors are computed with a real
+Schur decomposition, frozen to `Float64`, and refreshed from the current iterate
+between Newton steps (`eigen`/`schur` cannot be differentiated through
+`ForwardDiff.Dual` matrices). The corrector is a line-searched Gauss-Newton
+primary path with a damped Levenberg-Marquardt / pseudo-inverse fallback; the
+path taken (`:newton` or `:fallback`) is recorded per locus sample, and the
+curve is traced by pseudo-arclength continuation. The geometry is validated up
+front: a connecting curve must leave exactly one free direction
+(`k = Nz − Nm = 1`), so incompatible manifold dimensions are rejected with an
+explicit error rather than silently mis-solved.
+
+```julia
+using DynamicsKit
+
+result = homoclinic_orbit_continuation(
+    sys,
+    ConnectingOrbitConfig(
+        continuation=ContinuationConfig(p_min=-1.6, p_max=-0.6, param_index=1, ds=0.05),
+        n_mesh=80,
+        test_inclination_flip=true,
+        bothside=true,
+    );
+    primary_param_index=2,
+    orbit_guess=seed_states,        # dim × K matrix or callable τ∈[0,1] -> state
+    saddle_guess=[1.0, 0.0],
+    truncation_time=24.0,
+)
+
+result.primary_values      # the free parameter solved to stay on the connection
+result.secondary_values    # the parameter marched along the locus
+result.residuals           # converged BVP residual norm at each sample
+result.corrector_paths     # :newton or :fallback per sample
+result.special_points      # typed test-function events
+orbit = homoclinic_orbit(result, result.orbits[1].branch_index)
+wire = serialize_homoclinic_branch_result(result)
+```
+
+The secondary parameter (`continuation.param_index`) is the one marched along the
+curve; the `primary_param_index` is the second free parameter that adjusts to
+keep the connection closed. A seed can come from an explicit orbit/saddle guess
+or from the long-period endpoint of an `OrbitBranchResult`
+(`homoclinic_orbit_continuation(sys, source, config)`).
+
+Heteroclinic connections take distinct source and target saddle guesses:
+
+```julia
+result = heteroclinic_orbit_continuation(
+    sys, ConnectingOrbitConfig(continuation=cont, kind=:heteroclinic, n_mesh=80);
+    primary_param_index=1, source_saddle=[1.0, 0.0], target_saddle=[0.0, 0.0],
+    orbit_guess=front_states, truncation_time=32.0,
+)
+```
+
+For a homoclinic seed, `saddle_guess` may be omitted; the solver then starts its
+saddle correction from the slowest sampled state of `orbit_guess`.
+
+Homoclinic connections to a saddle periodic orbit take one period of cycle
+samples. The monodromy matrix is built from the variational equation with the
+same trapezoidal rule as the corrector, its Floquet multipliers classify the
+stable/unstable/center (trivial) subspaces, the geometry is validated (the cycle
+must be a genuine saddle with a single trivial multiplier), and the truncated
+orbit's endpoints are pinned to the Floquet subspaces at a reference
+cross-section:
+
+```julia
+result = saddle_cycle_homoclinic_continuation(
+    sys, ConnectingOrbitConfig(continuation=cont, kind=:saddle_cycle, n_mesh=60);
+    cycle_states=one_period_samples, cycle_period=Tc,
+    orbit_guess=seed_states, truncation_time=16.0,
+)
+result.diagnostics["floquet_multipliers_re"]   # Floquet data recorded as provenance
+```
+
+### Test functions and flip classification
+
+At each locus sample the saddle spectrum yields the standard HomCont eigenvalue
+test functions (`:nns` neutral saddle, `:sh` Shilnikov, `:bt` Bogdanov-Takens,
+`:nsf`/`:nff` neutral saddle-focus/focus-focus, and related codes). For
+homoclinic connections with a rich enough spectrum, real adjoint / variational
+transport of the leading unstable direction along the orbit — compared against
+the weak stable left eigenvector — gives the inclination-flip test functions
+(`:ifs`, `:ifu`); the orbit-flip functions (`:ofs`, `:ofu`) come from the
+alignment of the endpoint approach with the strong stable/unstable direction.
+Inclination-flip functions require at least two eigenvalues on the relevant side
+to separate weak and strong directions; when the spectrum cannot support the
+test it is reported `:unavailable` (with a `NaN` value) rather than fabricated,
+and complex (focus) spectra are reported `:degenerate`. Sign crossings of the
+available functions become typed `HomoclinicSpecialPoint`s carrying a `status`
+and a bounded `quality` derived from how cleanly the function crossed zero.
+
+`HomoclinicBranchResult` stores the full two-parameter locus, source and target
+saddle coordinates, return-time and boundary-distance columns, the test-function
+columns and their per-sample `test_statuses`, typed special points, per-sample
+residuals and corrector paths, the
+`connection_kind` (`:homoclinic`, `:heteroclinic`, or `:saddle_cycle`),
+free-form `diagnostics` provenance, and a bounded subset of normalized
+trajectories. Serialization is versioned: `serialize_homoclinic_branch_result`
+writes `homoclinic-branch-v1`, and `deserialize_homoclinic_branch_result`
+validates and restores that format.
+
+### Validation and scope
+
+The formulation is validated against analytic fixtures. The equilibrium
+homoclinic of `ẋ = y, ẏ = β1 + x² + β2·y` (exact loop `x = 1 − 3 sech²(t/√2)` at
+β1 = −1, locus β2 = 0) is recovered with a converged BVP residual below `1e-7`,
+the solved parameter staying on β2 = 0 to `1e-6`, and the saddle tracked at
+`(√(−β1), 0)`. The Nagumo heteroclinic front follows the exact wave-speed law
+`c = (1 − 2a)/√2` to better than `5e-3` along the continued locus. The adjoint
+transport matches the analytic fundamental matrix `exp(AT)` to `1e-4` on a linear
+field, and the saddle-cycle monodromy reproduces the analytic Floquet multipliers
+`{1, e^{-2T}, e^{λT}}` to `1e-2`.
+
+Scope and limitations: the two-parameter continuation traces codimension-one
+connecting curves (`k = 1`); higher-codimension geometries are rejected
+explicitly. The saddle-cycle solver owns the monodromy/Floquet numerics, strict
+geometry validation, and a single phase-pinned projection correction with the
+Floquet data recorded in `diagnostics`; full two-parameter continuation of
+cycle-to-cycle homoclinics and automatic phase-condition continuation are not
+claimed. Inclination-flip test functions are computed and classified where the
+spectrum supports them and reported unavailable otherwise; they are not forced to
+produce a number when the geometry is degenerate.
+
 ## Branch diagnostics
 
 Use diagnostics to inspect numerical trustworthiness and stability:
@@ -238,13 +567,164 @@ bas[1].observed          # true if this branch matches the seed's observed attra
 
 Each `BranchBasinAssignment` carries `branch_index`, `basin_index`, `basin_id` (`"observed"`/`"unobserved"`), `basin_label`, `observed::Bool`, `confidence`, and a `diagnostics` dict (`medianDistance`, `matchedSampleCount`, `paramTolerance`, ...).
 
+## Branch reachability (multistability-aware continuation)
+
+`branch_reachability(sys::DiscreteMap, branches, BranchReachabilityConfig(...); basins_crosscheck=nothing, log=nothing) -> BranchReachabilityResult` reports, per parameter knot, the basin fraction that actually reaches each coexisting branch. It runs a basin initial-condition census at each knot and assigns every seed's terminal periodic orbit to a *stable* branch identity by period-gated, phase-invariant cycle geometry — two same-period branches are separated by geometry, never by period alone, and no period group is plurality-assigned as a block.
+
+```julia
+# Bistable cubic map: stable fixed points (±1, 0), unstable origin, x = 0 basin boundary.
+cubic = DiscreteMap((x, p) -> SVector(1.5x[1] - 0.5x[1]^3, 0.5x[2]), 2, [:p], "CubicBistable")
+
+plus  = continuation_branch(cubic, ContinuationConfig(p_min=0.0, p_max=1.0); initial_point=[1.0, 0.0])
+minus = continuation_branch(cubic, ContinuationConfig(p_min=0.0, p_max=1.0); initial_point=[-1.0, 0.0])
+
+result = branch_reachability(cubic, [plus, minus],
+    BranchReachabilityConfig(
+        param_samples = [0.5],
+        base_params   = [0.0],
+        x_min = -1.5, x_max = 1.5, x_steps = 3,
+        y_min = -0.4, y_max = 0.4, y_steps = 2,
+        max_period = 4, iterations = 400,
+        branch_ids = ["plus", "minus"],
+    ))
+
+sample = result.samples[1]
+branch_reachability_fractions(sample)      # Dict("plus" => 0.5, "minus" => 0.5)
+reachability_category_counts(sample)       # (matched=12, unmatched=0, ..., total=12)
+reachability_category_fractions(sample)    # category fractions; sum to one
+```
+
+Every seed lands in exactly one of seven mutually-exclusive categories — `matched`, `unmatched`, `aperiodic`, `diverged`, `unresolved`, `stability_mismatch`, `outside_coverage` — and category fractions use the full seed census denominator, so `sum(values(reachability_category_fractions(sample))) ≈ 1`. Unstable branch segments attract zero fraction. Each `BranchReachabilitySample` also exposes per-branch `branch_periods` / `branch_stable` / `branch_covered` / `matched_counts` / `matched_fractions` and per-cell `assignment` / `status` / `match_distance` / `terminal_period` matrices (`branch_reachability_status_label(code)` maps a status code to its label).
+
+The branch state at each knot is Newton-solved to the exact period-`T` fixed point at that knot (never a distant branch point), and a branch is `covered` only inside its continued range (± `param_tolerance`). Independent basin evidence can be supplied via `basins_crosscheck`; the reachability census is still recomputed and must match after strict provenance + periodicity checks:
+
+```julia
+basins = [basins_of_attraction(cubic, BasinsConfig(bif_param=0.5,
+             x_min=-1.5, x_max=1.5, x_steps=3, y_min=-0.4, y_max=0.4, y_steps=2,
+             max_period=4, iterations=400))]
+result = branch_reachability(cubic, [plus, minus], cfg; basins_crosscheck=basins)  # rejected on any mismatch
+```
+
+Serialize with `serialize_branch_reachability_result` / `deserialize_branch_reachability_result` (format `"branch-reachability-v1"`).
+
+### Continuous-time (Poincaré return map)
+
+`branch_reachability` also accepts a `ContinuousODE` carrying a `PoincareSection`, running the same seven-category census on the section return map. Seeds are full-state initial conditions on the `(x_index, y_index)` grid; each seed's terminal orbit is detected on the section and reconstructed in projected coordinates, while branch fixed points are interpolated and Newton-corrected on the return map at the exact knot with stability recomputed from the return-map multipliers. The section must carry a full-state `template` (length = state dimension) so projected fixed points can be lifted for integration.
+
+```julia
+section = PoincareSection((u, t, integrator) -> u[2]; direction=:up, projection=[1], template=[0.0, 0.0])
+sys = ContinuousODE(mdb!, 2, section, [:F], "MDB"; tspan_hint=8.0, default_params=[0.0])
+
+result = branch_reachability(sys, branches,
+    BranchReachabilityConfig(
+        param_samples = [0.5], base_params = [0.0], param_index = 1,
+        x_min = 0.75, x_max = 3.25, x_steps = 3,
+        y_min = -0.1, y_max = 0.1, y_steps = 1,
+        x_index = 1, y_index = 2,
+        max_period = 2, iterations = 8,
+        ode_solver = "auto", ode_reltol = 1e-9, ode_abstol = 1e-9,
+        ode_tmax = Inf, threaded = true,
+    ))
+```
+
+Integration is controlled by `ode_solver` (resolved by `select_ode_solver`), `ode_reltol`/`ode_abstol`, `min_crossing_time` (launch-crossing suppression), `ode_fd_step`, and `ode_tmax` (`Inf` uses the `tspan_hint`-scaled horizon). A branch whose return-map Newton solve does not converge is reported `uncovered`, and a seed the integrator cannot resolve is `unresolved` — neither throws nor fabricates a match. `basins_crosscheck` is **rejected** for `ContinuousODE` (the return-map census cannot prove identical crossing semantics against an independent basins census). For stiff systems (e.g. Murali–Lakshmanan–Chua) prefer `ode_solver="auto"` or `"rosenbrock23"`, tighten tolerances, and raise `tspan_hint`; the thesis validation recovers stable P1/P3/P3 MDB coexistence at `a=0.0155`.
+
+## Parameter-robustness / tolerance fields
+
+Two separate layers post-process a classified 2D operating map (a `BifurcationMapResult`) into a component-drift robustness deliverable. Neither reruns the model.
+
+**A. Deterministic regime-boundary margins.** `regime_boundary_distances(map_result; cells=nothing, status_codes=nothing, config=RegimeBoundaryConfig()) -> RegimeBoundaryResult` gives, for each known-regime cell, the physical Euclidean distance to the nearest regime boundary (plus per-axis single-parameter margins), computed with a generalized distance transform at the true grid coordinates (monotone nonuniform grids supported; ≤ one cell-diagonal discretization error). The 2D Euclidean value combines raw parameter coordinates, so it is meaningful only for commensurate units/scales or normalized axes; otherwise interpret the per-axis margins independently.
+
+```julia
+# Vertical regime split on a uniform grid: regime 1 for a < 5, regime 2 otherwise.
+a = collect(0.0:1.0:10.0); b = collect(0.0:1.0:6.0)
+labels = [a[i] < 5.0 ? 1 : 2 for i in eachindex(a), j in eachindex(b)]
+resolved = trues(length(a), length(b))
+
+rb = regime_boundary_distances(a, b, labels, resolved;
+        config = RegimeBoundaryConfig(edge_policy = :ignore))
+rb.distance[1, 1]     # 4.0  (cell centre a=0 to nearest boundary-cell centre a=4)
+rb.distance_a[1, 1]   # 4.0  (single-parameter drift margin along a)
+rb.distance_b[1, 1]   # Inf  (no boundary varies with b alone here)
+regime_boundary_summary(rb)   # (n_valid, n_boundary, min_margin, median_margin, ...)
+```
+
+Unknown/unresolved cells never become a physical regime: they carry `NaN` margin and `valid = false`, and form a boundary for their known neighbours. `edge_policy` is `:censored` (default; caps at the domain-edge distance and flags `edge_censored` as a lower bound), `:boundary` (edge is a real boundary), or `:ignore` (raw distance, may be `Inf`). Status evidence (`cells::MapCellGrid` or a `status_codes` matrix, exactly one, provenance-validated) distinguishes detected-aperiodic / diverged / unresolved cells; without it the classification is explicitly periodicity-only (period `0` ⇒ unknown). Serialize with `serialize_regime_boundary_result` / `deserialize_regime_boundary_result` (format `"regime-boundary-v1"`).
+
+**B. Probabilistic component-tolerance propagation.** `tolerance_regime_map(map_result, ToleranceConfig(...); cells=nothing, status_codes=nothing) -> ToleranceMapResult` perturbs each nominal cell's two parameters by stated tolerances and classifies each perturbed point by nearest physical-grid-cell lookup.
+
+```julia
+cfg = ToleranceConfig(
+    tolerance_a = GaussianTolerance(0.5),   # std; zero is an exact Dirac delta
+    tolerance_b = UniformTolerance(0.3),    # half-width
+    n_samples   = 4000,
+    seed        = UInt64(2024),
+    threaded    = true,
+)
+tr = tolerance_regime_map(a, b, labels, resolved, cfg)
+tr.nominal_probability[5, 3]    # P(stay in the nominal regime), with Wilson CI + binomial SE
+tr.out_of_domain_probability    # mass leaving the sampled domain — retained, never renormalized
+tolerance_regime_summary(tr)    # (n_regimes, n_effective, mean_nominal_probability, mean_entropy, ...)
+```
+
+Regime probabilities + unknown + out-of-domain partition 1 (never renormalized). Both tolerances zero ⇒ deterministic exact collapse (probability `1`, entropy `0`, CI `[1, 1]`, `n_effective = 0`, no RNG). Each cell uses an independent `Xoshiro` stream seeded by a stable `UInt64` mix of `(seed, i, j)`, so `threaded=false` and `threaded=true` give bitwise-identical results regardless of thread count. This is propagation through a finite classified-map surrogate, not model reruns or a tolerance proof. Serialize with `serialize_tolerance_map_result` / `deserialize_tolerance_map_result` (format `"tolerance-map-v1"`).
+
+## Experimental mode-sequence assimilation
+
+`load_mode_sequence_csv` reads measured operating modes along one swept parameter from a strict CSV contract. The default required columns are `parameter` and `mode`; an optional `weight` column supplies positive observation weights. Values must be finite and strictly increasing. Common labels are compared semantically (`P1`, `period 1`, and `1` are equivalent; `chaos`, `aperiodic`, and `UPI-*` share the aperiodic class) while the original labels remain available for plots.
+
+```csv
+parameter,mode,weight
+0.05,P1,1
+0.20,period 1,1
+0.35,UPI-1,0.5
+```
+
+Extract a route from a computed operating map and assimilate the measurements:
+
+```julia
+measured = load_mode_sequence_csv("hardware_modes.csv";
+    parameter_name=:a, source="Hardware")
+
+route = operating_map_cross_section(map_result;
+    varying_parameter=:a,
+    fixed_value=0.07,
+    status_codes=map_status_codes)
+
+alignment = assimilate_mode_sequence(measured, route;
+    config=ModeAssimilationConfig(
+        experimental_scale=1.0,
+        experimental_offset=0.0,
+        transition_tolerance=0.005,
+    ))
+
+mode_assimilation_summary(alignment)
+plot_mode_sequence_alignment(alignment)
+```
+
+The affine map `aligned = experimental_scale * measured + experimental_offset` handles unit conversion and calibrated axis offsets without rewriting the source data. Each observation is reported as matched, mismatched, unresolved prediction, or outside coverage. `agreement_score` uses only comparable observation weight, `coverage` reports the comparable fraction, and `overall_score` conservatively divides matched weight by all uploaded weight.
+
+Mode changes are interval-censored between adjacent measurements. A transition matches only when a computed transition has the same ordered mode pair and falls inside the measured interval expanded by `transition_tolerance`; matching is one-to-one. The result separately reports transition precision, recall, F1, missing measured transitions, and unexpected computed transitions. Interfaces involving unresolved computed modes are excluded rather than treated as physical transitions. `serialize_mode_sequence_alignment` / `deserialize_mode_sequence_alignment` preserve the complete versioned result (`"mode-sequence-alignment-v1"`).
+
 ## Switching-event diagnostics
 
 `switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.
 
-## Map special points (period-doubling / fold)
+## Map normal forms and special points
 
-`map_special_points(sys, branch, base_params)` locates period-doubling (`:pd`) and fold (`:fold`) points on a continued map / Poincaré return-map branch. BifurcationKit's residual-convention detector misses map period-doublings (multiplier `μ = λ + 1`, so `μ → −1` never crosses the imaginary axis); this routine detects sign changes of the map test functions `∏(μᵢ − 1)` (fold) and `∏(μᵢ + 1)` (flip) along the branch and refines each by arclength bisection with a fixed-point re-solve.
+`map_normal_form(sys, kind, state, params; period=1)` computes the local coefficient for a fold (`kind=:fold`), flip (`:pd`), or Neimark-Sacker point (`:ns`) of the period-`N` map `G=F^N`. The overload `map_normal_form(sys, point::MapSpecialPoint, params)` uses the point's kind, state, and period. Discrete maps use nested ForwardDiff directional derivatives. Continuous ODEs use centered finite differences of the Poincare return map and require three successive step sizes to agree in sign, classification, and scale. `normal_form_fd_step` controls the initial scale (default `3e-3`); the implementation increases it adaptively when integration error dominates.
+
+The implementation uses the standard Kuznetsov/MATCONT map convention. The right eigenvector has Euclidean norm one and the left eigenvector is scaled so the Hermitian product `dot(p,q)=1`. Complex multilinear forms are evaluated by real/imaginary multilinear expansion because ForwardDiff accepts real directions.
+The formulas follow Kuznetsov, *Elements of Applied Bifurcation Theory*, map
+normal forms (DOI `10.1007/978-1-4757-3978-7`).
+
+- Fold: `b = 1/2 <p,B(q,q)>`. Its sign depends on the real eigenvector orientation, so the result only reports `:nondegenerate` or `:degenerate`.
+- Flip: `c = 1/6 <p,C(q,q,q)> + <p,B(q,h20)>`, where `h20=(I-A)^-1 B(q,q)/2`. `c>0` is supercritical/soft and `c<0` is subcritical/hard.
+- Neimark-Sacker: `d = Re(conj(lambda)/2 * (<p,C(q,q,qbar)> + <p,B(h20,qbar)> + 2<p,B(h11,q)>))`, where `h11=-(A-I)^-1 B(q,qbar)` and `h20=-(A-lambda^2 I)^-1 B(q,q)`. `d<0` is supercritical and `d>0` is subcritical.
+
+`MapNormalForm` is plain data with `kind`, `coefficient_name` (`:b`, `:c`, or `:d`), an optional `coefficient`, `criticality`, `status`, and the exact `convention`. Degenerate coefficients, strong resonances, near-singular homological equations, multiple simultaneously critical NS pairs, unstable finite-difference steps, and unavailable critical eigenvectors carry explicit statuses; no coefficient is fabricated when evaluation is unreliable.
+
+`map_special_points(sys, branch, base_params)` locates period-doubling (`:pd`), fold (`:fold`), and Neimark-Sacker (`:ns`) points on a continued map / Poincare return-map branch. BifurcationKit's residual-convention detector misses map period-doublings (multiplier `mu = lambda + 1`, so `mu -> -1` never crosses the imaginary axis); this routine detects sign changes of `det(J-I)` (fold), `det(J+I)` (flip), and `abs(mu_c)-1` for each non-real conjugate pair (NS), then refines each by arclength bisection with a fixed-point re-solve. Real multipliers near `+1` or `-1` are not accepted as NS points. Results are sorted and deduplicated by kind, parameter, and (for NS points) critical multiplier, so distinct simultaneous pairs remain distinct.
 
 ```julia
 branch = continuation_branch(boost_converter(), ContinuationConfig(p_min=1.2, p_max=1.95, ds=0.005, param_index=1), 1;
@@ -253,11 +733,35 @@ sp = map_special_points(boost_converter(), branch, [1.5, 10.0, 20.0, 0.0]; detec
 sp[1].kind             # :pd
 sp[1].param            # subharmonic period-doubling (μ = -1), missed by branch.branch.specialpoint
 sp[1].critical_multiplier
+sp[1].normal_form     # MapNormalForm, attached by default
 ```
 
-Each `MapSpecialPoint` carries `kind`, `param`, `state`, `multipliers`, `critical_multiplier`, `test_value`, `period`, and `converged`. Complex-conjugate pairs contribute a non-negative factor to each test function, so Neimark–Sacker crossings are not reported as PD/fold. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match their closed-form values.
+Each `MapSpecialPoint` carries `kind`, `param`, `state`, `multipliers`, `critical_multiplier`, `test_value`, `period`, `converged`, and optional `normal_form`. Pass `attach_normal_forms=false` to skip coefficient evaluation. Complex-conjugate pairs contribute a non-negative factor to each fold/flip determinant, so NS crossings are not reported as PD/fold. On the Henon map the located period-1 flip (`a=0.3675`) and fold (`a=-0.1225`) match their closed-form values.
 
-## Codimension-2 bifurcation curves
+`serialize_map_normal_form` / `deserialize_map_normal_form` and `serialize_map_special_point` / `deserialize_map_special_point` provide strict, versioned JSON-plain dictionaries. Complex multipliers are represented as `[real, imag]` pairs.
+
+## Border-collision classification
+
+`border_collision_classify(A_L, A_R; switching_normal=nothing, period=1, transversality=nothing)` classifies a border-collision bifurcation of a **continuous** piecewise-smooth map from its two one-sided ordered `q`-return Jacobians `A_L` (guard-negative branch) and `A_R` (guard-positive branch), using the Feigin/Simpson/di Bernardo determinant signs: `sign(det(I-A_L)·det(I-A_R))` gives persistence (`>0`) vs nonsmooth fold (`<0`), and `sign(det(I+A_L)·det(I+A_R))` gives companion `2q`-cycle creation (`<0`). The four generic scenarios are `:persistence`, `:nonsmooth_fold`, `:persistence_with_companion_cycle`, and `:nonsmooth_fold_with_companion_cycle`. LU-derived determinant signs are authoritative and genericity is based on eigenvalue distance to `±1`; the `σ₊`/`σ₋` real-eigenvalue counts are tolerance-aware diagnostics (`sigma_reliable`). Stability is reported separately (one-sided and, for `status == :ok`, companion spectral radii); no chaos, robust-chaos, period-adding, or torus verdict is inferred.
+
+`border_collision_at_cycle(sys, cycle, params; period=nothing, param=NaN, events=switching_events(sys))` classifies a real period-`q` cycle of a continuous piecewise-smooth `DiscreteMap`. `cycle` is the vector of `q` phase states or a single seed (the orbit is then reconstructed). Every switching-guard component is evaluated at every phase; a single generic colliding phase is required, and the two ordered `q`-return Jacobians differ only at that phase — its one-sided Jacobians use forced one-sided finite differences with Richardson `δ`-refinement (robust where branch selection invalidates automatic differentiation at the border), interior phases use AD.
+
+`border_collision_points(sys, branch::BranchResult, base_params; events=switching_events(sys))` scans a continued map / return-map branch for crossings (sign changes of the signed nearest-border guard value between adjacent points), refines each honestly in both the parameter and the periodic state (bisection with a Newton re-solve of the period-`q` fixed point), deduplicates, and classifies. A finite-difference `d(guard)/d(param)` across the bracket is passed through as the transversality measure.
+
+Continuity is verified as the switching-manifold rank-one condition (`A_L-A_R` rank one with row space the switching normal); a violation yields status `:noncontinuous` and classification is refused, while an incorrectly sized, non-finite, or zero supplied normal yields `:invalid`. Genericity (`:degenerate` on a `±1` eigenvalue), transversality (`:nontransversal`), an absent/ambiguous colliding phase (`:unavailable` / `:multiple_border_phases`), and invalid inputs (`:invalid`) each carry an explicit status and never produce a generic scenario; companion-cycle fields are populated only for `status == :ok`, and admissibility is left `nothing`.
+
+```julia
+# Simpson (2014) 1D fold-with-companion fixture: a_L = 2, a_R = -1.5.
+c = border_collision_classify(reshape([2.0], 1, 1), reshape([-1.5], 1, 1); switching_normal=[1.0])
+c.scenario            # :nonsmooth_fold_with_companion_cycle
+c.persistence_product # < 0 (nonsmooth fold)
+c.companion_product   # < 0 (companion 2-cycle created)
+c.status              # :ok
+```
+
+`BorderCollisionClassification` and `BorderCollisionPoint` are plain data with full provenance (event, guard component, period, colliding phase, itinerary, `A_L`/`A_R`, determinant invariants, spectra, `σ` counts, stability, continuity residual, transversality, status, scenario, companion-cycle existence/stability, and a conservative inference string). `serialize_border_collision_classification` / `deserialize_border_collision_classification` and `serialize_border_collision_point` / `deserialize_border_collision_point` provide strict, versioned JSON-plain dictionaries (complex spectra as `[real, imag]` pairs; nullable fields as `null`).
+
+
 
 `codim2_curve` assembles a traced curve in a two-parameter plane by sweeping a secondary parameter and running a 1D continuation slice along the primary parameter at each secondary value.
 
@@ -318,6 +822,40 @@ step sizes, Newton settings); its `param_index`/`linked_param_indices` are
 ignored — the leg always continues the secondary parameter
 (`second_param_index`). `nothing` derives conservative settings from the
 secondary grid.
+
+Once a `Codim2ContinuationResult` has been produced, a test-function pass can locate organising
+codimension-2 points along the locus:
+
+```julia
+# Default: all six kinds.  Coefficient detectors (:cusp, :generalized_flip, :bautin) are
+# skipped without error when base_params is absent — safe to call on any locus.
+pts = codim2_special_points(sys, result)
+
+# Explicit subset with parameter info for coefficient detectors:
+pts = codim2_special_points(sys, result;
+    detect=[:cusp, :generalized_flip, :fold_flip,
+            :resonance_1_1, :resonance_1_2, :bautin],
+    base_params=[p1_base, p2_base],
+    param_index=1, second_param_index=2)
+```
+
+Each returned `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`,
+`secondary_param`, `state`, `multipliers`, `test_value`, `period`, `converged`,
+`status` (`:interpolated`, `:sampled`, or `:unavailable`), and `normal_form` (always
+`nothing` for interpolated coefficient-zero points — attaching a nonzero-coefficient form
+from the nearest bracketing sample would be misleading). Near-zero locus samples are
+reported as `status=:sampled` using the configurable `test_tolerance`; sign-change
+brackets are reported as `status=:interpolated`. Points are sorted by
+`(kind, secondary_param, primary_param)` and deduplicated.
+
+`serialize_codim2_special_point`/`deserialize_codim2_special_point` provide the JSON-plain
+wire form (format `"codim2-special-point-v1"`).  Full codim-2 normal-form classification
+is out of scope.
+
+**ArgumentError policy**: explicitly listing `:cusp` (`:fold` locus), `:generalized_flip`
+(`:pd` locus), or `:bautin` (`:ns` locus) in `detect` without `base_params` raises
+`ArgumentError`.  Inapplicable kinds (wrong locus) return empty without error so the default
+all-kinds pass works everywhere.
 
 ## Periodic skeleton search
 
@@ -486,6 +1024,181 @@ confidence, Lyapunov estimates, multistability, adaptive refinement, and neighbo
 metadata (e.g. `bifurcation_map` via the lower-level `DynamicsKit._bifurcation_map`, which returns
 `(result, diagnostics)`).
 
+## Adaptive bifurcation map
+
+`adaptive_bifurcation_map` runs a coarse uniform sweep then applies dyadic (quadtree) subdivision at classification boundaries under a strict total-evaluation budget:
+
+```julia
+result = adaptive_bifurcation_map(henon_map(),
+    BifurcationMapConfig(
+        a_min=0.0, a_max=1.4, a_steps=20,
+        b_min=0.0, b_max=0.35, b_steps=20,
+        a_index=1, b_index=2,
+        max_period=8, iterations=400, precision=1e-3,
+        base_params=[1.0, 0.3],
+    ),
+    AdaptiveMapConfig(total_budget=2000, max_depth=4);
+    initial_point=[0.1, 0.1],
+)
+```
+
+`coarse_config.reuse_neighbor_seeds` must be `false` (fixed-seed traversal is required for deterministic, topology-independent results).
+`AdaptiveMapConfig.max_depth` is bounded to `0:30` to keep dyadic lattice arithmetic in a safe integer range.
+
+`adaptive_map_summary(result)` returns a NamedTuple with provenance including `budget_used`, `budget_exhausted`, `uninspected_cell_count`, `coarse_evaluations`, `refinement_evaluations`, `flagged_cells`, `split_cells`, `max_depth_reached`, `boundary_segment_count`, and `boundary_length`. `uninspected_cell_count` counts uniform-corner `:uninspected` leaf cells (center unevaluated due to budget or max-depth limits); `budget_exhausted` is only about budget-limited eligible work. See `docs/analysis-methods.md` for the full field reference and serialization API.
+
+## Optional GPU acceleration
+
+`bifurcation_map`, `lyapunov_field`, and `basins_of_attraction` accept a `backend::ComputeBackend`
+keyword (default `CPUBackend()`, i.e. the existing threaded pure-Julia sweep — passing it explicitly
+carries no extra overhead). `AutoBackend()` uses a GPU if one is loaded and available, otherwise runs on
+the CPU; it never errors due to device unavailability. `GPUBackend(vendor::Symbol)` (or the
+`gpu_backend(vendor)` convenience constructor) explicitly requests a vendor (e.g. `:cuda`, `:amdgpu`) —
+unlike `AutoBackend`, an unavailable or ineligible explicit request always raises a clear
+`ArgumentError` rather than silently falling back to the CPU. Query availability with
+`gpu_backend_available(vendor)` / `available_gpu_backends()`.
+
+```julia
+using DynamicsKit
+map = bifurcation_map(henon_map(), BifurcationMapConfig(...); backend=auto_backend())
+map.compute_backend   # :cpu, or the GPU vendor that actually ran the sweep
+```
+
+GPU eligibility for the **`DiscreteMap`** sweeps (the embarrassingly parallel,
+cell-independent case):
+
+- `BifurcationMapConfig(reuse_neighbor_seeds=false, ...)` (the `:fixed` seed mode) — the neighbour-seeded
+  modes are traversal-dependent (each cell's initial condition is the previous cell's final state in
+  serpentine order), so they are not cell-independent and stay CPU-only.
+- No switching events, no `multistability_initial_points`, no `a_linked_param_indices` /
+  `b_linked_param_indices` — these require per-cell `Dict`/multi-seed bookkeeping not (yet) written in a
+  GPU-safe non-allocating form.
+- `basins_of_attraction(sys::DiscreteMap, ...)` has none of the above restrictions (always eligible).
+
+**`ContinuousODE` sweeps are also GPU-accelerated** (`bifurcation_map`, `basins_of_attraction`) via
+DiffEqGPU's `EnsembleGPUKernel`; see "Continuous-time (`ContinuousODE`) GPU sweeps" below for the
+additional eligibility rules (GPU out-of-place RHS, Lyapunov disabled, precision floor) and the narrow
+continuous-Lyapunov exclusion.
+
+An explicit `GPUBackend` on an ineligible call raises a clear `ArgumentError` naming the unmet
+requirement; `AutoBackend` silently runs on the CPU instead. The `cells=` sweep-cache hook (`MapCellGrid`
+/ `LyapunovCellGrid` / `BasinsCellGrid`) works the same way regardless of backend: pre-seeded/known cells
+are skipped and the grid is written back in place.
+
+**Vendor packages are weak dependencies (package extensions).** Loading `DynamicsKit` includes the
+vendor-neutral `KernelAbstractions` / `DiffEqGPU` infrastructure, but does not install or load CUDA,
+ROCm, or other device runtimes and binaries. `] add CUDA` / `] add AMDGPU` and `using CUDA` (etc.) in
+the same session is what makes that vendor available. `DynamicsKit` ships extensions for the
+FP64-capable vendors — `DynamicsKitCUDAExt`
+(`:cuda`) and `DynamicsKitAMDGPUExt` (`:amdgpu`) — which register the vendor as available whenever its
+package reports a functional device (`CUDA.functional()` / `AMDGPU.functional()`) and hand back the
+matching `KernelAbstractions` backend (`CUDA.CUDABackend()` / `AMDGPU.ROCBackend()`) used by *both* the
+discrete `KernelAbstractions` kernels and the continuous DiffEqGPU `EnsembleGPUKernel` path. These
+extensions are dormant until the vendor package is loaded. The CUDA path has been exercised on a
+physical NVIDIA RTX 4090 with CUDA.jl 6.2.1 under Julia 1.11.9: eligible discrete
+`bifurcation_map`/`basins_of_attraction` sweeps and continuous Rössler map/basin sweeps reported
+`compute_backend == :cuda` and matched their CPU periodicity matrices exactly. Standalone discrete
+`lyapunov_field` was also exercised physically with exponent, classification/estimation-code, and
+sample-count parity. AMDGPU remains hardware-unvalidated; its device-gated tests run only when a
+functional ROCm device is present. See `docs/validation.md` and `docs/benchmarks.md` for the validation
+scope, performance boundaries, and reproducible benchmark command. The kernels are written against the vendor-agnostic
+`KernelAbstractions.jl` / `DiffEqGPU.jl` (lightweight, CPU-capable dependencies with no GPU stack of
+their own), so a new vendor is a small extension following `ext/DynamicsKitCUDAExt.jl`'s pattern, not a
+rewrite of the kernels.
+
+**Apple/Metal is a recognized vendor that is permanently disqualified, not just "not installed".** Metal
+GPUs have no double-precision (Float64) hardware support at all (Metal Shading Language has no `double`
+type), and this library's period/Lyapunov closure tolerances are specified and validated in Float64;
+silently downgrading to Float32 would change classification results near regime boundaries, which is
+exactly the misleading/"scientifically weak" GPU toggle this feature must not ship. `using Metal` loads
+`DynamicsKitMetalExt`, so `:metal` appears in the probed vendor set, but `gpu_backend_available(:metal)`
+always reports `false` and an explicit `gpu_backend(:metal)` request raises an `ArgumentError` naming
+this exact reason — never a silent CPU fallback and never a silent precision downgrade.
+
+### Continuous-time (`ContinuousODE`) GPU sweeps
+
+`bifurcation_map` and `basins_of_attraction` for `sys::ContinuousODE` are GPU-accelerated through
+DiffEqGPU's `EnsembleGPUKernel`, running the **same** adaptive Poincaré-return method the CPU path uses
+— GPU `Tsit5` adaptive integration, a directional section `ContinuousCallback` (`RightRootFind`),
+warmup/min-crossing handling, termination after the required crossings, and Float64 closure-based
+period detection — distributed over an ensemble of independent per-cell trajectories. It is **not** a
+fixed-step or Float32 reimplementation. The branchy, variable-length detector is made kernel-uniform by
+carrying a fixed-capacity *augmented state* per trajectory whose extra slots are the running detector
+registers (crossing count, base point, min-closure error/period/threshold, detected period, status,
+last-crossing point); the directional callback runs the exact CPU `on_crossing!` logic on those slots
+and calls `terminate!` per trajectory. The physical result read back from the terminal augmented state
+flows through the *same* recorders as the CPU sweep, so the two agree beyond integration tolerance.
+
+Continuous GPU eligibility, in addition to the same structural rules as the discrete map
+(`bifurcation_map`: fixed-seed, no switching/multistability/linked params) requires:
+
+- **A GPU out-of-place StaticArray right-hand side on the system** (`has_continuous_gpu_rhs`). Built-in
+  continuous systems (Rössler, Vilnius, the Colpitts family, the memristive diode bridge) provide a
+  native out-of-place `(u::SVector, p, t) -> SVector` alongside their in-place RHS — the in-place form
+  stays the zero-overhead CPU hot-loop path; the out-of-place form is what `EnsembleGPUKernel` requires.
+  Imported/user systems that supply only an in-place RHS are GPU-ineligible (never silently downgraded).
+- **Lyapunov diagnostics disabled** for `bifurcation_map` (see the Lyapunov exclusion below).
+- **A closure `precision` no tighter than the GPU section-crossing localization floor**
+  (`100·eps(Float32) ≈ 1.19e-5`). DiffEqGPU localizes the Poincaré crossing with this fixed root-find
+  tolerance (from `convert(GPUContinuousCallback, ::ContinuousCallback)`); a closure tolerance tighter
+  than the localization itself cannot be guaranteed to match the CPU path, so such calls are rejected
+  (explicit `GPUBackend`) or fall back to the CPU (`AutoBackend`) — never run with a silently weaker
+  localization. The value is recorded on GPU-computed diagnostics as `gpuRootfindAbstol`, and the
+  configured `precision`/solver as `closurePrecision` / `gpuSolver` provenance.
+
+On CUDA, the extension raises the process-local CUDA device malloc heap to at least 256 MiB before a
+continuous DiffEqGPU ensemble launch. DiffEqGPU's adaptive per-trajectory integrators use dynamic
+device memory, and the CUDA driver's 8 MiB default can be exhausted by moderate operating-map grids
+despite ample ordinary VRAM. Override the minimum with `DYNAMICSKIT_CUDA_HEAP_MB` (a positive integer,
+at most 16384 MiB) before starting Julia. This setting is CUDA-context-local and does not affect the
+discrete KernelAbstractions kernels. Lower values may make continuous sweeps fail with a device-heap
+allocation error; larger values reserve more of the device context's memory budget.
+
+Scientific parity: classifications are **exact** on robustly-classified fixtures (e.g. Rössler's
+period-doubling cascade) and match across a full representative grid given an adequate transient. In
+deep-chaos cells a *near-threshold* closure (period ≈ `max_period`) can flip between a marginal period
+and aperiodic because the exact integer period there is itself sensitive to integrator-path differences
+between CPU `Tsit5` and GPU `Tsit5`; this is inherent sensitive dependence, not a GPU defect, and shrinks
+as the transient grows.
+
+**The continuous Lyapunov field/diagram is deliberately *not* GPU-accelerated**, and an explicit
+`GPUBackend` for `lyapunov_field(sys::ContinuousODE, ...)` raises a specific `ArgumentError` (auto/CPU
+run on the CPU). This is a *narrow* exclusion with a concrete technical reason, not a blanket
+"no ContinuousODE GPU": the continuous Lyapunov exponent is a **coupled two-trajectory** Benettin
+computation — a reference and a perturbed trajectory each integrated to their *own* next Poincaré
+crossing, with per-return renormalization and reprojection of the separation onto the section — whereas
+`EnsembleGPUKernel` is built for *independent* trajectories. The two trajectories reach the section at
+different times and must be resynchronized/renormalized sequentially between returns, which the
+single-time-axis ensemble event model does not express; a faithful version would need a bespoke coupled
+GPU integrator (outside DiffEqGPU's provided APIs) or a variational/Jacobian reformulation (a *different*
+method that would not reproduce the CPU finite-difference exponent values). Until one is validated, the
+faithful CPU path is authoritative.
+
+**`ContinuousODE` continuation** (`continuation_branch`, `continuation_atlas`, ...) is likewise not
+GPU-accelerated: pseudo-arclength path-following is inherently sequential (each point depends on the
+previous one), so there is no cell-independent work to distribute; `BifurcationKit.jl` itself supports
+GPU-resident state arrays for large PDE-discretization problems, which does not apply to this library's
+small ODE/map state vectors. The Monte-Carlo tolerance/regime-boundary fields
+(`tolerance_regime_map`, `regime_boundary_distances`) are also CPU-only: they classify already-computed
+grid samples by nearest-cell lookup into a `Dict`-keyed, runtime-discovered set of regime labels, so the
+per-sample cost is dominated by branching/hash lookups rather than floating-point throughput, and the
+output layout is not GPU-kernel-representable without a larger data-structure rewrite than the modest
+gain would justify — advertising ODE acceleration there would be misleading.
+
+### Supported vs ineligible GPU matrix
+
+| Analysis (system) | GPU | Notes |
+| --- | --- | --- |
+| `bifurcation_map` (`DiscreteMap`) | ✅; CUDA-validated | fixed-seed, no switching/multistability/linked params; exact CPU/CUDA parity measured on physical hardware |
+| `lyapunov_field` (`DiscreteMap`) | ✅; CUDA-validated | no linked params; exponent/status/sample parity and acceleration measured on physical hardware |
+| `basins_of_attraction` (`DiscreteMap`) | ✅; CUDA-validated | always eligible; exact CPU/CUDA parity measured on physical hardware |
+| `bifurcation_map` (`ContinuousODE`) | ✅; CUDA-validated | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5`; exact Rössler CPU/CUDA parity measured on physical hardware |
+| `basins_of_attraction` (`ContinuousODE`) | ✅; CUDA-validated | GPU RHS, `precision ≥ 1.19e-5`; exact Rössler CPU/CUDA parity measured on physical hardware |
+| `brute_force_diagram` (`ContinuousODE`) | ❌ | returns a variable-size cloud of retained crossings per parameter, not the fixed-size per-trajectory summary supported by the current GPU path — CPU-only |
+| `lyapunov_field` (`ContinuousODE`) | ❌ | coupled two-trajectory Benettin — not an independent ensemble |
+| continuation / atlas | ❌ | inherently sequential (no cell-independent work) |
+| `tolerance_regime_map` / `regime_boundary_distances` | ❌ | post-processing classification, not ODE integration |
+
 ## Phase portrait
 
 ```julia
@@ -544,7 +1257,9 @@ Supported result types include `BruteForceResult`, `LyapunovDiagramResult`, `Lya
 
 For a portable **JSON-plain** form (e.g. to embed a result in an HTTP payload or a non-JLD2 store)
 the result types also have dict serializers — `serialize_bruteforce_result` / `serialize_branch_result`
-/ `serialize_atlas_result` (and their `deserialize_*` inverses). Branch points are serialized
+/ `serialize_atlas_result` (and their `deserialize_*` inverses). Because the atlas payload does not
+duplicate its reconnaissance sweep, restore it with
+`deserialize_atlas_result(data; brute_force=restored_brute_force)`. Branch points are serialized
 columnar so no fragile `BifurcationKit` internals are persisted.
 
 ## Integration API: kernels, effective settings, and diagnostics
@@ -566,7 +1281,7 @@ These are for callers that drive the analyses programmatically and need more tha
 
 - **Diagnostics producers** — the summary dicts the map kernel and atlas assemble, exposed so a consumer
   can build the same payloads from raw data it already holds:
-  `map_lyapunov_diagnostics`, `map_neighbor_seed_diagnostics`, `poincare_crossing_diagnostics_summary`,
+  `map_status_code`, `map_status_label`, `map_lyapunov_diagnostics`, `map_neighbor_seed_diagnostics`, `poincare_crossing_diagnostics_summary`,
   and `orbit_geometry_summary`. Each returns a JSON-plain `Dict`. (These are the library's own
   diagnostics format — the same dicts appear in the kernel's returned `diagnostics`.)
 
@@ -616,3 +1331,62 @@ duffing = ContinuousODE(duffing!, 2, section, [:mu], "Duffing";
     default_params=[0.2],
 )
 ```
+
+## Switching-map generator (piecewise-linear circuits)
+
+`switching_map` constructs a 2-D `DiscreteMap` from a `SwitchingCircuitDescription` — an ordered
+list of `AffineModeSpec` values plus a clock period — without hand-deriving the period-advance map:
+
+```julia
+using DynamicsKit, StaticArrays
+
+# ── Built-in descriptions ─────────────────────────────────────────────────────
+sys_buck  = switching_map(buck_converter_description())   # identical to buck_converter()
+sys_boost = switching_map(boost_converter_description())  # identical to boost_converter()
+
+# ── Custom two-mode affine circuit ────────────────────────────────────────────
+# Diagonal A in each mode; equilibria known analytically.
+A1 = SMatrix{2,2}(-1.0, 0.0, 0.0, -2.0)   # mode 1: diag(-1,-2)
+b1 = SVector(1.0, 2.0)                      # equilibrium (1,1)
+A2 = SMatrix{2,2}(-2.0, 0.0, 0.0, -1.0)   # mode 2: diag(-2,-1)
+b2 = SVector(2.0, 1.0)                      # equilibrium (1,1)
+T  = 0.5
+
+# Mode 1 runs for 0.3 s then mode 2 consumes the rest.
+mode1 = AffineModeSpec(A1, b1; duration=(x, p) -> 0.3)
+mode2 = AffineModeSpec(A2, b2)   # final mode: duration = nothing
+
+desc = SwitchingCircuitDescription((mode1, mode2), T;
+    param_names=[:dummy], name="Custom 2-mode circuit")
+sys  = switching_map(desc)
+```
+
+`AffineModeSpec` accepts constant or parameter-dependent `A` and `b`:
+
+```julia
+# Parameter-dependent: R = p[3], C fixed
+A_off = p -> SMatrix{2,2}(-1/(p[3]*C), -1/L, 1/C, 0.0)
+b_off = p -> SVector(0.0, E/L)
+mode_off = AffineModeSpec(A_off, b_off)
+```
+
+The optional `boundary` keyword enforces an exact switching condition at the end of an intermediate
+mode — for example, forcing the inductor current to `Iref`:
+
+```julia
+mode_on = AffineModeSpec(A, b_on;
+    duration = (x, p) -> L * (p[1] - x[2]) / (p[2] - x[1]),
+    boundary = (x_flow, p) -> SVector(x_flow[1], p[1]))  # keep V, set I = Iref
+```
+
+The generated map is **ForwardDiff-compatible** away from switching borders:
+
+```julia
+using ForwardDiff
+x0 = SVector(5.0, 0.5); p0 = [0.8, 10.0]
+Jx = ForwardDiff.jacobian(x -> sys_buck.f(x, p0), x0)
+Jp = ForwardDiff.jacobian(p -> sys_buck.f(x0, p),  p0)
+```
+
+**Scope:** 2-D state (voltage, current). Handles under-, over-, and critically-damped circuit
+matrices uniformly, and singular `A` matrices (boost ON stage, one zero eigenvalue).

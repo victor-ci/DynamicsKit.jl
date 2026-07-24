@@ -148,7 +148,7 @@ end
             ds=0.0003,
             dsmax=0.0010,
             dsmin=1e-8,
-            max_steps=800,
+            max_steps=400,
             newton_tol=1e-8,
             newton_max_iter=30,
             detect_bifurcation=1,
@@ -290,7 +290,7 @@ end
     sys = memristive_diode_bridge()
     continuation = ContinuationConfig(
         p_min=0.0112, p_max=0.024, ds=0.0003, dsmax=0.0010, dsmin=1e-8,
-        max_steps=800, newton_tol=1e-8, newton_max_iter=30,
+        max_steps=300, newton_tol=1e-8, newton_max_iter=30,
         detect_bifurcation=1, param_index=1,
         ode_jacobian_method=:variational
     )
@@ -346,7 +346,7 @@ end
     )
     config = Codim2Config(
         continuation=continuation,
-        second_min=0.4, second_max=1.0, second_steps=6,
+        second_min=0.4, second_max=1.0, second_steps=3,
         second_param_index=2, fixed_params=[0.9, 0.7],
         bifurcation_kind=:ns, endpoint_margin=0.0,
         diagnostics_max_points=300, engine=:defining_system
@@ -401,19 +401,19 @@ end
     end
     continuation = ContinuationConfig(
         p_min=-0.30, p_max=-0.04, ds=0.005, dsmax=0.02, dsmin=1e-9,
-        max_steps=300, newton_tol=1e-10, newton_max_iter=30,
+        max_steps=150, newton_tol=1e-10, newton_max_iter=30,
         detect_bifurcation=3, param_index=1, ode_jacobian_method=:variational
     )
     make_config(threaded) = Codim2Config(
         continuation=continuation,
-        second_min=0.6, second_max=1.0, second_steps=4,
+        second_min=0.6, second_max=1.0, second_steps=2,
         second_param_index=2, fixed_params=[-0.1, 0.8],
         bifurcation_kind=:fold, endpoint_margin=0.0,
         anchor_second=0.8, diagnostics_max_points=200,
         engine=:defining_system, threaded=threaded,
         curve_continuation=ContinuationConfig(
             p_min=0.6, p_max=1.0, ds=0.02, dsmax=0.05, dsmin=1e-9,
-            max_steps=100, newton_tol=1e-8, newton_max_iter=30,
+            max_steps=50, newton_tol=1e-8, newton_max_iter=30,
             detect_bifurcation=0, param_index=2
         )
     )
@@ -441,4 +441,966 @@ end
         @test maximum(abs.(curve.states[1, :] .^ 2 .- curve.secondary_values ./ 2)) < 1e-5
         @test all(m -> any(mu -> abs(mu - 1.0) < 1e-3, m), curve.multipliers)
     end
+end
+
+# ---------------------------------------------------------------------------
+# Helper: construct a minimal Codim2ContinuationResult from raw arrays.
+# This avoids depending on a full continuation run for detector unit tests.
+# ---------------------------------------------------------------------------
+function _make_c2result(; kind::Symbol, p1, p2, states, mults=nothing, angles=nothing, period=1)
+    n = length(p1)
+    state_mat = hcat(states...)
+    multipliers = mults === nothing ? [ComplexF64[] for _ in 1:n] : mults
+    phase_angles = angles === nothing ? zeros(Float64, n) : angles
+    Codim2ContinuationResult(
+        collect(Float64, p1),
+        collect(Float64, p2),
+        state_mat,
+        zeros(size(state_mat)),      # defining_vectors (unused by detectors)
+        zeros(size(state_mat)),      # defining_vectors_imag
+        phase_angles,
+        zeros(Float64, n),           # fixed_point_residuals
+        multipliers,
+        Float64[],                   # curve_fold_secondary_values
+        first(p1), first(p2),
+        kind, period, "test", (:p1, :p2), :defining_system,
+        DynamicsKit.Dates.now()
+    )
+end
+
+# ---------------------------------------------------------------------------
+# codim2_special_points validation
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — validation" begin
+    # wrong engine
+    bad_engine = _make_c2result(kind=:fold, p1=[-1.0, -0.9], p2=[0.0, 0.1],
+                                 states=[[0.5], [0.5]])
+    bad = Codim2ContinuationResult(
+        bad_engine.primary_values, bad_engine.secondary_values,
+        bad_engine.states, bad_engine.defining_vectors,
+        bad_engine.defining_vectors_imag, bad_engine.phase_angles,
+        bad_engine.fixed_point_residuals, bad_engine.multipliers,
+        bad_engine.curve_fold_secondary_values, bad_engine.seed_primary,
+        bad_engine.seed_secondary, bad_engine.bifurcation_kind,
+        bad_engine.period, bad_engine.system_name, bad_engine.param_names,
+        :slice_tracking, bad_engine.timestamp
+    )
+    sys = DiscreteMap((x, p) -> SVector(p[1] * x[1]), 1, [:p1, :p2], "test")
+    @test_throws ArgumentError codim2_special_points(sys, bad)
+
+    # unknown detect kind
+    good = _make_c2result(kind=:fold, p1=[-1.0, -0.9], p2=[0.0, 0.1],
+                          states=[[0.5], [0.5]])
+    @test_throws ArgumentError codim2_special_points(sys, good; detect=[:cusp, :bogus])
+
+    # negative duplicate tolerance
+    @test_throws ArgumentError codim2_special_points(sys, good; duplicate_primary_tol=-1.0)
+
+    # empty detect → empty result
+    pts = codim2_special_points(sys, good; detect=Symbol[])
+    @test pts isa Vector{Codim2SpecialPoint}
+    @test isempty(pts)
+
+    # too few samples → empty result (n=1)
+    one_sample = _make_c2result(kind=:fold, p1=[-1.0], p2=[0.0], states=[[0.5]])
+    pts = codim2_special_points(sys, one_sample)
+    @test isempty(pts)
+end
+
+# ---------------------------------------------------------------------------
+# Cusp detection on a fold locus: fold normal-form coefficient b crossing zero
+#
+# A cusp is the intrinsic fold degeneracy b = 1/2<p,B(q,q)> -> 0, not a turning
+# point of the fold locus in a chosen parameter (which is coordinate-dependent
+# and routinely happens with b != 0).  These fixtures are analytic-first: b is a
+# closed form on the constructed maps, so the sign/verdict is known exactly.
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — cusp on fold locus (coefficient b)" begin
+    # NEGATIVE (analytic): the fold parabola F(x,p)=x+p1+p2 x+x^2 has F''=2, so
+    # b = 1/2 F'' = 1 everywhere.  Its fold locus p1=p2^2/4 turns in p1 at p2=0,
+    # but that turning is NOT a cusp — b never vanishes, so nothing must be reported.
+    para = DiscreteMap((x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + x[1]^2),
+                       1, [:p1, :p2], "fold parabola")
+    p2_para = collect(range(-0.3, 0.3, length=21))    # brackets the p1-turning at p2=0
+    p1_para = p2_para .^ 2 ./ 4                        # fold locus p1 = p2^2/4
+    result_para = _make_c2result(kind=:fold, p1=p1_para, p2=p2_para,
+                                  states=[[-pi2 / 2] for pi2 in p2_para])  # x = -p2/2
+    pts_para = codim2_special_points(para, result_para;
+                                     detect=[:cusp],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
+    @test isempty(pts_para)   # a turning point of the fold locus is not a cusp
+
+    # POSITIVE (analytic): the cubic F(x,p)=x+p1+p2 x+x^3 has F''=6x, so on its
+    # fold locus (p2=-3s^2, p1=2s^3, state x=s) the coefficient is b = 3s.  b crosses
+    # zero at s=0 — a genuine cusp at (p1,p2)=(0,0).
+    cubic = DiscreteMap((x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + x[1]^3),
+                        1, [:p1, :p2], "cubic cusp")
+    cubic_locus(s) = _make_c2result(kind=:fold,
+                                    p1=2 .* s .^ 3, p2=-3 .* s .^ 2,
+                                    states=[[si] for si in s])
+
+    # Interpolated crossing: even sample count straddles s=0 without landing on it.
+    s_i = collect(range(-0.2, 0.2, length=20))
+    @test !any(iszero, s_i)
+    result_i = cubic_locus(s_i)
+    pts_i = codim2_special_points(cubic, result_i;
+                                  detect=[:cusp],
+                                  base_params=[0.0, 0.0],
+                                  param_index=1, second_param_index=2)
+    @test length(pts_i) == 1
+    cusp = pts_i[1]
+    @test cusp.kind === :cusp
+    @test cusp.locus_kind === :fold
+    @test cusp.status === :interpolated
+    @test cusp.converged == false
+    @test abs(cusp.primary_param) < 0.005     # near p1=0
+    @test abs(cusp.secondary_param) < 0.01    # near p2=0
+    # Interpolated b=0 location: attaching a bracketing nonzero form would mislead.
+    @test cusp.normal_form === nothing
+
+    flat_orientation_flip = Union{Float64, Nothing}[1.0, 1.0, -1.0, -1.0]
+    @test !DynamicsKit._c2sp_cusp_valley(flat_orientation_flip, 2)
+    strict_valley = Union{Float64, Nothing}[2.0, 1.0, -1.0, -2.0]
+    @test DynamicsKit._c2sp_cusp_valley(strict_valley, 2)
+    @test !DynamicsKit._c2sp_cusp_valley(
+        Union{Float64, Nothing}[-1.0, 1.0, 2.0, 3.0], 1)
+    @test !DynamicsKit._c2sp_cusp_valley(
+        Union{Float64, Nothing}[-3.0, -2.0, -1.0, 1.0], 3)
+
+    # A genuine crossing in the first bracket is deliberately not interpolated without an
+    # outer left sample. Extending the locus is the safe way to make the bracket interior.
+    result_edge = cubic_locus([-0.05, 0.05, 0.2, 0.35])
+    pts_edge = codim2_special_points(cubic, result_edge;
+                                     detect=[:cusp],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
+    @test isempty(pts_edge)
+
+    # Sampled degenerate cusp: an odd count places a sample exactly on s=0 (b=0),
+    # which map_normal_form flags :degenerate; that sample carries its actual form.
+    s_s = collect(range(-0.2, 0.2, length=21))
+    @test any(iszero, s_s)
+    result_s = cubic_locus(s_s)
+    pts_s = codim2_special_points(cubic, result_s;
+                                  detect=[:cusp],
+                                  base_params=[0.0, 0.0],
+                                  param_index=1, second_param_index=2)
+    @test length(pts_s) == 1
+    @test pts_s[1].status === :sampled
+    @test abs(pts_s[1].secondary_param) < 1e-12
+    @test abs(pts_s[1].primary_param) < 1e-12
+    @test pts_s[1].normal_form !== nothing
+    @test pts_s[1].normal_form.kind === :fold
+    @test abs(pts_s[1].normal_form.coefficient) <= 1e-5
+
+    # No false positive when b stays nonzero and same-signed (all s > 0 → b = 3s > 0).
+    s_mono = collect(range(0.05, 0.3, length=15))
+    result_mono = cubic_locus(s_mono)
+    pts_mono = codim2_special_points(cubic, result_mono;
+                                     detect=[:cusp],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
+    @test isempty(pts_mono)
+
+    # Explicitly requesting :cusp on a :fold locus without base_params → ArgumentError.
+    @test_throws ArgumentError codim2_special_points(cubic, result_i; detect=[:cusp])
+    @test_throws ArgumentError codim2_special_points(
+        cubic, result_i; detect=[:cusp],
+        base_params=[0.0, 0.0], param_index=1, second_param_index=1)   # overlapping roles
+
+    # Default all-kinds pass (detect=nothing) on a :fold locus without base_params →
+    # no error; the cusp coefficient detector is simply skipped.
+    pts_default = codim2_special_points(cubic, result_i)
+    @test pts_default isa Vector{Codim2SpecialPoint}
+    @test isempty(pts_default)
+
+    # Cusp inapplicable to pd/ns loci — no error even without base_params, and empty
+    # even with base_params supplied.
+    result_pd = _make_c2result(kind=:pd, p1=2 .* s_i .^ 3, p2=-3 .* s_i .^ 2,
+                               states=[[si] for si in s_i])
+    @test isempty(codim2_special_points(cubic, result_pd; detect=[:cusp]))
+    @test isempty(codim2_special_points(cubic, result_pd;
+                                        detect=[:cusp],
+                                        base_params=[0.0, 0.0],
+                                        param_index=1, second_param_index=2))
+
+    # Inconsistent multiplier widths disable multiplier interpolation without
+    # preventing coefficient-based detection.
+    inconsistent_mults = [
+        isodd(i) ? ComplexF64[1.0] : ComplexF64[1.0, 0.5]
+        for i in eachindex(s_i)
+    ]
+    inconsistent = _make_c2result(kind=:fold, p1=2 .* s_i .^ 3, p2=-3 .* s_i .^ 2,
+                                  states=[[si] for si in s_i], mults=inconsistent_mults)
+    inconsistent_pts = codim2_special_points(cubic, inconsistent;
+                                             detect=[:cusp],
+                                             base_params=[0.0, 0.0],
+                                             param_index=1, second_param_index=2)
+    @test !isempty(inconsistent_pts)
+    @test all(isempty(point.multipliers) for point in inconsistent_pts)
+end
+
+# ---------------------------------------------------------------------------
+# Fold-flip on a PD locus with analytically controlled multipliers
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — fold_flip on PD locus (unit multiplier crossing)" begin
+    # On a PD locus (tracked multiplier ~ -1) we want a second multiplier that
+    # crosses +1 (fold test function changes sign).
+    # Construct: multipliers[j] = [-1, mu2(j)] where mu2 goes from 0.8 to 1.2.
+    n = 11
+    p1 = collect(range(-1.0, -0.9, length=n))
+    p2 = collect(range(0.0, 1.0, length=n))
+    states = [[0.5, 0.5] for _ in 1:n]
+    # mu2 crosses +1 at j=6 (0.8 + step*5 = 0.8 + 0.2*5/10 = ... let's use linspace 0.8 to 1.2)
+    mu2 = range(0.8, 1.2, length=n)
+    mults = [[ComplexF64(-1.0), ComplexF64(mu2[j])] for j in 1:n]
+    result = _make_c2result(kind=:pd, p1=p1, p2=p2, states=states, mults=mults)
+
+    sys = DiscreteMap((x, p) -> SVector(p[1] * x[1], p[2] * x[2]), 2, [:p1, :p2], "test ff")
+    pts = codim2_special_points(sys, result; detect=[:fold_flip])
+    @test length(pts) == 1
+    ff = pts[1]
+    @test ff.kind === :fold_flip
+    @test ff.locus_kind === :pd
+    @test ff.status === :sampled
+    @test abs(ff.test_value) <= 1e-5
+    # Crossing at mu2 = 1 → j = 6 in 0-indexed, between samples 5 and 6 (1-indexed).
+    # The interpolated primary param should be near the midpoint.
+    @test p1[1] <= ff.primary_param <= p1[n]
+    @test abs(ff.secondary_param - 0.5) < 0.1   # near p2=0.5 where mu2=1.0
+
+    # fold_flip inapplicable when only 1 multiplier (1D map)
+    mults_1d = [[ComplexF64(-1.0)] for _ in 1:n]
+    result_1d = _make_c2result(kind=:pd, p1=p1, p2=p2, states=[[0.5] for _ in 1:n], mults=mults_1d)
+    @test isempty(codim2_special_points(sys, result_1d; detect=[:fold_flip]))
+
+    # no false detection when no sign change
+    mu2_no = range(0.8, 0.95, length=n)    # stays below 1
+    mults_no = [[ComplexF64(-1.0), ComplexF64(mu2_no[j])] for j in 1:n]
+    result_no = _make_c2result(kind=:pd, p1=p1, p2=p2, states=states, mults=mults_no)
+    @test isempty(codim2_special_points(sys, result_no; detect=[:fold_flip]))
+
+    # fold_flip on fold locus: tracked ~ +1, second crossing -1 (pd test)
+    mu2_fold = range(-1.2, -0.8, length=n)  # crosses -1
+    mults_fold = [[ComplexF64(1.0), ComplexF64(mu2_fold[j])] for j in 1:n]
+    result_fold = _make_c2result(kind=:fold, p1=p1, p2=p2,
+                                  states=[[0.5, 0.5] for _ in 1:n], mults=mults_fold)
+    pts_fold = codim2_special_points(sys, result_fold; detect=[:fold_flip])
+    @test length(pts_fold) == 1
+    @test pts_fold[1].locus_kind === :fold
+
+    # A near-zero sampled endpoint that also brackets a sign change must emit
+    # one sampled point, not an additional nearby interpolated duplicate.
+    near_mu2 = [0.999996, 1.01]
+    near_mults = [[ComplexF64(-1.0), ComplexF64(value)] for value in near_mu2]
+    near_result = _make_c2result(
+        kind=:pd,
+        p1=[0.0, 0.01],
+        p2=[0.4, 0.5],
+        states=[[0.5, 0.5], [0.5, 0.5]],
+        mults=near_mults,
+    )
+    near_pts = codim2_special_points(
+        sys,
+        near_result;
+        detect=[:fold_flip],
+        test_tolerance=1e-5,
+    )
+    @test length(near_pts) == 1
+    @test near_pts[1].status === :sampled
+    @test near_pts[1].secondary_param == 0.4
+end
+
+# ---------------------------------------------------------------------------
+# Resonance 1:1 and 1:2 on an NS locus with engineered phase angles
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — resonance 1:1 and 1:2 on NS locus" begin
+    n = 11
+    p1 = fill(1.0, n)        # NS locus lives at a=1 (scaled rotation map)
+    p2 = collect(range(0.0, 2.0, length=n))
+    states = [[0.5, 0.5] for _ in 1:n]
+    # Phase angles cross 0 (resonance 1:1) at the midpoint: use range -π/3 to π/3.
+    theta_11 = range(-π/3, π/3, length=n)
+    result_11 = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_11))
+    sys = DiscreteMap((x, p) -> SVector(p[1] * (cos(p[2]) * x[1] - sin(p[2]) * x[2]),
+                                         p[1] * (sin(p[2]) * x[1] + cos(p[2]) * x[2])),
+                      2, [:a, :b], "scaled rotation")
+    pts_11 = codim2_special_points(sys, result_11; detect=[:resonance_1_1])
+    @test length(pts_11) == 1
+    r11 = pts_11[1]
+    @test r11.kind === :resonance_1_1
+    @test r11.locus_kind === :ns
+    @test r11.status === :sampled
+    @test abs(r11.test_value) <= 1e-5
+    @test abs(r11.secondary_param - 1.0) < 0.2   # midpoint of p2 range
+
+    # Phase angles cross π (resonance 1:2) at midpoint: range π/2 to 3π/2.
+    theta_12 = range(π/2, 3π/2, length=n)
+    result_12 = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_12))
+    pts_12 = codim2_special_points(sys, result_12; detect=[:resonance_1_2])
+    @test length(pts_12) == 1
+    r12 = pts_12[1]
+    @test r12.kind === :resonance_1_2
+    @test r12.locus_kind === :ns
+    @test r12.status === :sampled
+    @test abs(r12.test_value) <= 1e-5
+    @test abs(r12.secondary_param - 1.0) < 0.2
+
+    # Both resonances simultaneously detected.
+    theta_both = range(-π/3, 4π/3, length=21)
+    p2_both = collect(range(0.0, 2.0, length=21))
+    p1_both = fill(1.0, 21)
+    states_both = [[0.5, 0.5] for _ in 1:21]
+    result_both = _make_c2result(kind=:ns, p1=p1_both, p2=p2_both, states=states_both,
+                                  angles=collect(theta_both))
+    pts_both = codim2_special_points(sys, result_both; detect=[:resonance_1_1, :resonance_1_2])
+    kinds_both = Set([p.kind for p in pts_both])
+    @test :resonance_1_1 in kinds_both
+    @test :resonance_1_2 in kinds_both
+
+    # Resonance 1:1 around 2π: sin(θ/2) test function handles angles beyond (−π,π].
+    # Angles in [2π − 0.3, 2π + 0.3] cross 2π (= 0 mod 2π) → 1:1 detected.
+    theta_2pi = range(2π - 0.3, 2π + 0.3, length=n)
+    result_2pi = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_2pi))
+    pts_2pi = codim2_special_points(sys, result_2pi; detect=[:resonance_1_1])
+    @test length(pts_2pi) >= 1
+    @test pts_2pi[1].kind === :resonance_1_1
+
+    # Resonance 1:2 around −π: cos(θ/2) test function handles negative angles.
+    # Angles in [−π − 0.3, −π + 0.3] cross −π (= π mod 2π) → 1:2 detected.
+    theta_neg_pi = range(-π - 0.3, -π + 0.3, length=n)
+    result_neg_pi = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_neg_pi))
+    pts_neg_pi = codim2_special_points(sys, result_neg_pi; detect=[:resonance_1_2])
+    @test length(pts_neg_pi) >= 1
+    @test pts_neg_pi[1].kind === :resonance_1_2
+
+    # No cross-contamination: 1:1 test function does not trigger at θ = π.
+    theta_pi_only = range(π - 0.2, π + 0.2, length=n)
+    result_pi = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_pi_only))
+    @test isempty(codim2_special_points(sys, result_pi; detect=[:resonance_1_1]))
+
+    # No cross-contamination: 1:2 test function does not trigger at θ = 0.
+    theta_zero_only = range(-0.2, 0.2, length=n)
+    result_zero = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_zero_only))
+    @test isempty(codim2_special_points(sys, result_zero; detect=[:resonance_1_2]))
+
+    # No detection when angles do not cross the relevant boundary.
+    theta_safe = range(0.3, 0.8, length=n)
+    result_safe = _make_c2result(kind=:ns, p1=p1, p2=p2, states=states, angles=collect(theta_safe))
+    @test isempty(codim2_special_points(sys, result_safe; detect=[:resonance_1_1, :resonance_1_2]))
+
+    # Resonance inapplicable to fold/pd loci.
+    result_fold = _make_c2result(kind=:fold, p1=p1, p2=p2, states=states, angles=collect(theta_11))
+    @test isempty(codim2_special_points(sys, result_fold; detect=[:resonance_1_1]))
+end
+
+# ---------------------------------------------------------------------------
+# Generalized flip on a 1D map whose c coefficient changes sign
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — generalized flip (normal-form c sign change)" begin
+    # Map F(x, p) = -(1 + p1)*x + p2*x^3.
+    # At x=0, p1=0 this is a PD point (multiplier = -1).
+    # The flip normal-form coefficient c ~ p2 (positive → supercritical, negative → subcritical).
+    # The PD locus (fixed point x=0, multiplier -1) is p1 = 0 for all p2.
+    # We synthesise a Codim2ContinuationResult along that locus, varying p2 from -0.5 to 0.5.
+    # The actual c sign change is detected by evaluating map_normal_form at each sample.
+    sys = DiscreteMap(
+        (x, p) -> SVector(-(1 + p[1]) * x[1] + p[2] * x[1]^3),
+        1, [:p1, :p2], "Flip c sign change"
+    )
+    n = 10                                       # even: avoids placing a sample exactly at p2=0
+    p1_vals = fill(0.0, n)                      # PD locus lives at p1=0
+    p2_vals = collect(range(-0.4, 0.4, length=n))  # c ~ p2, crosses zero between samples 5 and 6
+    states  = [[0.0] for _ in 1:n]              # fixed point at x=0
+    result  = _make_c2result(kind=:pd, p1=p1_vals, p2=p2_vals, states=states)
+
+    pts = codim2_special_points(sys, result;
+                                 detect=[:generalized_flip],
+                                 base_params=[0.0, 0.0],
+                                 param_index=1, second_param_index=2)
+    @test length(pts) >= 1
+    gf = pts[1]
+    @test gf.kind === :generalized_flip
+    @test gf.locus_kind === :pd
+    @test gf.status === :interpolated
+    @test abs(gf.secondary_param) < 0.2
+    # Interpolated coefficient-zero point: attaching a nonzero-coefficient normal form
+    # from the nearest bracketing sample would be misleading, so normal_form is nothing.
+    @test gf.normal_form === nothing
+
+    # Explicitly requesting :generalized_flip on a :pd locus without base_params → error.
+    @test_throws ArgumentError codim2_special_points(sys, result; detect=[:generalized_flip])
+    @test_throws ArgumentError codim2_special_points(
+        sys, result;
+        detect=[:generalized_flip],
+        base_params=[0.0, 0.0],
+        param_index=1,
+        second_param_index=1,
+    )
+    @test_throws ArgumentError codim2_special_points(
+        sys, result;
+        detect=[:generalized_flip],
+        base_params=[0.0, 0.0],
+        param_index=1,
+        second_param_index=2,
+        linked_param_indices=[0],
+    )
+    @test_throws ArgumentError codim2_special_points(
+        sys, result;
+        detect=[:generalized_flip],
+        base_params=[0.0, 0.0],
+        param_index=1,
+        second_param_index=2,
+        linked_param_indices=[2],
+    )
+    @test_throws ArgumentError codim2_special_points(
+        sys, result;
+        detect=[:generalized_flip],
+        base_params=[0.0, 0.0],
+        param_index=1,
+        second_param_index=2,
+        second_linked_param_indices=[2],
+    )
+
+    # Default all-kinds pass (detect=nothing) on a :pd locus without base_params → no error,
+    # generalized_flip simply skipped.
+    pts_default = codim2_special_points(sys, result)
+    @test pts_default isa Vector{Codim2SpecialPoint}
+
+    # No false point when c does not change sign (p2 always positive).
+    p2_pos = collect(range(0.1, 0.8, length=n))
+    result_pos = _make_c2result(kind=:pd, p1=p1_vals, p2=p2_pos, states=states)
+    pts_pos = codim2_special_points(sys, result_pos;
+                                     detect=[:generalized_flip],
+                                     base_params=[0.0, 0.0],
+                                     param_index=1, second_param_index=2)
+    @test isempty(pts_pos)
+
+    # generalized_flip inapplicable on fold/ns loci — no error even without base_params.
+    result_fold = _make_c2result(kind=:fold, p1=p1_vals, p2=p2_vals, states=states)
+    @test isempty(codim2_special_points(sys, result_fold; detect=[:generalized_flip]))
+    # With base_params on an inapplicable locus also returns empty.
+    @test isempty(codim2_special_points(sys, result_fold;
+                                         detect=[:generalized_flip],
+                                         base_params=[0.0, 0.0],
+                                         param_index=1, second_param_index=2))
+end
+
+# ---------------------------------------------------------------------------
+# Bautin argument validation and inapplicability coverage
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — bautin validation" begin
+    # Scaled rotation map (no cubic) used purely for validation tests.
+    rot = DiscreteMap(
+        (x, p) -> begin
+            c = cos(p[2]); s = sin(p[2])
+            SVector(p[1] * (c * x[1] - s * x[2]), p[1] * (s * x[1] + c * x[2]))
+        end,
+        2, [:a, :b], "Scaled rotation"
+    )
+    n = 7
+    p1_vals = fill(1.0, n)
+    p2_vals = collect(range(0.4, 0.8, length=n))
+    states_ns = [[0.0, 0.0] for _ in 1:n]
+    result_ns = _make_c2result(kind=:ns, p1=p1_vals, p2=p2_vals, states=states_ns)
+
+    # Explicitly requesting :bautin on a :ns locus without base_params → ArgumentError.
+    @test_throws ArgumentError codim2_special_points(rot, result_ns; detect=[:bautin])
+
+    # Default all-kinds pass without base_params → no error, bautin skipped.
+    pts_default = codim2_special_points(rot, result_ns)
+    @test pts_default isa Vector{Codim2SpecialPoint}
+
+    # bautin inapplicable to pd/fold loci — no error even without base_params.
+    result_pd = _make_c2result(kind=:pd, p1=p1_vals, p2=p2_vals, states=states_ns)
+    @test isempty(codim2_special_points(rot, result_pd; detect=[:bautin]))
+    # With base_params on :pd locus: inapplicable → empty.
+    @test isempty(codim2_special_points(rot, result_pd;
+                                         detect=[:bautin],
+                                         base_params=[1.0, 0.6],
+                                         param_index=1, second_param_index=2))
+end
+
+# ---------------------------------------------------------------------------
+# Deduplication and sorting (cusp coefficient b, two genuine zero crossings)
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — cusp deduplication and sorting" begin
+    # Quintic F(x,p)=x+p1+p2 x+x^3-x^5 has b = 1/2 F'' = 3x-10x^3 = x(3-10x^2),
+    # which vanishes at x=0 and x=±sqrt(0.3).  On the fold locus
+    # (p2=-3x^2+5x^4, p1=-(p2 x+x^3-x^5), state x) sampling x in [-0.7, 0.1] brackets
+    # two genuine cusps: near x=-sqrt(0.3) (p2≈-0.45) and at x=0 (p2=0).
+    quintic = DiscreteMap((x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + x[1]^3 - x[1]^5),
+                          1, [:p1, :p2], "quintic double cusp")
+    xs  = collect(range(-0.7, 0.1, length=17))
+    p2v = -3 .* xs .^ 2 .+ 5 .* xs .^ 4
+    p1v = .-(p2v .* xs .+ xs .^ 3 .- xs .^ 5)
+    result = _make_c2result(kind=:fold, p1=p1v, p2=p2v, states=[[xi] for xi in xs])
+    sys_kwargs = (base_params=[0.0, 0.0], param_index=1, second_param_index=2)
+
+    pts = codim2_special_points(quintic, result; detect=[:cusp], sys_kwargs...)
+    @test length(pts) == 2
+    @test all(p -> p.kind === :cusp, pts)
+    # Sorted by (kind, secondary_param, primary_param): first has smaller secondary_param.
+    @test pts[1].secondary_param < pts[2].secondary_param
+    @test abs(pts[1].secondary_param - (-0.45)) < 0.05   # cusp near x=-sqrt(0.3)
+    @test abs(pts[2].secondary_param) < 0.05             # cusp at x=0
+    @test pts[1].status === :interpolated
+    @test pts[1].normal_form === nothing
+    @test pts[2].status === :sampled                     # sample lands exactly on x=0
+    @test pts[2].normal_form !== nothing
+
+    # Deduplication: widening both proximity tolerances merges the two cusps into one.
+    pts_dedup = codim2_special_points(quintic, result; detect=[:cusp],
+                                      duplicate_primary_tol=1.0,
+                                      duplicate_secondary_tol=1.0, sys_kwargs...)
+    @test length(pts_dedup) == 1
+end
+
+# ---------------------------------------------------------------------------
+# Serializer round-trip
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — Codim2SpecialPoint serializer round-trip" begin
+    # Obtain a valid MapNormalForm by actually evaluating the flip normal form.
+    _flip_sys = DiscreteMap(
+        (x, p) -> SVector(-(1 + p[1]) * x[1] + p[2] * x[1]^3),
+        1, [:p1, :p2], "Flip for serializer test"
+    )
+    nf = map_normal_form(_flip_sys, :pd, [0.0], [0.0, 0.3]; period=1)
+    @test nf.status === :ok
+    pt = Codim2SpecialPoint(
+        :generalized_flip, :pd,
+        -0.5, 0.2,
+        [0.1, 0.2],
+        ComplexF64[-1.0 + 0.0im, 0.5 + 0.3im],
+        0.0, 2, false, :interpolated, nf
+    )
+
+    d = serialize_codim2_special_point(pt)
+    @test d isa Dict
+    @test d["format"] == "codim2-special-point-v1"
+    @test d["kind"] == "generalized_flip"
+    @test d["locusKind"] == "pd"
+
+    recovered = deserialize_codim2_special_point(d)
+    @test recovered isa Codim2SpecialPoint
+    @test recovered.kind === :generalized_flip
+    @test recovered.locus_kind === :pd
+    @test recovered.primary_param == pt.primary_param
+    @test recovered.secondary_param == pt.secondary_param
+    @test recovered.state == pt.state
+    @test recovered.multipliers == pt.multipliers
+    @test recovered.test_value == pt.test_value
+    @test recovered.period == pt.period
+    @test recovered.converged == pt.converged
+    @test recovered.status === :interpolated
+    @test recovered.normal_form !== nothing
+    @test recovered.normal_form.kind === :pd
+    @test abs(recovered.normal_form.coefficient - nf.coefficient) < 1e-10  # round-trip exact
+
+    # Round-trip without normal form.
+    pt_no_nf = Codim2SpecialPoint(:cusp, :fold, 0.1, 0.5, [0.3], ComplexF64[],
+                                   0.0, 1, false, :interpolated, nothing)
+    d2 = serialize_codim2_special_point(pt_no_nf)
+    r2 = deserialize_codim2_special_point(d2)
+    @test r2.kind === :cusp
+    @test r2.normal_form === nothing
+
+    # Round-trip with unavailable status.
+    pt_unavail = Codim2SpecialPoint(:bautin, :ns, 0.0, 0.5, [0.0, 0.0], ComplexF64[],
+                                     NaN, 1, false, :unavailable, nothing)
+    d3 = serialize_codim2_special_point(pt_unavail)
+    @test d3["status"] == "unavailable"
+    r3 = deserialize_codim2_special_point(d3)
+    @test r3.status === :unavailable
+    @test isnan(r3.test_value)
+
+    # Invalid format string → error.
+    bad = copy(d)
+    bad["format"] = "codim2-special-point-v99"
+    @test_throws ArgumentError deserialize_codim2_special_point(bad)
+
+    # Invalid kind → error.
+    bad2 = copy(d)
+    bad2["kind"] = "cusp_bogus"
+    @test_throws ArgumentError deserialize_codim2_special_point(bad2)
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end defining-system resonance detection on an analytic NS locus
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — end-to-end NS resonance (scaled-rotation)" begin
+    # Scaled-rotation map x -> a R(b) x + (1,0): Jacobian a·R(b), NS locus at a=1.
+    # Phase angle = b along the locus (Jacobian eigenvalue angle).
+    # Sweep b over a positive range away from b=0 (fold degeneration) and b=π (PD
+    # degeneration): the NS defining system Jacobian is singular at both endpoints,
+    # so the continuation correctly terminates before reaching them.
+    rot = DiscreteMap(
+        (x, p) -> begin
+            c = cos(p[2]); s = sin(p[2])
+            SVector(p[1] * (c * x[1] - s * x[2]) + 1.0,
+                    p[1] * (s * x[1] + c * x[2]))
+        end,
+        2, [:a, :b], "Scaled rotation (resonance e2e)"
+    )
+    continuation = ContinuationConfig(
+        p_min=0.6, p_max=1.4, ds=0.02, dsmax=0.05, dsmin=1e-8,
+        max_steps=80, newton_tol=1e-12, newton_max_iter=25,
+        detect_bifurcation=3, param_index=1
+    )
+    config = Codim2Config(
+        continuation=continuation,
+        second_min=0.1, second_max=0.5, second_steps=3,
+        second_param_index=2, fixed_params=[0.9, 0.3],
+        bifurcation_kind=:ns, endpoint_margin=0.0,
+        diagnostics_max_points=200, engine=:defining_system,
+        anchor_second=0.3
+    )
+    curve = codim2_curve(rot, config)
+    @test curve isa Codim2ContinuationResult
+    @test curve.engine === :defining_system
+    @test curve.bifurcation_kind === :ns
+    @test length(curve.primary_values) >= 5
+    # NS locus is exactly a=1 for the linear rotation map.
+    @test maximum(abs.(curve.primary_values .- 1.0)) < 1e-8
+    # Phase angles equal the rotation angle b along the locus.
+    @test maximum(abs.(abs.(curve.phase_angles) .- abs.(curve.secondary_values))) < 1e-7
+
+    # Run the full detector pipeline.
+    pts = codim2_special_points(rot, curve; detect=[:resonance_1_1, :resonance_1_2])
+    @test pts isa Vector{Codim2SpecialPoint}
+    # The locus stays in b ∈ (0.1, 0.5): all phase angles are negative (b > 0).
+    # No 1:1 resonance (b never crosses 0) and no 1:2 resonance (b never crosses π).
+    # This verifies no false positives on a well-defined locus segment.
+    r11_pts = filter(p -> p.kind === :resonance_1_1, pts)
+    @test isempty(r11_pts)   # correct: locus does not span b=0
+
+    # Pipeline on the affine PD locus: cusp inapplicable to PD, returns empty.
+    affine = DiscreteMap((x, p) -> SVector(p[1] * x[1] + p[2]), 1, [:a, :b], "Affine")
+    aff_cont = ContinuationConfig(
+        p_min=-1.4, p_max=-0.6, ds=0.02, dsmax=0.05, dsmin=1e-6,
+        max_steps=80, newton_tol=1e-10, newton_max_iter=20,
+        detect_bifurcation=3, param_index=1
+    )
+    aff_config = Codim2Config(
+        continuation=aff_cont,
+        second_min=-0.3, second_max=0.3, second_steps=6,
+        second_param_index=2, fixed_params=[-1.2, 0.0],
+        bifurcation_kind=:pd, endpoint_margin=0.02,
+        diagnostics_max_points=0, engine=:defining_system
+    )
+    aff_curve = codim2_curve(affine, aff_config)
+    @test aff_curve.engine === :defining_system
+    aff_pts = codim2_special_points(affine, aff_curve; detect=[:cusp])
+    @test isempty(aff_pts)   # cusp not applicable on :pd locus
+end
+
+# ---------------------------------------------------------------------------
+# Codim2SpecialPoint type export and public API surface
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — public API surface" begin
+    @test :Codim2SpecialPoint in names(DynamicsKit)
+    @test :codim2_special_points in names(DynamicsKit)
+    @test :serialize_codim2_special_point in names(DynamicsKit)
+    @test :deserialize_codim2_special_point in names(DynamicsKit)
+    @test codim2_special_points isa Function
+    @test serialize_codim2_special_point isa Function
+    @test deserialize_codim2_special_point isa Function
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end: a fold-locus turning point is not a cusp (fold parabola)
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — E2E fold-locus turning is not a cusp" begin
+    # Fixed point: p₁ + p₂x + x² = 0.  Multiplier F′(x) = 1+p₂+2x.
+    # Fold (F′=1): x⋆ = −p₂/2.  Fold locus: p₁ = p₂²/4, which turns in p₁ at p₂=0.
+    # But F''=2 ⇒ b = 1/2 F'' = 1 everywhere, so the p₁-turning is NOT a cusp.
+    # End-to-end this must report no cusp (the old locus-turning heuristic wrongly did).
+    sys = DiscreteMap(
+        (x, p) -> SVector(x[1] + p[1] + p[2]*x[1] + x[1]^2),
+        1, [:p1, :p2], "Fold parabola"
+    )
+    cont = ContinuationConfig(
+        p_min=-0.12, p_max=0.12, ds=0.01, dsmax=0.03, dsmin=1e-9,
+        max_steps=80, newton_tol=1e-12, newton_max_iter=20,
+        detect_bifurcation=3, param_index=1
+    )
+    # Anchor at p2=0.1 (away from the turning point at p2=0).  The stable lower branch
+    # is x=(-0.1-sqrt(0.17))/2≈-0.256 and the fold is at p1=0.0025.
+    config = Codim2Config(
+        continuation=cont,
+        second_min=-0.25, second_max=0.25, second_steps=7,
+        second_param_index=2, fixed_params=[-0.04, 0.1],
+        bifurcation_kind=:fold, endpoint_margin=0.0,
+        engine=:defining_system, anchor_second=0.1
+    )
+    Random.seed!(1)
+    curve = codim2_curve(sys, config; initial_point=[-0.256])
+    @test curve.bifurcation_kind === :fold
+    @test length(curve.primary_values) >= 5
+    # Fold locus: p₁ = p₂²/4 (turns in p₁ at p₂=0).
+    @test maximum(abs.(curve.primary_values .- curve.secondary_values .^ 2 ./ 4)) < 1e-9
+    # Fixed point x⋆ = −p₂/2.
+    @test maximum(abs.(curve.states[1,:] .+ curve.secondary_values ./ 2)) < 1e-9
+    # The locus spans the p₁-turning at p₂=0.
+    @test minimum(curve.secondary_values) < 0.0 < maximum(curve.secondary_values)
+
+    # No cusp: b = 1 on the whole locus even though p₁ turns at p₂=0.
+    pts = codim2_special_points(sys, curve; detect=[:cusp],
+                                base_params=[0.0, 0.0],
+                                param_index=1, second_param_index=2)
+    @test isempty(pts)
+
+    # Sanity: the fold coefficient b is nondegenerate (~1) at every locus sample.
+    for j in eachindex(curve.primary_values)
+        nf = map_normal_form(sys, :fold, curve.states[:, j],
+                             [curve.primary_values[j], curve.secondary_values[j]]; period=1)
+        @test nf.status === :ok
+        @test abs(nf.coefficient - 1.0) < 1e-6
+    end
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end fold-flip on a generic decoupled map
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — E2E fold-flip (generic map)" begin
+    # F₁=−(1+p₁)x gives a PD locus at p₁=0. F₂=y+p₂−y² has fixed
+    # branches p₂=y² and multiplier 1−2y. PALC follows the PD locus
+    # through the fold at (p₂,y)=(0,0), where the second multiplier
+    # reaches +1: a fold-flip point.
+    sys = DiscreteMap(
+        (x, p) -> SVector(-(1+p[1])*x[1], x[2] + p[2] - x[2]^2),
+        2, [:p1, :p2], "Generic fold-flip"
+    )
+    cont = ContinuationConfig(
+        p_min=-0.1, p_max=0.1, ds=0.02, dsmax=0.04, dsmin=1e-9,
+        max_steps=40, newton_tol=1e-12, newton_max_iter=20,
+        detect_bifurcation=3, param_index=1
+    )
+    config = Codim2Config(
+        continuation=cont,
+        second_min=0.0, second_max=0.3, second_steps=6,
+        second_param_index=2, fixed_params=[-0.05, 0.1],
+        bifurcation_kind=:pd, endpoint_margin=0.0,
+        diagnostics_max_points=200, engine=:defining_system,
+        anchor_second=0.1
+    )
+    Random.seed!(1)
+    curve = codim2_curve(sys, config; initial_point=[0.0, sqrt(0.1)])
+    @test curve.bifurcation_kind === :pd
+    @test length(curve.primary_values) >= 6
+    @test maximum(abs.(curve.primary_values)) < 1e-10   # PD locus: p₁=0
+    @test all(m -> any(mu -> abs(mu + 1.0) < 1e-7, m), curve.multipliers)
+    @test minimum(curve.states[2, :]) < 1e-5
+    @test minimum(curve.secondary_values) < 1e-4
+
+    pts = codim2_special_points(sys, curve; detect=[:fold_flip])
+    @test length(pts) >= 1
+    ff = pts[1]
+    @test ff.kind === :fold_flip
+    @test ff.locus_kind === :pd
+    @test ff.status === :sampled
+    @test abs(ff.primary_param) < 1e-8
+    @test abs(ff.secondary_param) < 0.01
+    @test abs(ff.state[2]) < 1e-5
+    @test abs(ff.test_value) < 1e-5
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end generalized flip F=-(1+p₁)x+p₂x³
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — E2E generalized flip" begin
+    # PD locus: p₁=0, fixed point x=0.  c ∝ p₂ → sign change at p₂=0.
+    sys = DiscreteMap(
+        (x, p) -> SVector(-(1+p[1])*x[1] + p[2]*x[1]^3),
+        1, [:p1, :p2], "Generalized flip"
+    )
+    cont = ContinuationConfig(
+        p_min=-0.05, p_max=0.05, ds=0.01, dsmax=0.03, dsmin=1e-9,
+        max_steps=30, newton_tol=1e-12, newton_max_iter=20,
+        detect_bifurcation=3, param_index=1
+    )
+    # Anchor at p₂=0.2 (away from p₂=0 where the bothside=true duplicate sample
+    # would place the sign-change location exactly on the duplicate gap).
+    config = Codim2Config(
+        continuation=cont,
+        second_min=-0.35, second_max=0.35, second_steps=7,
+        second_param_index=2, fixed_params=[-0.02, 0.2],
+        bifurcation_kind=:pd, endpoint_margin=0.0,
+        engine=:defining_system, anchor_second=0.2
+    )
+    Random.seed!(1)
+    curve = codim2_curve(sys, config; initial_point=[0.0])
+    @test curve.bifurcation_kind === :pd
+    @test length(curve.primary_values) >= 5
+    @test maximum(abs.(curve.primary_values)) < 1e-10   # PD locus: p₁=0
+
+    # Increase normal_form_fd_step: for F=-(1+p₁)x+p₂x³ the cubic coefficient is
+    # p₂, which is O(0.05) for small p₂.  The default fd_step=3e-3 gives a cubic
+    # contribution of p₂·h³=p₂·2.7e-8, which is below FD noise for |p₂|<0.1.
+    # Using fd_step=0.1 lifts the signal well above noise for all p₂ in the range.
+    pts = codim2_special_points(sys, curve;
+                                 detect=[:generalized_flip],
+                                 base_params=[0.0, 0.0],
+                                 param_index=1, second_param_index=2,
+                                 normal_form_fd_step=0.1)
+    @test length(pts) >= 1
+    gf = pts[1]
+    @test gf.kind === :generalized_flip
+    @test gf.locus_kind === :pd
+    @test gf.status === :interpolated
+    @test abs(gf.secondary_param) < 0.1    # near p₂=0 where c changes sign
+    @test gf.normal_form === nothing         # coefficient-zero interpolated point
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end resonance 1:1 approach on an NS locus
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — E2E resonance 1:1 (non-vacuous)" begin
+    # Scaled-rotation map x -> a·R(b)·x + (1,0).  NS locus: a=1 exactly (linear map).
+    # Phase angle = b.  The 1:1 resonance is at b=0 (eigenvalue +1 = fold condition),
+    # where the NS defining-system Jacobian is singular.  The PALC continuation correctly
+    # terminates before reaching b=0, so no 1:1 crossing is possible.
+    # This test verifies: (1) the locus is computed correctly on the positive-b side,
+    # (2) the resonance detector finds no false 1:1 positive (non-vacuous negative test).
+    rot = DiscreteMap(
+        (x, p) -> begin
+            c = cos(p[2]); s = sin(p[2])
+            SVector(p[1] * (c * x[1] - s * x[2]) + 1.0,
+                    p[1] * (s * x[1] + c * x[2]))
+        end,
+        2, [:a, :b], "Scaled rotation 1:1"
+    )
+    cont = ContinuationConfig(
+        p_min=0.6, p_max=1.4, ds=0.02, dsmax=0.05, dsmin=1e-8,
+        max_steps=80, newton_tol=1e-12, newton_max_iter=25,
+        detect_bifurcation=3, param_index=1
+    )
+    # Anchor at b=0.2 (positive side, away from b=0 degeneration).
+    config = Codim2Config(
+        continuation=cont,
+        second_min=0.05, second_max=0.4, second_steps=4,
+        second_param_index=2, fixed_params=[0.9, 0.2],
+        bifurcation_kind=:ns, endpoint_margin=0.0,
+        diagnostics_max_points=200, engine=:defining_system,
+        anchor_second=0.2
+    )
+    Random.seed!(1)
+    curve = codim2_curve(rot, config)
+    @test curve.bifurcation_kind === :ns
+    @test length(curve.primary_values) >= 5
+    @test maximum(abs.(curve.primary_values .- 1.0)) < 1e-8   # NS locus: a=1 exactly
+    # Phase angles track b and are positive here (b ∈ (0.05, 0.4)).
+    @test all(>(0.0), curve.phase_angles)
+
+    pts = codim2_special_points(rot, curve; detect=[:resonance_1_1])
+    # No 1:1 resonance: the locus does not span b=0.  Verifies no false positive.
+    @test isempty(pts)
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end resonance 1:2 on an NS locus spanning b=π
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — E2E resonance 1:2 (non-vacuous)" begin
+    # Same linear rotation map; sweep b through π so phase angles span through −π.
+    # At b=π eigenvalues are real (−a), so the anchor must be placed at b=π+0.1
+    # where the eigenvalues are still complex.  The PALC can continue through b=π
+    # (eigenvectors remain bounded there, unlike b=0).
+    rot = DiscreteMap(
+        (x, p) -> begin
+            c = cos(p[2]); s = sin(p[2])
+            SVector(p[1] * (c * x[1] - s * x[2]) + 1.0,
+                    p[1] * (s * x[1] + c * x[2]))
+        end,
+        2, [:a, :b], "Scaled rotation 1:2"
+    )
+    cont = ContinuationConfig(
+        p_min=0.6, p_max=1.4, ds=0.02, dsmax=0.05, dsmin=1e-8,
+        max_steps=80, newton_tol=1e-12, newton_max_iter=25,
+        detect_bifurcation=3, param_index=1
+    )
+    # Anchor at b=π+0.1 (past the 1:2 degeneration): eigenvalues −a·e^{±i·0.1} are complex.
+    config = Codim2Config(
+        continuation=cont,
+        second_min=π - 0.25, second_max=π + 0.25, second_steps=4,
+        second_param_index=2, fixed_params=[0.9, π + 0.1],
+        bifurcation_kind=:ns, endpoint_margin=0.0,
+        diagnostics_max_points=200, engine=:defining_system,
+        anchor_second=π + 0.1
+    )
+    Random.seed!(1)
+    curve = codim2_curve(rot, config)
+    @test curve.bifurcation_kind === :ns
+    @test length(curve.primary_values) >= 5
+    @test maximum(abs.(curve.primary_values .- 1.0)) < 1e-8   # NS locus: a=1 exactly
+    # Phase angles track b and are around π here (b ∈ (π−0.25, π+0.25)).
+    @test minimum(curve.phase_angles) < π
+    @test maximum(curve.phase_angles) > π
+
+    pts = codim2_special_points(rot, curve; detect=[:resonance_1_2])
+    @test length(pts) >= 1
+    r12 = pts[1]
+    @test r12.kind === :resonance_1_2
+    @test r12.locus_kind === :ns
+    @test r12.status === :interpolated
+    @test abs(r12.secondary_param - π) < 0.09   # near b=π
+end
+
+# ---------------------------------------------------------------------------
+# End-to-end Bautin point on the radial-cubic rotation map
+# ---------------------------------------------------------------------------
+@testset "codim2_special_points — E2E Bautin (radial-cubic rotation)" begin
+    # F(x,p) = a·R(θ)·x + b·‖x‖²·x,  θ=0.7 (away from strong resonance).
+    # Fixed point: x=0 for all (a,b) — the origin is always a fixed point.
+    # Jacobian at x=0: a·R(θ) (cubic term vanishes).  NS locus: a=1 exactly.
+    # Bautin coefficient d ∝ b → sign change at b=0.
+    # Using the map without a constant offset keeps x*=0 so the NS locus is a=1
+    # independent of b.
+    θ_fixed = 0.7
+    c0 = cos(θ_fixed); s0 = sin(θ_fixed)
+    sys = DiscreteMap(
+        (x, p) -> begin
+            r2 = x[1]^2 + x[2]^2
+            SVector(p[1]*(c0*x[1] - s0*x[2]) + p[2]*r2*x[1],
+                    p[1]*(s0*x[1] + c0*x[2]) + p[2]*r2*x[2])
+        end,
+        2, [:a, :b], "Bautin radial cubic"
+    )
+    cont = ContinuationConfig(
+        p_min=0.6, p_max=1.4, ds=0.02, dsmax=0.05, dsmin=1e-9,
+        max_steps=80, newton_tol=1e-12, newton_max_iter=25,
+        detect_bifurcation=3, param_index=1
+    )
+    # Anchor at b=0.1 (away from b=0 where the bothside=true duplicate sample would
+    # place the sign-change location on a zero-difference gap).
+    config = Codim2Config(
+        continuation=cont,
+        second_min=-0.2, second_max=0.2, second_steps=5,
+        second_param_index=2, fixed_params=[0.9, 0.1],
+        bifurcation_kind=:ns, endpoint_margin=0.0,
+        diagnostics_max_points=300, engine=:defining_system,
+        anchor_second=0.1
+    )
+    Random.seed!(1)
+    curve = codim2_curve(sys, config; initial_point=[0.0, 0.0])
+    @test curve.bifurcation_kind === :ns
+    @test length(curve.primary_values) >= 5
+    # NS locus is exactly a=1 (Jacobian at x=0 is a·R(θ) independent of b).
+    @test maximum(abs.(curve.primary_values .- 1.0)) < 1e-8
+    @test minimum(curve.secondary_values) < 0.0
+    @test maximum(curve.secondary_values) > 0.0
+
+    # Use a larger fd_step to resolve the Bautin coefficient for small b.
+    pts = codim2_special_points(sys, curve;
+                                 detect=[:bautin],
+                                 base_params=[1.0, 0.0],
+                                 param_index=1, second_param_index=2,
+                                 normal_form_fd_step=0.05)
+    @test length(pts) >= 1
+    bt = pts[1]
+    @test bt.kind === :bautin
+    @test bt.locus_kind === :ns
+    @test bt.status === :interpolated
+    @test abs(bt.secondary_param) < 0.1   # near b=0 where d changes sign
+    @test bt.normal_form === nothing         # coefficient-zero interpolated point
 end

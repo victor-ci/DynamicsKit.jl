@@ -14,11 +14,12 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | Which attractor is reached from each initial condition? | Basins of attraction |
 | What happens across two parameters? | 2D bifurcation map |
 | Where does a continuation bifurcation boundary bend across two parameters? | Codimension-2 curve |
-| Where are the period-doubling / fold points on a map branch? | Map special points |
+| Where are fold / flip / Neimark-Sacker points and what is their local criticality? | Map special points + normal forms |
 | How does the largest Lyapunov exponent vary along one parameter? | Lyapunov diagram |
 | What is the full Lyapunov spectrum at one operating point? | Lyapunov spectrum |
 | What frequencies dominate an ODE regime? | Power spectrum |
 | What does the ODE trajectory look like in time/state space? | Phase portrait |
+| Which component parameter values produce robust chaos in a target band? | Chaos-source inverse design |
 | A branch/window needs more local detail. | Atlas preview/apply refinement or direct branch refinement |
 
 ## Brute-force bifurcation diagram
@@ -123,37 +124,184 @@ computed with the same variational machinery as the shooting branches — Bifurc
 collocation-Floquet eigenvalues are not used because their largest-magnitude entries are
 dominated by spurious discretization modes.
 
-## Map special points (period-doubling / fold)
+## Map special points and normal forms
 
 Function:
 
 ```julia
-map_special_points(sys, branch::BranchResult, base_params; detect=[:pd, :fold], kwargs...)
+map_special_points(sys, branch::BranchResult, base_params; detect=[:pd, :fold, :ns], kwargs...)
+map_normal_form(sys, kind, state, params; period=1, kwargs...)
 ```
 
-Locates period-doubling (`:pd`) and fold (`:fold`) special points on a continued map or
+Continuous-system coefficients use an adaptive centered-difference sequence (initial
+step `normal_form_fd_step=3e-3`) and are returned only when three successive steps agree
+in sign, classification, and scale. Unstable steps produce `status=:fd_step_unstable`
+with no coefficient. Simultaneous NS eigenpairs remain separate special points and
+produce `status=:multiple_critical_pairs` rather than a simple-NS coefficient.
+
+Locates period-doubling (`:pd`), fold (`:fold`), and Neimark-Sacker (`:ns`) special points on a continued map or
 Poincaré return-map branch. BifurcationKit assesses special points with the equilibrium
 convention `Re(λ) < 0` on the residual `F = Π^p(x) − x`; since a map multiplier is
 `μ = λ + 1`, a period-doubling (`μ → −1`) never crosses the imaginary axis and is **missed**
-(folds, `μ → +1`, are caught). This routine instead uses map-native test functions on the
+(folds, `μ → +1`, are caught). This routine instead uses test functions on the
 return-map multipliers,
 
 - fold: `∏ᵢ(μᵢ − 1) = det(J − I)`,
 - flip: `∏ᵢ(μᵢ + 1) = det(J + I)`,
+- Neimark-Sacker: `|μ_c| - 1` for a tracked non-real conjugate pair,
 
 whose sign changes mark a real multiplier crossing +1 or −1 (a complex-conjugate pair
-contributes a non-negative factor, so Neimark–Sacker crossings do not produce false
-positives). Each detected sign change is refined by bisection in the arclength fraction
+contributes a non-negative factor, so Neimark-Sacker crossings do not produce false
+fold/flip positives). Each detected sign change is refined by bisection in the arclength fraction
 between the two bracketing branch points, re-solving the fixed point at each trial (robust
 at folds, where the parameter is not monotonic).
 
 Each returned `MapSpecialPoint` carries `kind`, `param`, the fixed-point `state`, the
-`multipliers`, the `critical_multiplier` (nearest ∓1), the test value, and a `converged`
-flag. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match
+`multipliers`, the `critical_multiplier`, the test value, a `converged` flag, and an
+optional `MapNormalForm` attached by default. The normal form uses the standard
+Kuznetsov/MATCONT map convention and reports coefficient `b`, `c`, or `d` plus an
+explicit criticality/status. On the Hénon map the located period-1 flip (a = 0.3675) and fold (a = −0.1225) match
 their closed-form values; on the peak-current-mode boost converter the subharmonic
 period-doubling is recovered where BifurcationKit's own `.specialpoint` list has none.
 
-## Codimension-2 curves
+## Codim-2 organising points along loci
+
+Function:
+
+```julia
+codim2_special_points(sys, result::Codim2ContinuationResult; detect=(...), kwargs...)
+    -> Vector{Codim2SpecialPoint}
+```
+
+Runs a test-function pass over an existing `Codim2ContinuationResult` produced by
+`engine=:defining_system` to detect and locate the organising codimension-2 points.
+Returns a `Vector{Codim2SpecialPoint}` sorted by `(kind, secondary_param, primary_param)` and
+deduplicated within configurable proximity tolerances.
+
+Supported kinds and applicable loci:
+
+| Kind | Locus | Test function | Needs `base_params` |
+| --- | --- | --- | --- |
+| `:cusp` | `:fold` | Sign change / vanishing of fold normal-form coefficient `b` at locus samples | yes |
+| `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | yes |
+| `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | no (needs `curve_diagnostics`) |
+| `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | no |
+| `:resonance_1_2` | `:ns` | `cos(θ/2)` crossing zero (θ = π+2πk) | no |
+| `:bautin` | `:ns` | Sign change of NS normal-form coefficient `d` at locus samples | yes |
+
+Each `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`, `secondary_param`,
+`state`, `multipliers` (empty when `curve_diagnostics=false`), `test_value`, `period`,
+`converged`, `status` (`:interpolated`, `:sampled`, or `:unavailable`), and an optional
+`MapNormalForm`.
+
+Resonance test functions: `sin(θ/2)` (1:1) and `cos(θ/2)` (1:2) respect unwrapped angle
+periodicity, correctly detect crossings at ±2π and ±π, and do not produce cross-contamination
+between the two resonances.
+
+Cusp detection evaluates the fold normal-form coefficient `b = 1/2<p,B(q,q)>` at each locus
+sample (via `map_normal_form(:fold)`); a cusp is where `b` crosses/vanishes, not where the
+fold locus turns in a chosen parameter (turning is coordinate-dependent and routinely occurs
+with `b ≠ 0`).  `b`'s sign is orientation-dependent while `|b|` is not, so a sample with
+`|b| ≤ test_tolerance` is reported `:sampled` with its actual (degenerate) `MapNormalForm`,
+and an interpolated `b` sign change is accepted only when finite outer samples establish strict
+descent in `|b|` into both sides of the bracket — a conservative continuity guard against
+spurious eigenvector-orientation flips. Flat-magnitude sign flips are rejected. The first and last
+sample pairs are also rejected because one missing outer neighbour prevents establishing two-sided
+descent. A cusp in either edge bracket is detected only if a sampled value satisfies
+`|b| ≤ test_tolerance`; if a cusp is suspected near a locus endpoint, extend the continuation range
+so the sign-change bracket has outer neighbours.
+
+Conservative location: a sample whose scalar test magnitude is within `test_tolerance`
+(default `1e-5`) is returned with `status=:sampled`; otherwise sign-change brackets are
+returned with `status=:interpolated`. Coefficient-zero detections (`:cusp`, `:generalized_flip`,
+`:bautin`) evaluate the normal form at discrete locus samples, then interpolate the zero location.
+The resulting `Codim2SpecialPoint` carries `normal_form=nothing` — attaching the nearest
+bracketing sample's nonzero-coefficient form to the coefficient-zero point would be
+scientifically misleading.  All interpolated points carry `converged=false`.
+
+`ArgumentError` policy: if `:cusp`, `:generalized_flip`, or `:bautin` is **explicitly** listed in
+`detect` on an applicable locus (`:fold`, `:pd`, or `:ns` respectively) but `base_params` /
+parameter indices are absent, an `ArgumentError` is raised.  The default `detect=nothing` (all
+kinds) silently skips coefficient detectors that lack parameter information, so it works on any
+locus without requiring `base_params`.
+
+`DiscreteMap` systems are fully supported. `ContinuousODE` (Poincaré return-map) systems use
+the same path; if `map_normal_form` returns `status=:fd_step_unstable` for a sample that
+sample is silently skipped (conservative: only stable evaluations bracket a sign change).
+
+Full codim-2 normal-form classification is explicitly out of scope.
+
+Keyword arguments:
+- `detect`: tuple/vector of kinds to detect, or `nothing` for all six (default).
+- `base_params`, `param_index`, `second_param_index`: required for `:cusp`, `:generalized_flip`,
+  and `:bautin` when those kinds are explicitly listed (see `ArgumentError` policy above).
+- `linked_param_indices`, `second_linked_param_indices`: parameter slots linked to the primary / secondary axes.
+- `duplicate_primary_tol`, `duplicate_secondary_tol`: proximity thresholds for deduplication (default `1e-7`).
+- `test_tolerance`: absolute scalar-test threshold for accepting a sampled root (default `1e-5`).
+- `normal_form_fd_step`, `solver`, `reltol`, `abstol`, `tmax`, `min_crossing_time`: normal-form evaluation controls.
+
+## Border-collision classification (continuous piecewise-smooth maps)
+
+Functions:
+
+```julia
+border_collision_classify(A_L, A_R; switching_normal=nothing, period=1, transversality=nothing, kwargs...)
+border_collision_at_cycle(sys, cycle, params; period=nothing, param=NaN, events=switching_events(sys), kwargs...)
+border_collision_points(sys, branch::BranchResult, base_params; events=switching_events(sys), kwargs...)
+```
+
+Classifies a border-collision bifurcation of a **continuous** piecewise-smooth map — a
+fixed point or period-`q` cycle crossing a `SwitchingEvent` manifold — from the two
+one-sided ordered `q`-return Jacobians `A_L` (guard-negative branch at the colliding
+phase) and `A_R` (guard-positive branch), following the Feigin/Simpson/di Bernardo
+determinant-sign theory:
+
+- persistence vs nonsmooth fold: `sign(det(I − A_L)·det(I − A_R))` — `> 0` the cycle
+  persists across the collision, `< 0` a nonsmooth fold (the cycle exists on one side
+  only),
+- companion `2q`-cycle creation: `sign(det(I + A_L)·det(I + A_R))` — `< 0` a companion
+  `2q`-cycle is created.
+
+The four generic scenarios are reported explicitly as `:persistence`,
+`:nonsmooth_fold`, `:persistence_with_companion_cycle`, and
+`:nonsmooth_fold_with_companion_cycle`. LU-derived determinant signs are the authoritative
+classifier and avoid overflow/underflow in the verdict; the `σ₊`/`σ₋` counts (real eigenvalues above `+1` / below `−1`, since
+`sign(det(I ∓ A)) = (−1)^σ` away from `±1` eigenvalues) are exported as tolerance-aware
+diagnostics with a `sigma_reliable` flag. Genericity is decided from eigenvalue distance
+to `±1`, not raw determinant magnitude. Stability is reported separately via the
+one-sided and (for `status == :ok`) companion spectral radii; **no chaos, robust-chaos, period-adding, or
+torus-creation verdict is ever inferred** from a spectral radius.
+
+For a real period-`q` cycle (not a period-1 approximation) `border_collision_at_cycle`
+reconstructs the orbit, evaluates every switching-guard component at every phase,
+requires a single generic colliding phase, holds the other `q − 1` itinerary symbols
+fixed, and assembles the two ordered `q`-return Jacobians that differ only at the
+colliding phase. That phase's one-sided Jacobians use forced one-sided finite
+differences (the base point is pushed strictly onto the target side and a Richardson
+`δ`-refinement removes the leading bias — robust where branch selection invalidates
+naive automatic differentiation at the border); interior phases use automatic
+differentiation. `border_collision_points` detects crossings between adjacent
+`BranchResult` points (a sign change of the signed nearest-border guard value),
+refines each honestly in both the parameter and the periodic state by bisection with a
+Newton re-solve of the period-`q` fixed point, deduplicates, and classifies.
+
+Continuity is verified as the switching-manifold rank-one condition (`A_L − A_R` must be
+rank one with row space the switching normal); a violation yields status
+`:noncontinuous` and classification is refused (the theory is defined only for
+continuous piecewise-smooth maps), while an unusable supplied normal yields `:invalid`.
+Genericity (`:degenerate` on a `±1` eigenvalue),
+transversality (`:nontransversal`), an absent or ambiguous colliding phase
+(`:unavailable` / `:multiple_border_phases`), and invalid Jacobians (`:invalid`) each
+have an explicit status and never produce a generic scenario. Companion-cycle
+admissibility is left `nothing` (not decidable from the return Jacobians alone).
+`BorderCollisionClassification` and `BorderCollisionPoint` are plain-data results with
+full provenance (event, guard component, period, colliding phase, itinerary, `A_L`/`A_R`,
+determinant invariants, spectra, `σ` counts, stability, continuity residual,
+transversality, status, scenario, and a conservative inference string) and versioned
+serializers. Validated against the Simpson (2014) 1D fixtures for all four scenarios,
+2D border-collision-normal-form fixtures, and a period-2 cycle-phase fixture.
+
+
 
 Functions:
 
@@ -368,6 +516,8 @@ basins_of_attraction(sys, BasinsConfig(...); kwargs...)
 
 Basins sweep initial conditions at a fixed parameter value. The output matrix stores detected periods, using `0` for no finite period found.
 
+This sweep optionally runs on a GPU via `backend=` — for `sys::DiscreteMap` always, and for `sys::ContinuousODE` when the system has a GPU out-of-place RHS and `precision` is not below the section-crossing localization floor. See "Optional GPU acceleration" in `docs/julia-package.md`.
+
 Configuration highlights:
 
 | Field | Meaning |
@@ -382,6 +532,103 @@ Configuration highlights:
 | `x_index`, `y_index`, `ic_template` | Full-state initial-condition grid controls |
 
 `BasinsResult` preserves the resolved `x_index`, `y_index`, and `ic_template`, so saved grids keep their slice-plane definition.
+
+## Branch reachability (multistability-aware continuation)
+
+Function:
+
+```julia
+branch_reachability(sys::DiscreteMap, branches, BranchReachabilityConfig(...); basins_crosscheck=nothing, log=nothing)
+```
+
+Bridges continuation (which knows stability) and basins (which knows reach): each continued branch is reported with the basin fraction that actually reaches it, not merely as stable/unstable. At every requested parameter knot the analysis runs a basin initial-condition census, detects each seed's terminal periodic orbit (the same discrete-map period detector `basins_of_attraction` uses), and assigns that orbit to a *stable* branch identity by period-gated, phase-invariant state-space geometry.
+
+Key guarantees:
+
+- **Period is never branch identity.** Two branches are compared only when their minimal period matches; among same-period branches the seed is assigned by cyclic-shift-invariant cycle distance, so coexisting same-period attractors are separated by geometry. A period group is never plurality-assigned as a block.
+- **Every seed is accounted for** in exactly one of seven mutually-exclusive categories — `matched`, `unmatched`, `aperiodic`, `diverged`, `unresolved` (two same-period stable branches too close to distinguish), `stability_mismatch` (matches only an unstable branch), `outside_coverage` (its period is not represented at that knot). Category fractions use the full seed census denominator and sum to one.
+- **Real branch states per knot.** The branch state at each knot is linearly interpolated between bracketing continuation points and then Newton-solved to the exact period-`T` fixed point at that knot; a branch point far from the requested sample is never substituted. A branch is `covered` only when the knot lies within its continued range (± `param_tolerance`).
+- **Unstable segments are rejected** from the attracting (`matched`) fractions.
+
+Configuration highlights:
+
+| Field | Meaning |
+| --- | --- |
+| `param_samples` | Explicit parameter knots to evaluate (non-empty) |
+| `param_index`, `linked_param_indices`, `base_params` | Parameter injection for the varied continuation parameter |
+| `x_min`/`x_max`/`x_steps`, `y_min`/`y_max`/`y_steps` | Initial-condition census grid axes |
+| `x_index`, `y_index`, `ic_template` | Full-state grid slice controls |
+| `max_period`, `precision`, `iterations`, `divergence_cutoff` | Seed terminal-orbit detection (matches `BasinsConfig` semantics) |
+| `param_tolerance` | Coverage slack around a branch's continued range |
+| `match_tolerance`, `ambiguity_ratio` | Phase-invariant match threshold and unresolved-vs-matched arbitration |
+| `stability_tol`, `newton_max_iter`, `newton_tol` | Branch stability + fixed-point solve controls |
+| `branch_ids` | Optional stable branch IDs (deterministic `"branch-<k>"` fallback) |
+| `threaded` | Thread the per-cell census (deterministic, thread-parity safe) |
+| `ode_solver`, `ode_reltol`, `ode_abstol` | *(ContinuousODE only)* Poincaré return-map integrator key (resolved by `select_ode_solver`) and tolerances |
+| `min_crossing_time`, `ode_fd_step`, `ode_tmax` | *(ContinuousODE only)* launch-crossing suppression window, return-map finite-difference step, and integration horizon (`Inf` ⇒ `tspan_hint`-scaled) |
+
+`BranchReachabilityResult` carries system/parameter provenance, the census grid, the global branch identities and periods, and one `BranchReachabilitySample` per knot (per-branch matched counts/fractions, the seven category counts, and per-cell `assignment` / `status` / `match_distance` / `terminal_period` matrices). Accessors: `reachability_category_counts`, `reachability_category_fractions`, `branch_reachability_fractions`, `branch_reachability_status_label`. Serialize with `serialize_branch_reachability_result` / `deserialize_branch_reachability_result` (format `"branch-reachability-v1"`).
+
+Supplying `basins_crosscheck` (a `BasinsResult` per knot) validates the recomputed census against independent evidence after strict provenance checks (system, grid, indices, `ic_template`, `max_period`, parameter knot) plus a per-cell periodicity cross-check; it does not skip computation, and any mismatch is rejected. This cross-check requires `divergence_cutoff = Inf` because `BasinsResult` does not apply or record a cutoff.
+
+### Continuous-time (Poincaré return-map) reachability
+
+```julia
+branch_reachability(sys::ContinuousODE, branches, BranchReachabilityConfig(...); basins_crosscheck=nothing, log=nothing)
+```
+
+For a `ContinuousODE` carrying a `PoincareSection`, the census runs on the section return map with the identical seven-category partition, stable-only branch identity, and full-census fractions as the discrete method:
+
+- **Seeds are full-state initial conditions.** Each `(x_index, y_index)` grid cell perturbs the full-state `ic_template`; the seed is integrated with launch-crossing suppression (`min_crossing_time`), its terminal orbit detected on the section, and its q-crossing cycle reconstructed in **projected** section coordinates.
+- **Branch states are projected section fixed points.** A branch's recorded `(x1, …)` are the section-projected coordinates; per knot they are interpolated from the bracketing continuation points and then Newton-corrected on the return map at the exact knot parameter. Stability is recomputed from the return-map multipliers using the projected states — the recorded `stable` flag is only a seed.
+- **A full-state `template`** on the `PoincareSection` is required to lift projected fixed points back to full states for integration; its length must equal the system state dimension, and the projection indices must lie within it.
+- **Honest degradation, never fabrication.** A branch whose return-map Newton solve does not converge (e.g. an integration horizon below one return time) is reported `uncovered` at that knot rather than matched against an uncorrected estimate; a seed the integrator cannot resolve to a bounded periodic orbit is `unresolved`. Neither throws nor invents a match.
+- **`basins_crosscheck` is rejected for `ContinuousODE`** (throws): the return-map census cannot prove identical crossing semantics (warm-up, solver, horizon) against an independent `BasinsResult`, so parity is refused rather than faked.
+
+The ODE integration is configured by `ode_solver` (resolved by `select_ode_solver`), `ode_reltol`/`ode_abstol`, `min_crossing_time`, `ode_fd_step`, and `ode_tmax`; the census is deterministic and thread-parity safe (`threaded=true`).
+
+**Stiff systems (e.g. Murali–Lakshmanan–Chua):** prefer `ode_solver="auto"` (stiffness-aware) or an explicit stiff key such as `"rosenbrock23"`, tighten `ode_reltol`/`ode_abstol`, and raise the system `tspan_hint` (which scales the default `ode_tmax=Inf` horizon) so slow transients complete before section detection. The thesis validation recovers stable P1/P3/P3 MDB coexistence at `a=0.0155` with full seed accounting.
+
+## Parameter-robustness / tolerance fields
+
+Two clearly separated layers turn a classified 2D operating map (a `BifurcationMapResult`, optionally sharpened by per-cell status codes) into an engineering robustness deliverable. Both are pure post-processing of the map — they never rerun the model.
+
+### A. Deterministic regime-boundary margins
+
+```julia
+regime_boundary_distances(map_result::BifurcationMapResult; cells=nothing, status_codes=nothing,
+                          config=RegimeBoundaryConfig(edge_policy=:censored))
+# lower-level analytic overload (physical axes + integer labels + resolved mask):
+regime_boundary_distances(a_grid, b_grid, labels, resolved;
+                          config=RegimeBoundaryConfig(), system_name="", param_names=(:a, :b),
+                          status_evidence=false)
+```
+
+For every *known-regime* cell this reports the physical Euclidean distance to the nearest regime boundary — "how far can this operating point drift before the mode changes." Method:
+
+- **Boundary cells** are resolved cells 4-connected to a *different* known regime or to an *unknown* cell (domain edges are handled separately by the edge policy, never as an interior boundary). Boundary cells have margin `0`.
+- **`distance`** is the Euclidean distance from each cell centre to the nearest boundary *cell centre*, computed with an O(NM) generalized separable squared-Euclidean **distance transform** (Felzenszwalb–Huttenlocher lower-envelope-of-parabolas) evaluated at the **true grid coordinates**, so monotone nonuniform rectilinear grids are supported exactly with no index-distance approximation and no new dependency. This is a finite-grid convention with ≤ one cell-diagonal discretization error versus the true interface. Because the 2D norm combines raw axis coordinates, it is scientifically meaningful only when the two parameters have commensurate units/scales or have been normalized first; otherwise use the per-axis margins.
+- **`distance_a` / `distance_b`** are the per-axis (single-parameter) drift margins along each grid line; `Inf` where that line carries no boundary cell.
+- **Unknown cells never become a physical regime.** An unresolved cell has no margin (`distance = NaN`, `valid = false`) and forms a boundary for its known neighbours ("margin to unknown evidence").
+
+Classification: with status evidence, `:periodic` cells are the periodic regimes and `:aperiodic_or_high_period` / `:diverged` are distinct physical regimes when `config.aperiodic_is_regime` / `config.diverged_is_regime` (default `true`); every other status is unknown. Without status evidence the semantics are explicitly reduced to periodicity-only: period `> 0` is a known regime, period `0` is unknown (aperiodic, diverged and unresolved are indistinguishable). Exactly one of `cells::MapCellGrid` or a `status_codes` matrix may be supplied, and it is validated for shape and provenance (the status periodicity must match the map's).
+
+`RegimeBoundaryConfig.edge_policy` sets the domain-edge treatment: `:censored` (default, open) caps the reported margin at the physical distance to the sampled edge and sets `edge_censored = true` (the value is a *lower bound* — a regime change may lie just outside the window); `:boundary` treats the edge as a genuine boundary (capped, not flagged); `:ignore` leaves the raw distance (possibly `Inf`). `RegimeBoundaryResult` carries `labels`, `resolved`, `valid`, `boundary_mask`, `boundary_kind` (`0` interior / `1` regime-adjacent / `2` unknown-adjacent / `3` both), `distance`, `distance_a`, `distance_b`, `edge_censored`, `edge_policy`, `status_evidence`, `convention`, and system/parameter provenance. Accessor: `regime_boundary_summary`. Serialize with `serialize_regime_boundary_result` / `deserialize_regime_boundary_result` (format `"regime-boundary-v1"`; `Inf` and `NaN` margins are preserved distinctly).
+
+### B. Probabilistic component-tolerance propagation
+
+```julia
+tolerance_regime_map(map_result::BifurcationMapResult, ToleranceConfig(...); cells=nothing, status_codes=nothing)
+# lower-level analytic overload:
+tolerance_regime_map(a_grid, b_grid, labels, resolved, config; system_name="", param_names=(:a, :b), status_evidence=false)
+```
+
+At each nominal grid cell the two parameters are independently perturbed by the stated component tolerances (`UniformTolerance(half_width)` or `GaussianTolerance(std)`; a zero scale is an exact Dirac delta) and each perturbed operating point is classified by **nearest physical-grid-cell lookup** over the same classified surrogate — integer regime labels are never interpolated. Per cell the result tracks the probability of each regime, the nominal-regime probability with its binomial standard error and **Wilson 95% score interval**, the dominant regime/probability, the categorical entropy (bits), and the **unknown** and **out-of-domain** mass, which are retained and never renormalized away (regime probabilities + unknown + OOD partition 1).
+
+- **Exact collapse.** If both tolerances are zero the analysis returns the deterministic exact classification with no RNG/sampling error (probability `1`, CI `[1, 1]`, entropy `0`, `n_effective = 0`). If one tolerance is zero only the other axis is sampled.
+- **Bitwise reproducibility.** Each cell derives an independent `Xoshiro` stream from a stable `UInt64` mix of the global `seed` and `(i, j)`, so results are bitwise identical regardless of `threaded=false`/`true` or thread count/scheduling.
+
+This is Monte-Carlo propagation through a *finite classified-map surrogate*, not model reruns and not a closed-form tolerance proof. `ToleranceMapResult` carries the per-regime probability matrices (`Dict{Int,Matrix}`), `nominal_regime` / `nominal_resolved` / `nominal_probability`, `dominant_regime` / `dominant_probability`, `unknown_probability`, `out_of_domain_probability`, `entropy`, `nominal_standard_error`, `nominal_ci_lower` / `nominal_ci_upper`, the tolerances/seed/sample counts, and provenance. Accessor: `tolerance_regime_summary`. Serialize with `serialize_tolerance_map_result` / `deserialize_tolerance_map_result` (format `"tolerance-map-v1"`).
 
 ## 2D bifurcation map
 
@@ -417,11 +664,83 @@ Advanced fields:
 | `lyapunov_iterations`, `lyapunov_transient` | Lyapunov sampling budgets |
 | `lyapunov_perturbation` | Perturbation size for two-trajectory estimates |
 | `lyapunov_neutral_tolerance` | Threshold for neutral/quasiperiodic candidates |
-| `adaptive_refinement_enabled` | Add sparse boundary/low-confidence refinement samples |
-| `adaptive_refinement_max_depth`, `adaptive_refinement_budget` | Adaptive refinement budget controls |
-| `adaptive_refinement_min_confidence`, `adaptive_refinement_confidence_delta` | Confidence triggers |
-
 If Lyapunov diagnostics were enabled, call `lyapunov_field(result)` to extract the co-computed `LyapunovFieldResult` without re-running the map.
+
+This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The continuous Lyapunov field stays CPU-only (coupled two-trajectory method). See "Optional GPU acceleration" in `docs/julia-package.md`.
+
+## Adaptive bifurcation map
+
+Automatically refines a coarse 2D map at classification boundaries using deterministic dyadic (quadtree) subdivision:
+
+```julia
+result = adaptive_bifurcation_map(sys, coarse_config, adaptive_config;
+                                   initial_point=[...],
+                                   backend=CPUBackend())
+```
+
+`coarse_config` is an ordinary `BifurcationMapConfig`; `adaptive_config` is an `AdaptiveMapConfig`.
+
+**`AdaptiveMapConfig` fields:**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `total_budget` | `1024` | Strict upper bound on unique parameter-point evaluations (coarse + refinement) |
+| `max_depth` | `4` | Maximum quadtree subdivision depth (`0 ≤ max_depth ≤ 30`) |
+| `refine_on_period_disagreement` | `true` | Refine when corner periods differ |
+| `refine_on_status_disagreement` | `true` | Refine when corner status codes differ |
+| `min_confidence` | `0.0` | Refine any cell whose minimum corner confidence is below this threshold (0 = disabled) |
+| `confidence_delta` | `0.0` | Refine when max–min corner confidence spread exceeds this value (0 = disabled) |
+
+At least one refinement trigger must be active.
+
+`coarse_config.reuse_neighbor_seeds` must be `false`: traversal-dependent neighbor modes would make the adaptive result depend on thread scheduling and are explicitly rejected.
+
+**Algorithm.** At max depth `D`, each coarse axis step spans `2^D` integer lattice units. Shared edge midpoints between adjacent cells have identical integer keys; deduplication is exact with no floating-point comparisons. The work queue has two phases: (A) all triggered cells are split first, (B) uniform-corner cells are centre-screened for enclosed-boundary detection. Both phases proceed in source order for deterministic output. Uniform-corner cells whose center cannot be evaluated (budget exhausted or max-depth reached) are recorded explicitly as `terminal = :uninspected` and counted in `uninspected_cell_count`. `budget_exhausted` is set only when budget blocked otherwise-eligible work; max-depth-limited cells alone do not set it.
+
+**`AdaptiveMapResult` fields:**
+
+| Field | Meaning |
+| --- | --- |
+| `samples` | `Vector{AdaptiveMapSample}` — all unique evaluated points (coarse + refinement) |
+| `leaf_cells` | `Vector{AdaptiveMapLeafCell}` — final quadtree cells with bounds, sample indices, depth, terminal reason |
+| `boundary_segments` | `Vector{AdaptiveMapSegment}` — conservative classification boundary edges |
+| `coarse_result` | Embedded `BifurcationMapResult` from the initial uniform sweep |
+| `total_budget`, `budget_used` | Requested and actual evaluation counts (`budget_used ≤ total_budget` always) |
+| `coarse_evaluations`, `refinement_evaluations` | Budget breakdown |
+| `budget_exhausted` | `true` iff the budget prevented at least one otherwise-eligible refinement or centre-screening step |
+| `uninspected_cell_count` | Number of uniform-corner cells with unevaluated center (`terminal = :uninspected`) due to budget or max-depth limits |
+| `max_depth_reached`, `max_depth_allowed` | Depth provenance |
+| `flagged_cells`, `split_cells` | Refinement statistics (triggered cells, successfully split cells) |
+| `compute_backend` | Backend symbol from the coarse sweep (e.g. `:cpu`) |
+| `system_name`, `param_names`, `timestamp` | Provenance |
+
+Each `AdaptiveMapLeafCell` has `terminal` ∈ `:interior` (uniform, centre confirmed), `:boundary` (classification change present or at max depth), `:budget_limited` (could not be split due to exhausted budget), `:uninspected` (uniform corners, centre not evaluated).
+
+Boundary segments in `AdaptiveMapSegment` store physical endpoints `(a0,b0)-(a1,b1)` plus canonical neighbouring classification keys `(key_a, key_b)` and `ambiguity` ∈ `:resolved`, `:ambiguous`, `:multi_region`. Segments are derived by categorical marching-squares on each final leaf cell — no period value interpolation. For a standard two-classification two-crossing leaf, the two edge midpoints are connected directly (`:resolved`). For a checkerboard four-crossing leaf the cell centre determines the correct pairing (`:resolved`) or spokes are used if unavailable (`:ambiguous`). For three-or-more classification regimes, each crossing is connected to the cell centre as a spoke (`:multi_region`).
+
+**Provenance summary accessor:**
+
+```julia
+s = adaptive_map_summary(result)
+# => NamedTuple with system_name, param_names, coarse_a_steps, coarse_b_steps,
+#    total_budget, budget_used, coarse_evaluations, refinement_evaluations,
+#    budget_exhausted, uninspected_cell_count,
+#    max_depth_reached, max_depth_allowed,
+#    flagged_cells, split_cells, leaf_cell_count,
+#    boundary_segment_count, boundary_length,
+#    resolved_segments, ambiguous_segments, multi_region_segments,
+#    compute_backend
+```
+
+**Serialization:**
+
+```julia
+data = serialize_adaptive_map_result(result)       # format "adaptive-map-v3"
+result2 = deserialize_adaptive_map_result(data)    # exact round-trip
+```
+
+The adaptive-map serializer uses a columnar layout: `samples`, `leafCells`, and
+`boundarySegments` are dictionaries of flat arrays rather than row-wise records.
 
 ## Power spectrum
 
@@ -443,6 +762,46 @@ Configuration:
 | `maxiters` | ODE solver iteration cap |
 
 The implementation detrends the retained tail, applies the configured window, and computes a one-sided `rfft` power spectrum. This is currently an ODE-only workflow.
+
+## Chaos-source inverse design
+
+Function:
+
+```julia
+design_chaos_source(sys, ChaosDesignConfig(...); initial_point, kwargs...)
+```
+
+Configuration:
+
+| Field | Meaning |
+| --- | --- |
+| `operating_config` | `RobustChaosConfig` describing the desired operating band |
+| `variables` | 1–3 `ChaosDesignVariable` entries (name, param index, lower/upper bounds) |
+| `target` | `ChaosDesignTarget` (amplitude range, spectral flatness floor, robustness floor) |
+| `signal` | `ChaosDesignSignalConfig` (state index, transient/samples for maps, `PowerSpectrumConfig` for ODEs) |
+| `samples_per_axis` | Points per design-variable axis in the initial coarse grid |
+| `refinement_levels` | Number of coarse-to-fine zoom levels after the initial sweep |
+| `survivors_per_level` | Candidates carried into each refinement level |
+| `max_evaluations` | Hard budget; never exceeded |
+
+Each candidate is evaluated with `robust_chaos_certificate`; a representative orbit at
+`operating_config.basins.bif_param` is used to compute peak-to-peak amplitude and
+Wiener spectral flatness (geometric / arithmetic mean of non-DC power bins, in [0, 1]).
+
+Design variables must not overlap the operating bifurcation parameter slot or any
+linked-parameter slots. The search is fully deterministic: exact-tuple deduplication and
+lexicographic tie-breaking give reproducible rankings independent of evaluation order.
+
+A `ChaosDesignCandidate` is `feasible` only when the certificate is `:certified`,
+robustness score meets the configured floor, amplitude is in the target range, spectral
+flatness meets the floor, and the signal resolved without divergence. `design_chaos_source`
+returns a `ChaosDesignResult` with `ranked_candidates` (feasible first, then descending
+objective score), `best_candidate`, and budget/refinement statistics.
+
+`spectral_flatness(power)` is available directly for other uses. `chaos_design_summary`
+returns a plain `Dict` for display or logging. `serialize_chaos_design_result` /
+`deserialize_chaos_design_result` provide versioned round-trip serialization; heavy evidence
+arrays are not stored.
 
 ## Refinement
 
@@ -483,3 +842,58 @@ Lyapunov classification labels:
 | `chaotic_candidate` | Positive largest exponent above tolerance |
 | `quasiperiodic_neutral_candidate` | Exponent near zero |
 | `unresolved` | Estimate unavailable or not decisive |
+
+Border-collision classification status codes (`BorderCollisionClassification.status`):
+
+| Label | Meaning |
+| --- | --- |
+| `ok` | A generic scenario was issued from the determinant signs |
+| `noncontinuous` | `A_L − A_R` failed the switching-manifold rank-one condition; refused (the theory applies only to continuous piecewise-smooth maps) |
+| `nontransversal` | The supplied transversality measure is below tolerance |
+| `degenerate` | A one-sided return Jacobian has a `±1` eigenvalue, so a determinant invariant vanishes and the signs are ambiguous |
+| `multiple_border_phases` | More than one phase or guard component lies on the border; the colliding phase is ambiguous |
+| `unavailable` | No phase lies on the border, or the one-sided return Jacobians could not be formed |
+| `invalid` | The one-sided Jacobians are not equally sized, square, finite matrices, or the supplied switching normal is unusable |
+
+Border-collision scenarios (`BorderCollisionClassification.scenario`): `persistence`,
+`nonsmooth_fold`, `persistence_with_companion_cycle`,
+`nonsmooth_fold_with_companion_cycle`, or `undetermined` (any non-`ok` status).
+
+## Switching-map generator
+
+Constructs a `DiscreteMap` directly from a piecewise-linear (affine state-space) circuit
+description, eliminating the manual derivation step used for the hand-coded buck and boost
+converters.
+
+```julia
+AffineModeSpec(A, b; duration=nothing, boundary=nothing, events=SwitchingEvent[])
+SwitchingCircuitDescription(modes, period; param_names=Symbol[], name="Switching Circuit")
+switching_map(desc::SwitchingCircuitDescription; name=nothing) -> DiscreteMap
+buck_converter_description(; L=2.2e-6, T=1/0.5e6) -> SwitchingCircuitDescription
+boost_converter_description(; L=1e-3, C=12e-6, T=100e-6) -> SwitchingCircuitDescription
+```
+
+An `AffineModeSpec` describes one operating mode: `A` and `b` are either constant `SMatrix{2,2}` /
+`SVector{2}` values or parameter-dependent callables; `duration` is a callable `(x, p) -> Real` for
+intermediate modes (`nothing` = final mode, consumes remaining period); `boundary` is an optional
+`(x_flow, p) -> SVector{2}` that overrides the state at the end of the mode (used to enforce exact
+switching conditions such as the buck comparator trip `I = Iref`).
+
+`SwitchingCircuitDescription` holds an ordered list of `AffineModeSpec` values and the clock period
+(constant `Float64` or callable `p -> Real`).
+
+`switching_map` generates the period-advance map: each intermediate mode runs for its (clamped)
+duration; the final mode consumes the remaining period. The map is ForwardDiff-compatible away from
+switching borders. Switching events from all modes are forwarded to the `DiscreteMap`.
+
+`buck_converter_description()` and `boost_converter_description()` return descriptions that reproduce
+the hand-coded `buck_converter()` / `boost_converter()` to floating-point rounding for all
+operating states where the switching time `tₙ ≥ 0`. (The original buck uses un-clamped negative `tₙ`
+for `I > Iref`, a convention not replicated by the generator's clamped duration model.)
+
+**Flow formula.** Each mode uses the exact affine ODE solution via the `ψ₀`/`ψ₁` decomposition
+`exp(Aτ) = e^{aτ}·(ψ₀·I + ψ₁·(A − aI))` where `a = tr(A)/2` and the discriminant `disc = a²−det(A)`
+selects under-damped (`disc < 0`, ψ values trigonometric), over-damped (`disc > 0`, hyperbolic), or
+critically-damped (`disc ≈ 0`, ψ₀=1, ψ₁=τ). For singular `A` (`det ≈ 0`, boost ON stage), the
+Duhamel integral is used directly: `x(τ) = exp(Aτ)·x + (τ·I + coeff·A)·b` where
+`coeff = (e^{λ₂τ} − 1 − λ₂τ)/λ₂²`, `λ₂ = tr A`.

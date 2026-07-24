@@ -77,8 +77,8 @@
         solver = select_ode_solver("auto")     # stiff-aware, per the MDB model notes
         base = [0.014, 6.02e-6, 0.05]
         cont = ContinuationConfig(p_min=0.012, p_max=0.016, ds=0.001, dsmax=0.002, dsmin=1e-9,
-                                  max_steps=15, param_index=1, newton_tol=1e-8)
-        result = continuation_orbit_collocation(sys, CollocationConfig(continuation=cont, ntst=60, settle_time=200.0);
+                                  max_steps=8, param_index=1, newton_tol=1e-8)
+        result = continuation_orbit_collocation(sys, CollocationConfig(continuation=cont, ntst=40, settle_time=150.0);
                                                 period=1, params=base, initial_point=[0.0, 0.01, 0.0],
                                                 solver=solver, reltol=1e-9, abstol=1e-9)
 

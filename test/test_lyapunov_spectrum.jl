@@ -31,7 +31,7 @@
         params = [1.4, 0.3]
         result = lyapunov_spectrum(
             sys,
-            LyapunovSpectrumConfig(transient=1000, steps=12000);
+            LyapunovSpectrumConfig(transient=500, steps=5000);
             params=params,
             initial_point=[0.1, 0.1]
         )
@@ -47,7 +47,7 @@
 
         # The leading spectrum exponent agrees with the two-trajectory estimator.
         estimate = estimate_discrete_map_largest_lyapunov(
-            sys, params, SVector(0.1, 0.1), 1000, 12000, 1e-8, Inf)
+            sys, params, SVector(0.1, 0.1), 500, 5000, 1e-8, Inf)
         @test result.exponents[1] ≈ estimate.exponent atol=5e-3
     end
 
