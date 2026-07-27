@@ -81,7 +81,7 @@ include("visualization/plots.jl")
 
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
-export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, HomoclinicOrbitRecord, HomoclinicSpecialPoint, HomoclinicBranchResult, MapNormalForm, MapSpecialPoint, Codim2SpecialPoint
+export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, HomoclinicOrbitRecord, HomoclinicSpecialPoint, HomoclinicBranchResult, MapNormalForm, Codim2NormalForm, MapSpecialPoint, Codim2SpecialPoint
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
 export RobustChaosRegion, RobustChaosRegionResult
 export ChaosDesignVariable, ChaosDesignTarget, ChaosDesignCandidate, ChaosDesignResult
@@ -152,7 +152,7 @@ export orbit_branch_parameters, orbit_branch_periods, orbit_branch_orbit, orbit_
 export homoclinic_orbit_continuation
 export connecting_orbit_continuation, heteroclinic_orbit_continuation, saddle_cycle_homoclinic_continuation
 export homoclinic_orbit, homoclinic_special_point_label
-export map_normal_form, map_special_points, codim2_special_points
+export map_normal_form, codim2_normal_form, map_special_points, codim2_special_points
 export border_collision_classify, border_collision_at_cycle, border_collision_points
 export basins_of_attraction, bifurcation_map, adaptive_bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
@@ -190,6 +190,7 @@ export serialize_regime_boundary_result, deserialize_regime_boundary_result
 export serialize_tolerance_map_result, deserialize_tolerance_map_result
 export serialize_mode_sequence_alignment, deserialize_mode_sequence_alignment
 export serialize_map_normal_form, deserialize_map_normal_form
+export serialize_codim2_normal_form, deserialize_codim2_normal_form
 export serialize_map_special_point, deserialize_map_special_point
 export serialize_border_collision_classification, deserialize_border_collision_classification
 export serialize_border_collision_point, deserialize_border_collision_point

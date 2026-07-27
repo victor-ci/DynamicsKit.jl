@@ -908,16 +908,30 @@ pts = codim2_special_points(sys, result;
 
 Each returned `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`,
 `secondary_param`, `state`, `multipliers`, `test_value`, `period`, `converged`,
-`status` (`:interpolated`, `:sampled`, or `:unavailable`), and `normal_form` (always
-`nothing` for interpolated coefficient-zero points — attaching a nonzero-coefficient form
-from the nearest bracketing sample would be misleading). Near-zero locus samples are
-reported as `status=:sampled` using the configurable `test_tolerance`; sign-change
-brackets are reported as `status=:interpolated`. Points are sorted by
+`status` (`:interpolated`, `:sampled`, or `:unavailable`), `normal_form` (the
+codim-1 coefficient used by coefficient detectors), and `codim2_normal_form`
+when the local codim-2 reduction is available. `normal_form` stays `nothing`
+for interpolated coefficient-zero points because attaching a nonzero bracketing
+form would be misleading. Near-zero locus samples are reported as
+`status=:sampled` using the configurable `test_tolerance`; sign-change brackets
+are reported as `status=:interpolated`. Points are sorted by
 `(kind, secondary_param, primary_param)` and deduplicated.
 
-`serialize_codim2_special_point`/`deserialize_codim2_special_point` provide the JSON-plain
-wire form (format `"codim2-special-point-v1"`).  Full codim-2 normal-form classification
-is out of scope.
+`codim2_normal_form(sys, kind, state, params; kwargs...)` returns a
+`Codim2NormalForm` with paired `coefficient_names`/`coefficients`,
+`criticality`, `status`, and a convention string. It reports `:ok` only for
+the reductions the library can evaluate conservatively: cusp cubic coefficient
+at a true cusp, scalar generalized flip after removing even coordinate terms,
+Bautin/Chenciner radial coefficient when the amplitude estimate is direction
+stable, fold-flip multiplier-gap nondegeneracy, and 1:1/1:2 resonance gaps.
+Otherwise it returns explicit unavailable statuses such as `:not_codim2`,
+`:near_singular`, `:reduction_unavailable`, or `:multipliers_unavailable`.
+
+`serialize_codim2_normal_form`/`deserialize_codim2_normal_form` provide the
+JSON-plain normal-form wire form. `serialize_codim2_special_point` writes
+format `"codim2-special-point-v2"` with a `codim2NormalForm` field;
+`deserialize_codim2_special_point` still reads v1 payloads that predate that
+field.
 
 **ArgumentError policy**: explicitly listing `:cusp` (`:fold` locus), `:generalized_flip`
 (`:pd` locus), or `:bautin` (`:ns` locus) in `detect` without `base_params` raises

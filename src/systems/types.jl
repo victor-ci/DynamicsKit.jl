@@ -896,6 +896,24 @@ struct MapNormalForm
 end
 
 """
+    Codim2NormalForm
+
+Plain-data normal-form classification for a map codimension-two organising point.
+`coefficient_names` and `coefficients` are paired arrays so the record remains
+JSON-plain without relying on symbol-keyed dictionaries. `criticality` names the
+sign-based local class when the reduction is nondegenerate; `status` is `:ok`,
+`:degenerate`, or an explicit unavailable reason.
+"""
+struct Codim2NormalForm
+    kind::Symbol
+    coefficient_names::Vector{Symbol}
+    coefficients::Vector{Float64}
+    criticality::Symbol
+    status::Symbol
+    convention::String
+end
+
+"""
     MapSpecialPoint
 
 A period-doubling (`:pd`, multiplier crossing -1), fold (`:fold`, multiplier crossing
@@ -953,9 +971,9 @@ the resolution:
 - `:unavailable` — detection was requested but required data (multipliers, normal-form
   coefficients) were absent or numerically unstable.
 
-`normal_form` carries the codim-1 normal form for a `:sampled` coefficient detection
-(`:cusp`, `:generalized-flip`, `:bautin`); interpolated coefficient-zero points carry
-`nothing`, and full codim-2 normal-form classification is out of scope.
+`normal_form` carries the codim-1 normal form used by coefficient detectors.
+`codim2_normal_form` carries the codimension-two reduction when it is available;
+otherwise it is `nothing` and `status` identifies the point-location status only.
 """
 struct Codim2SpecialPoint
     kind::Symbol
@@ -969,7 +987,18 @@ struct Codim2SpecialPoint
     converged::Bool
     status::Symbol
     normal_form::Union{Nothing, MapNormalForm}
+    codim2_normal_form::Union{Nothing, Codim2NormalForm}
 end
+
+Codim2SpecialPoint(kind::Symbol, locus_kind::Symbol, primary_param::Real,
+                   secondary_param::Real, state::AbstractVector,
+                   multipliers::AbstractVector, test_value::Real,
+                   period::Integer, converged::Bool, status::Symbol,
+                   normal_form::Union{Nothing, MapNormalForm}) =
+    Codim2SpecialPoint(kind, locus_kind, Float64(primary_param), Float64(secondary_param),
+                       collect(Float64, state), collect(ComplexF64, multipliers),
+                       Float64(test_value), Int(period), Bool(converged), status,
+                       normal_form, nothing)
 
 """
     BifurcationResult

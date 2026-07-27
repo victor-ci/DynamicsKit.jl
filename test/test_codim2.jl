@@ -558,6 +558,9 @@ end
     @test abs(cusp.secondary_param) < 0.01    # near p2=0
     # Interpolated b=0 location: attaching a bracketing nonzero form would mislead.
     @test cusp.normal_form === nothing
+    @test cusp.codim2_normal_form !== nothing
+    @test cusp.codim2_normal_form.kind === :cusp
+    @test cusp.codim2_normal_form.status === :not_critical
 
     flat_orientation_flip = Union{Float64, Nothing}[1.0, 1.0, -1.0, -1.0]
     @test !DynamicsKit._c2sp_cusp_valley(flat_orientation_flip, 2)
@@ -593,6 +596,8 @@ end
     @test pts_s[1].normal_form !== nothing
     @test pts_s[1].normal_form.kind === :fold
     @test abs(pts_s[1].normal_form.coefficient) <= 1e-5
+    @test pts_s[1].codim2_normal_form !== nothing
+    @test pts_s[1].codim2_normal_form.status === :ok
 
     # No false positive when b stays nonzero and same-signed (all s > 0 → b = 3s > 0).
     s_mono = collect(range(0.05, 0.3, length=15))
@@ -828,6 +833,10 @@ end
     # Interpolated coefficient-zero point: attaching a nonzero-coefficient normal form
     # from the nearest bracketing sample would be misleading, so normal_form is nothing.
     @test gf.normal_form === nothing
+    @test gf.codim2_normal_form !== nothing
+    @test gf.codim2_normal_form.kind === :generalized_flip
+    @test gf.codim2_normal_form.criticality === :degenerate
+    @test abs(gf.codim2_normal_form.coefficients[1]) <= 1e-8
 
     # Explicitly requesting :generalized_flip on a :pd locus without base_params → error.
     @test_throws ArgumentError codim2_special_points(sys, result; detect=[:generalized_flip])
@@ -923,6 +932,93 @@ end
 end
 
 # ---------------------------------------------------------------------------
+# Direct codim-2 normal-form analytic fixtures
+# ---------------------------------------------------------------------------
+@testset "codim2_normal_form — analytic map coefficients" begin
+    cusp = DiscreteMap(
+        (x, p) -> SVector(x[1] + p[1] + p[2] * x[1] + p[3] * x[1]^3),
+        1, [:p1, :p2, :a3], "Cubic cusp normal form")
+    cusp_pos = codim2_normal_form(cusp, :cusp, [0.0], [0.0, 0.0, 2.0])
+    @test cusp_pos.status === :ok
+    @test cusp_pos.criticality === :positive
+    @test cusp_pos.coefficient_names == [:cusp_cubic]
+    @test cusp_pos.coefficients[1] ≈ 2.0 atol=1e-12
+
+    cusp_deg = codim2_normal_form(cusp, :cusp, [0.0], [0.0, 0.0, 0.0])
+    @test cusp_deg.status === :degenerate
+    @test cusp_deg.criticality === :degenerate
+    cusp_not_critical = codim2_normal_form(cusp, :cusp, [0.0], [0.0, 0.1, 1.0])
+    @test cusp_not_critical.status === :not_critical
+
+    flip = DiscreteMap(
+        (x, p) -> SVector(-(1 + p[1]) * x[1] + p[2] * x[1]^3 + p[3] * x[1]^5),
+        1, [:mu, :beta, :eta], "Generalized flip normal form")
+    gpd_pos = codim2_normal_form(flip, :generalized_flip, [0.0], [0.0, 0.0, 1.5])
+    @test gpd_pos.status === :ok
+    @test gpd_pos.criticality === :positive_second_flip
+    @test gpd_pos.coefficient_names == [:second_flip]
+    @test gpd_pos.coefficients[1] ≈ 1.5 atol=1e-12
+    gpd_neg = codim2_normal_form(flip, :generalized_flip, [0.0], [0.0, 0.0, -2.0])
+    @test gpd_neg.status === :ok
+    @test gpd_neg.criticality === :negative_second_flip
+    @test gpd_neg.coefficients[1] ≈ -2.0 atol=1e-12
+    gpd_deg = codim2_normal_form(flip, :generalized_flip, [0.0], [0.0, 0.0, 0.0])
+    @test gpd_deg.status === :degenerate
+    gpd_not_critical = codim2_normal_form(flip, :generalized_flip, [0.0], [0.1, 0.0, 1.0])
+    @test gpd_not_critical.status === :not_critical
+
+    nonodd_flip = DiscreteMap(
+        (x, p) -> SVector(-x[1] + p[1] * x[1]^2 - p[1]^2 * x[1]^3 + x[1]^5),
+        1, [:a2], "Non-odd generalized flip normal form")
+    nonodd = codim2_normal_form(nonodd_flip, :generalized_flip, [0.0], [0.2])
+    @test nonodd.status === :ok
+    @test nonodd.criticality === :positive_second_flip
+    @test 0.99 < nonodd.coefficients[1] < 1.01
+
+    theta = 0.7
+    R = [cos(theta) -sin(theta); sin(theta) cos(theta)]
+    bautin = DiscreteMap(
+        (x, p) -> begin
+            r2 = sum(abs2, x)
+            y = p[1] .* (R * x) .* (1 + p[2] * r2 + p[3] * r2^2)
+            SVector(y...)
+        end,
+        2, [:rho, :beta, :gamma], "Bautin radial normal form")
+    ch = codim2_normal_form(
+        bautin, :bautin, [0.0, 0.0], [1.0, 0.0, -0.4];
+        normal_form_fd_step=0.02)
+    @test ch.status === :ok
+    @test ch.criticality === :supercritical
+    @test ch.coefficient_names == [:second_lyapunov]
+    @test ch.coefficients[1] ≈ -0.4 rtol=1e-8
+    strong_ns = DiscreteMap(
+        (x, p) -> begin
+            Rstrong = [0.0 -1.0; 1.0 0.0]
+            SVector((p[1] .* (Rstrong * x))...)
+        end,
+        2, [:rho], "Strong resonance fixture")
+    strong = codim2_normal_form(strong_ns, :bautin, [0.0, 0.0], [1.0])
+    @test strong.status === :strong_resonance
+
+    ff = codim2_normal_form(
+        flip, :fold_flip, Float64[], Float64[];
+        multipliers=ComplexF64[-1.0, 1.0])
+    @test ff.status === :ok
+    @test ff.criticality === :nondegenerate
+    ff_missing = codim2_normal_form(flip, :fold_flip, Float64[], Float64[]; multipliers=ComplexF64[])
+    @test ff_missing.status === :multipliers_unavailable
+
+    r12 = codim2_normal_form(
+        bautin, :resonance_1_2, Float64[], Float64[];
+        multipliers=ComplexF64[cos(pi) + im * sin(pi)])
+    @test r12.status === :ok
+    r12_pair = codim2_normal_form(
+        bautin, :resonance_1_2, Float64[], Float64[];
+        multipliers=ComplexF64[cos(pi) + 1e-7im, cos(pi) - 1e-7im])
+    @test r12_pair.status in (:ok, :degenerate)
+end
+
+# ---------------------------------------------------------------------------
 # Deduplication and sorting (cusp coefficient b, two genuine zero crossings)
 # ---------------------------------------------------------------------------
 @testset "codim2_special_points — cusp deduplication and sorting" begin
@@ -978,9 +1074,10 @@ end
 
     d = serialize_codim2_special_point(pt)
     @test d isa Dict
-    @test d["format"] == "codim2-special-point-v1"
+    @test d["format"] == "codim2-special-point-v2"
     @test d["kind"] == "generalized_flip"
     @test d["locusKind"] == "pd"
+    @test haskey(d, "codim2NormalForm")
 
     recovered = deserialize_codim2_special_point(d)
     @test recovered isa Codim2SpecialPoint
@@ -997,6 +1094,19 @@ end
     @test recovered.normal_form !== nothing
     @test recovered.normal_form.kind === :pd
     @test abs(recovered.normal_form.coefficient - nf.coefficient) < 1e-10  # round-trip exact
+    @test recovered.codim2_normal_form === nothing
+
+    c2nf = codim2_normal_form(_flip_sys, :generalized_flip, [0.0], [0.0, 0.0])
+    restored_c2nf = deserialize_codim2_normal_form(serialize_codim2_normal_form(c2nf))
+    @test restored_c2nf.kind === c2nf.kind
+    @test restored_c2nf.coefficient_names == c2nf.coefficient_names
+    @test restored_c2nf.coefficients == c2nf.coefficients
+    @test restored_c2nf.criticality === c2nf.criticality
+    @test restored_c2nf.status === c2nf.status
+    @test restored_c2nf.convention == c2nf.convention
+    bad_c2nf = serialize_codim2_normal_form(c2nf)
+    bad_c2nf["status"] = "bogus"
+    @test_throws ArgumentError deserialize_codim2_normal_form(bad_c2nf)
 
     # Round-trip without normal form.
     pt_no_nf = Codim2SpecialPoint(:cusp, :fold, 0.1, 0.5, [0.3], ComplexF64[],
@@ -1005,6 +1115,15 @@ end
     r2 = deserialize_codim2_special_point(d2)
     @test r2.kind === :cusp
     @test r2.normal_form === nothing
+    @test r2.codim2_normal_form === nothing
+
+    # Legacy v1 point payloads deserialize without codim2NormalForm.
+    legacy = copy(d2)
+    legacy["format"] = "codim2-special-point-v1"
+    delete!(legacy, "codim2NormalForm")
+    r_legacy = deserialize_codim2_special_point(legacy)
+    @test r_legacy.kind === :cusp
+    @test r_legacy.codim2_normal_form === nothing
 
     # Round-trip with unavailable status.
     pt_unavail = Codim2SpecialPoint(:bautin, :ns, 0.0, 0.5, [0.0, 0.0], ComplexF64[],
@@ -1100,10 +1219,15 @@ end
 # ---------------------------------------------------------------------------
 @testset "codim2_special_points — public API surface" begin
     @test :Codim2SpecialPoint in names(DynamicsKit)
+    @test :Codim2NormalForm in names(DynamicsKit)
     @test :codim2_special_points in names(DynamicsKit)
+    @test :codim2_normal_form in names(DynamicsKit)
     @test :serialize_codim2_special_point in names(DynamicsKit)
     @test :deserialize_codim2_special_point in names(DynamicsKit)
+    @test :serialize_codim2_normal_form in names(DynamicsKit)
+    @test :deserialize_codim2_normal_form in names(DynamicsKit)
     @test codim2_special_points isa Function
+    @test codim2_normal_form isa Function
     @test serialize_codim2_special_point isa Function
     @test deserialize_codim2_special_point isa Function
 end

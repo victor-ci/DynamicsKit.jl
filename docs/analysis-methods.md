@@ -172,6 +172,8 @@ Function:
 ```julia
 codim2_special_points(sys, result::Codim2ContinuationResult; detect=(...), kwargs...)
     -> Vector{Codim2SpecialPoint}
+codim2_normal_form(sys, kind, state, params; kwargs...)
+    -> Codim2NormalForm
 ```
 
 Runs a test-function pass over an existing `Codim2ContinuationResult` produced by
@@ -181,19 +183,21 @@ deduplicated within configurable proximity tolerances.
 
 Supported kinds and applicable loci:
 
-| Kind | Locus | Test function | Needs `base_params` |
-| --- | --- | --- | --- |
-| `:cusp` | `:fold` | Sign change / vanishing of fold normal-form coefficient `b` at locus samples | yes |
-| `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | yes |
-| `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | no (needs `curve_diagnostics`) |
-| `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | no |
-| `:resonance_1_2` | `:ns` | `cos(θ/2)` crossing zero (θ = π+2πk) | no |
-| `:bautin` | `:ns` | Sign change of NS normal-form coefficient `d` at locus samples | yes |
+| Kind | Locus | Test function | Codim-2 reduction | Needs `base_params` |
+| --- | --- | --- | --- | --- |
+| `:cusp` | `:fold` | Sign change / vanishing of fold normal-form coefficient `b` at locus samples | cubic cusp coefficient `cusp_cubic` for `F^N-I` | yes |
+| `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | scalar fifth-order `second_flip` coefficient at the degenerate flip | yes |
+| `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | nearest `fold_gap` and `flip_gap` nondegeneracy checks | no (needs `curve_diagnostics`) |
+| `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | unit-circle and angle-gap nondegeneracy checks | no |
+| `:resonance_1_2` | `:ns` | `cos(θ/2)` crossing zero (θ = π+2πk) | unit-circle and angle-gap nondegeneracy checks | no |
+| `:bautin` | `:ns` | Sign change of NS normal-form coefficient `d` at locus samples | radial second-Lyapunov (`second_lyapunov`) coefficient | yes |
 
 Each `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`, `secondary_param`,
 `state`, `multipliers` (empty when `curve_diagnostics=false`), `test_value`, `period`,
-`converged`, `status` (`:interpolated`, `:sampled`, or `:unavailable`), and an optional
-`MapNormalForm`.
+`converged`, `status` (`:interpolated`, `:sampled`, or `:unavailable`), an optional
+`MapNormalForm` used by coefficient detectors, and an optional `Codim2NormalForm`.
+The JSON-plain special-point serializer writes `codim2-special-point-v2` and still
+reads v1 payloads that predate `codim2NormalForm`.
 
 Resonance test functions: `sin(θ/2)` (1:1) and `cos(θ/2)` (1:2) respect unwrapped angle
 periodicity, correctly detect crossings at ±2π and ±π, and do not produce cross-contamination
@@ -220,17 +224,28 @@ The resulting `Codim2SpecialPoint` carries `normal_form=nothing` — attaching t
 bracketing sample's nonzero-coefficient form to the coefficient-zero point would be
 scientifically misleading.  All interpolated points carry `converged=false`.
 
+`codim2_normal_form` evaluates the local reduction at the returned point. Its result
+stores paired `coefficient_names` / `coefficients`, `criticality`, `status`, and the
+formula convention. `status=:ok` means the relevant nondegeneracy checks passed;
+`status=:degenerate` means the reduced quantity was computed but fell below the
+coefficient tolerance; unavailable states such as `:not_critical`, `:near_singular`,
+`:critical_eigenvector_unavailable`, `:strong_resonance`, and
+`:multipliers_unavailable` are reported explicitly. Interpolated points are not
+Newton-polished back to the exact codim-2 equations, so their codim-2 form can
+honestly be unavailable when the interpolated state is not critical under the
+chosen tolerances.
+
 `ArgumentError` policy: if `:cusp`, `:generalized_flip`, or `:bautin` is **explicitly** listed in
 `detect` on an applicable locus (`:fold`, `:pd`, or `:ns` respectively) but `base_params` /
 parameter indices are absent, an `ArgumentError` is raised.  The default `detect=nothing` (all
 kinds) silently skips coefficient detectors that lack parameter information, so it works on any
 locus without requiring `base_params`.
 
-`DiscreteMap` systems are fully supported. `ContinuousODE` (Poincaré return-map) systems use
-the same path; if `map_normal_form` returns `status=:fd_step_unstable` for a sample that
-sample is silently skipped (conservative: only stable evaluations bracket a sign change).
-
-Full codim-2 normal-form classification is explicitly out of scope.
+`DiscreteMap` systems use nested ForwardDiff through fifth directional order for
+the codim-2 scalar reductions. `ContinuousODE` systems use the same Poincare
+return-map interface with guarded finite differences; if the finite-difference
+window is unstable or a bordered solve is near-singular, the result is marked
+unavailable rather than filled with a fabricated class.
 
 Keyword arguments:
 - `detect`: tuple/vector of kinds to detect, or `nothing` for all six (default).

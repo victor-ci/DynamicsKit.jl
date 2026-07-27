@@ -9,6 +9,7 @@ _serialize_timestamp(dt::DateTime) = Dates.format(dt, dateformat"yyyy-mm-ddTHH:M
 _deserialize_timestamp(value) = DateTime(String(value))
 
 const _MAP_NORMAL_FORM_FORMAT = "map-normal-form-v1"
+const _CODIM2_NORMAL_FORM_FORMAT = "codim2-normal-form-v1"
 const _MAP_SPECIAL_POINT_FORMAT = "map-special-point-v1"
 const _BORDER_COLLISION_CLASSIFICATION_FORMAT = "border-collision-classification-v1"
 const _BORDER_COLLISION_POINT_FORMAT = "border-collision-point-v1"
@@ -92,6 +93,74 @@ function _deserialize_map_normal_form(data::AbstractDict)
         kind,
         coefficient_name,
         value,
+        Symbol(_as_string(get(data, "criticality", "unclassified"), "unclassified")),
+        Symbol(_as_string(get(data, "status", ""), "")),
+        _as_string(get(data, "convention", ""), ""),
+    ))
+end
+
+_codim2_normal_form_argerror(message::AbstractString) = throw(ArgumentError(message))
+
+function _validate_codim2_normal_form(normal_form::Codim2NormalForm)
+    normal_form.kind in _CODIM2_SPECIAL_POINT_KINDS || _codim2_normal_form_argerror(
+        "Codim-2 normal-form kind must be one of $(join(_CODIM2_SPECIAL_POINT_KINDS, ", ")).")
+    length(normal_form.coefficient_names) == length(normal_form.coefficients) || _codim2_normal_form_argerror(
+        "Codim-2 normal-form coefficient_names and coefficients must have the same length.")
+    all(isfinite, normal_form.coefficients) || _codim2_normal_form_argerror(
+        "Codim-2 normal-form coefficients must be finite.")
+    allowed_statuses = (
+        :ok, :degenerate, :derivative_failed, :near_singular, :not_critical,
+        :critical_eigenvector_unavailable, :strong_resonance,
+        :multipliers_unavailable, :not_codim2, :reduction_unavailable,
+    )
+    normal_form.status in allowed_statuses || _codim2_normal_form_argerror(
+        "Unknown codim-2 normal-form status $(repr(normal_form.status)).")
+    if normal_form.status === :ok
+        !isempty(normal_form.coefficients) || _codim2_normal_form_argerror(
+            "A codim-2 normal form with status :ok requires coefficients.")
+        normal_form.criticality !== :unclassified || _codim2_normal_form_argerror(
+            "A codim-2 normal form with status :ok requires a classified criticality.")
+    elseif normal_form.status === :degenerate
+        normal_form.criticality === :degenerate || _codim2_normal_form_argerror(
+            "A degenerate codim-2 normal form requires criticality :degenerate.")
+    else
+        isempty(normal_form.coefficients) || _codim2_normal_form_argerror(
+            "Unavailable codim-2 normal forms must not carry coefficients.")
+        normal_form.criticality === :unclassified || _codim2_normal_form_argerror(
+            "Unavailable codim-2 normal forms require criticality :unclassified.")
+    end
+    return normal_form
+end
+
+function _serialize_codim2_normal_form(normal_form::Codim2NormalForm)
+    _validate_codim2_normal_form(normal_form)
+    return Dict{String, Any}(
+        "format" => _CODIM2_NORMAL_FORM_FORMAT,
+        "kind" => String(normal_form.kind),
+        "coefficientNames" => String.(normal_form.coefficient_names),
+        "coefficients" => copy(normal_form.coefficients),
+        "criticality" => String(normal_form.criticality),
+        "status" => String(normal_form.status),
+        "convention" => normal_form.convention,
+    )
+end
+
+function _deserialize_codim2_normal_form(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "kind", "coefficientNames", "coefficients", "criticality",
+         "status", "convention"),
+        "codim-2 normal form")
+    format = _as_string(get(data, "format", ""), "")
+    format == _CODIM2_NORMAL_FORM_FORMAT || error(
+        "Unsupported codim-2 normal-form serialization format '$format'.")
+    kind = Symbol(_as_string(get(data, "kind", ""), ""))
+    coefficient_names = Symbol[Symbol(_as_string(name, "")) for name in get(data, "coefficientNames", Any[])]
+    coefficients = collect(Float64, get(data, "coefficients", Float64[]))
+    return _validate_codim2_normal_form(Codim2NormalForm(
+        kind,
+        coefficient_names,
+        coefficients,
         Symbol(_as_string(get(data, "criticality", "unclassified"), "unclassified")),
         Symbol(_as_string(get(data, "status", ""), "")),
         _as_string(get(data, "convention", ""), ""),
@@ -1970,7 +2039,8 @@ const deserialize_border_collision_point = _deserialize_border_collision_point
 
 # ---- Codim2SpecialPoint serialization ------------------------------------
 
-const _CODIM2_SPECIAL_POINT_FORMAT = "codim2-special-point-v1"
+const _CODIM2_SPECIAL_POINT_FORMAT = "codim2-special-point-v2"
+const _CODIM2_SPECIAL_POINT_FORMAT_V1 = "codim2-special-point-v1"
 
 function _serialize_codim2_special_point(point::Codim2SpecialPoint)::Dict{String, Any}
     point.kind in _CODIM2_SPECIAL_POINT_KINDS || throw(ArgumentError(
@@ -2003,6 +2073,8 @@ function _serialize_codim2_special_point(point::Codim2SpecialPoint)::Dict{String
         "status"         => String(point.status),
         "normalForm"     => point.normal_form === nothing ? nothing :
                             _serialize_map_normal_form(point.normal_form),
+        "codim2NormalForm" => point.codim2_normal_form === nothing ? nothing :
+                              _serialize_codim2_normal_form(point.codim2_normal_form),
     )
 end
 
@@ -2013,7 +2085,7 @@ function _deserialize_codim2_special_point(data::AbstractDict)::Codim2SpecialPoi
          "state", "multipliers", "testValue", "period", "converged", "status"),
         "codim2 special point")
     format = _as_string(get(data, "format", ""), "")
-    format == _CODIM2_SPECIAL_POINT_FORMAT || throw(ArgumentError(
+    format in (_CODIM2_SPECIAL_POINT_FORMAT, _CODIM2_SPECIAL_POINT_FORMAT_V1) || throw(ArgumentError(
         "Unsupported codim2 special-point serialization format '$format'."))
     kind = Symbol(_as_string(get(data, "kind", ""), ""))
     kind in _CODIM2_SPECIAL_POINT_KINDS || throw(ArgumentError(
@@ -2053,12 +2125,18 @@ function _deserialize_codim2_special_point(data::AbstractDict)::Codim2SpecialPoi
         "got $(repr(status))."))
     nf_data = get(data, "normalForm", nothing)
     normal_form = nf_data === nothing ? nothing : _deserialize_map_normal_form(nf_data)
+    c2nf_data = get(data, "codim2NormalForm", nothing)
+    codim2_normal_form = c2nf_data === nothing ? nothing : _deserialize_codim2_normal_form(c2nf_data)
     return Codim2SpecialPoint(kind, locus_kind, primary_param, secondary_param,
                               state, multipliers, test_value, period, converged,
-                              status, normal_form)
+                              status, normal_form, codim2_normal_form)
 end
 
-"""    serialize_codim2_special_point(point::Codim2SpecialPoint) -> Dict — versioned JSON-plain form (format "codim2-special-point-v1")."""
+"""    serialize_codim2_normal_form(normal_form::Codim2NormalForm) -> Dict — versioned JSON-plain form."""
+const serialize_codim2_normal_form = _serialize_codim2_normal_form
+"""    deserialize_codim2_normal_form(data::AbstractDict) -> Codim2NormalForm"""
+const deserialize_codim2_normal_form = _deserialize_codim2_normal_form
+"""    serialize_codim2_special_point(point::Codim2SpecialPoint) -> Dict — versioned JSON-plain form (format "codim2-special-point-v2")."""
 const serialize_codim2_special_point = _serialize_codim2_special_point
 """    deserialize_codim2_special_point(data::AbstractDict) -> Codim2SpecialPoint"""
 const deserialize_codim2_special_point = _deserialize_codim2_special_point

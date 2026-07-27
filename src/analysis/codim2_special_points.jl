@@ -10,8 +10,6 @@ Supported detection kinds and the loci they apply to:
 - `:resonance_1_1`   — tracked multiplier angle crossing 0 mod 2π (`:ns` locus)
 - `:resonance_1_2`   — tracked multiplier angle crossing π mod 2π (`:ns` locus)
 - `:bautin`          — NS first Lyapunov coefficient d crossing zero (`:ns` locus)
-
-Full codim-2 normal-form classification is explicitly out of scope.
 """
 
 const _CODIM2_SPECIAL_POINT_KINDS =
@@ -59,6 +57,32 @@ function _c2sp_sample_params(result::Codim2ContinuationResult, j::Int,
                               sidx::Int, linked2::Vector{Int})
     pv = inject_param(base, pidx, result.primary_values[j], linked1)
     return inject_param(pv, sidx, result.secondary_values[j], linked2)
+end
+
+function _c2sp_point_params(point::Codim2SpecialPoint,
+                            base::Vector{Float64},
+                            pidx::Int, linked1::Vector{Int},
+                            sidx::Int, linked2::Vector{Int})
+    pv = inject_param(base, pidx, point.primary_param, linked1)
+    return inject_param(pv, sidx, point.secondary_param, linked2)
+end
+
+function _c2sp_with_codim2_normal_form(point::Codim2SpecialPoint,
+                                       nf::Union{Nothing, Codim2NormalForm})
+    return Codim2SpecialPoint(
+        point.kind,
+        point.locus_kind,
+        point.primary_param,
+        point.secondary_param,
+        point.state,
+        point.multipliers,
+        point.test_value,
+        point.period,
+        point.converged,
+        point.status,
+        point.normal_form,
+        nf,
+    )
 end
 
 # ---- interpolation helper ------------------------------------------------
@@ -424,10 +448,49 @@ function _c2sp_deduplicate(points::Vector{Codim2SpecialPoint},
             push!(out, curr)
             continue
         end
+
         if curr.status === :sampled &&
            (prev.status !== :sampled || abs(curr.test_value) < abs(prev.test_value))
             out[end] = curr
         end
+    end
+    return out
+end
+
+function _c2sp_attach_codim2_normal_forms(sys::DynamicalSystem,
+                                          points::Vector{Codim2SpecialPoint},
+                                          base::Vector{Float64},
+                                          pidx::Int, linked1::Vector{Int},
+                                          sidx::Int, linked2::Vector{Int},
+                                          params_ready::Bool;
+                                          normal_form_fd_step::Float64,
+                                          solver, reltol, abstol, tmax, min_crossing_time)
+    isempty(points) && return points
+    out = Codim2SpecialPoint[]
+    for point in points
+        needs_params = point.kind in (:cusp, :generalized_flip, :bautin)
+        if needs_params && !params_ready
+            push!(out, point)
+            continue
+        end
+        params = needs_params ?
+            _c2sp_point_params(point, base, pidx, linked1, sidx, linked2) :
+            Float64[]
+        nf = codim2_normal_form(
+            sys,
+            point.kind,
+            point.state,
+            params;
+            period=point.period,
+            multipliers=point.multipliers,
+            normal_form_fd_step=normal_form_fd_step,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            tmax=tmax,
+            min_crossing_time=min_crossing_time,
+        )
+        push!(out, _c2sp_with_codim2_normal_form(point, nf))
     end
     return out
 end
@@ -460,7 +523,9 @@ Test-function pass over a codimension-2 locus from `codim2_curve` with
 # Result
 Points are sorted by `(kind, secondary_param, primary_param)` and deduplicated. Each
 `Codim2SpecialPoint` carries a `status` of `:interpolated` (sign-change bracketing), `:sampled`
-(direct sample), or `:unavailable`. Full codim-2 normal-form classification is out of scope.
+(direct sample), or `:unavailable`. `codim2_normal_form` records the local
+codimension-two reduction when it is available; unavailable reductions keep
+an explicit status rather than fabricating a class.
 
 # Conservative interpolation policy
 `:cusp`, `:generalized_flip`, and `:bautin` evaluate a normal-form coefficient at discrete
@@ -632,5 +697,9 @@ function codim2_special_points(
                                      test_tolerance=test_tolerance, nf_kw...))
     end
 
+    all_points = _c2sp_attach_codim2_normal_forms(
+        sys, all_points, base, pidx, linked1, sidx, linked2, params_ready;
+        normal_form_fd_step=normal_form_fd_step, solver=solver, reltol=reltol,
+        abstol=abstol, tmax=tmax, min_crossing_time=min_crossing_time)
     return _c2sp_deduplicate(all_points, duplicate_primary_tol, duplicate_secondary_tol)
 end
