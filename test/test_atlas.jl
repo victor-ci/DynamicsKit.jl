@@ -198,6 +198,93 @@
         @test [sample.param for sample in threaded_samples] == sort([sample.param for sample in threaded_samples])
     end
 
+    @testset "Auto-calibrated reconnaissance separates periodic noise from recurrence" begin
+        sys = DiscreteMap((x, p) -> p[1] < 0.5 ?
+            SVector(0.25 * (x[1] - 0.2) + 0.2) :
+            SVector(mod(1.9 * x[1] + 0.1234567, 1.0)),
+            1, [:a], "Recon calibration fixture")
+        bf_config = BruteForceConfig(
+            param_min=0.0,
+            param_max=1.0,
+            param_steps=1,
+            iterations=36,
+            transient=24,
+            fixed_params=[0.0]
+        )
+        cont_config = ContinuationConfig(p_min=0.0, p_max=1.0, newton_tol=1e-10)
+        atlas_config = AtlasConfig(
+            periods=[1],
+            brute_force=bf_config,
+            continuation=cont_config,
+            recon_steps=2,
+            recon_precision=1e-3,
+            recon_calibration=:auto,
+            recon_calibration_min_separation=2.0,
+            recon_calibration_max_periodic_anchors=2,
+            recon_calibration_max_aperiodic_anchors=2,
+            recon_calibration_newton_tol=1e-10,
+            threaded=false,
+            cache_enabled=false,
+        )
+        samples = DynamicsKit._atlas_reconnaissance(sys, [0.0], bf_config, atlas_config, [1])
+        calibrated, diagnostics, effective_config = DynamicsKit._atlas_calibrate_recon_precision(
+            sys,
+            samples,
+            [0.0],
+            bf_config,
+            cont_config,
+            atlas_config,
+            [1],
+        )
+
+        @test diagnostics["status"] == "applied"
+        @test diagnostics["periodicAnchorCount"] >= 1
+        @test diagnostics["aperiodicAnchorCount"] >= 1
+        @test diagnostics["noiseFloor"] < diagnostics["effectivePrecision"] < diagnostics["recurrenceScale"]
+        @test effective_config.recon_precision == diagnostics["effectivePrecision"]
+        @test calibrated[1].classification == :periodic
+        @test calibrated[end].classification == :nonperiodic
+        @test calibrated[end].diagnostics["thresholdSource"] == "auto_calibrated"
+    end
+
+    @testset "Auto-calibrated reconnaissance refusal is explicit and serialized" begin
+        sys = DiscreteMap((x, p) -> p[1] < 0.5 ?
+            SVector(0.25 * (x[1] - 0.2) + 0.2) :
+            SVector(mod(1.9 * x[1] + 0.1234567, 1.0)),
+            1, [:a], "Recon calibration refusal fixture")
+        bf_config = BruteForceConfig(
+            param_min=0.0,
+            param_max=1.0,
+            param_steps=1,
+            iterations=36,
+            transient=24,
+            fixed_params=[0.0]
+        )
+        cont_config = ContinuationConfig(p_min=0.0, p_max=1.0, newton_tol=1e-10)
+        atlas_config = AtlasConfig(
+            periods=[1],
+            brute_force=bf_config,
+            continuation=cont_config,
+            recon_steps=2,
+            recon_precision=1e-3,
+            recon_calibration=:auto,
+            recon_calibration_min_separation=1e9,
+            recon_calibration_newton_tol=1e-10,
+            max_total_windows=0,
+            threaded=false,
+            cache_enabled=false,
+        )
+        result = continuation_atlas(sys, atlas_config)
+        diagnostics = result.diagnostics["reconCalibration"]
+        plain = serialize_atlas_result(result)
+
+        @test startswith(diagnostics["status"], "refused")
+        @test result.diagnostics["adaptiveRecon"]["status"] == "skipped_calibration_refused"
+        @test isempty(result.windows)
+        @test DynamicsKit._atlas_recon_calibration_refused(result.diagnostics)
+        @test plain["diagnostics"]["reconCalibration"]["status"] == diagnostics["status"]
+    end
+
     @testset "Atlas reuses exact uniform reconnaissance as brute-force cloud" begin
         sys = henon_map()
         bf_config = BruteForceConfig(

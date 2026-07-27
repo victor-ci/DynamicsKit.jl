@@ -456,6 +456,343 @@ function _atlas_param_values_match(samples::Vector{AtlasReconSample}, expected_v
     return true
 end
 
+function _atlas_requested_closure_pairs(sample::AtlasReconSample, periods::Vector{Int})
+    pairs = Tuple{Int, Float64}[]
+    for period in periods
+        period > 0 && period <= length(sample.closure_errors) || continue
+        closure = sample.closure_errors[period]
+        isfinite(closure) && push!(pairs, (period, Float64(closure)))
+    end
+    return pairs
+end
+
+function _atlas_best_requested_closure(sample::AtlasReconSample, periods::Vector{Int})
+    best = nothing
+    best_closure = Inf
+    for pair in _atlas_requested_closure_pairs(sample, periods)
+        if pair[2] < best_closure
+            best = pair
+            best_closure = pair[2]
+        end
+    end
+    return best
+end
+
+function _atlas_recon_state_scale(samples::Vector{AtlasReconSample})
+    scale = 1.0
+    for sample in samples
+        !isempty(sample.orbit_center) && (scale = max(scale, maximum(abs, sample.orbit_center)))
+        !isempty(sample.orbit_span) && (scale = max(scale, maximum(abs, sample.orbit_span)))
+        for point in sample.support_points
+            !isempty(point) && (scale = max(scale, maximum(abs, point)))
+        end
+    end
+    return scale
+end
+
+function _atlas_recon_sample_search_box(sample::AtlasReconSample, atlas_config::AtlasConfig)
+    dim = !isempty(sample.orbit_center) ? length(sample.orbit_center) :
+          !isempty(sample.support_points) ? length(first(sample.support_points)) : 0
+    dim > 0 || return nothing
+    center = length(sample.orbit_center) == dim ? copy(sample.orbit_center) : copy(first(sample.support_points))
+    span = length(sample.orbit_span) == dim ? abs.(sample.orbit_span) : zeros(Float64, dim)
+    scale = max(maximum(abs, center; init=0.0), maximum(span; init=0.0), 1.0)
+    floor_width = max(10 * atlas_config.recon_precision, 10 * atlas_config.recon_calibration_newton_tol, sqrt(eps(Float64)) * scale)
+    half_width = [max(0.5 * span[i] * (1 + atlas_config.seed_box_padding), floor_width) for i in 1:dim]
+    return center .- half_width, center .+ half_width
+end
+
+function _atlas_reclassify_recon_sample(sample::AtlasReconSample,
+                                        max_period::Int,
+                                        precision::Float64,
+                                        updates::AbstractDict{<:AbstractString, <:Any})
+    reclassified = _atlas_classify_sample(sample.support_points, max_period, precision, sample.param)
+    return AtlasReconSample(
+        reclassified.param,
+        reclassified.classification,
+        reclassified.best_period,
+        reclassified.confidence,
+        reclassified.closure_errors,
+        reclassified.support_points,
+        reclassified.orbit_center,
+        reclassified.orbit_span,
+        merge(copy(sample.diagnostics), reclassified.diagnostics,
+              Dict{String, Any}(String(k) => v for (k, v) in pairs(updates)))
+    )
+end
+
+function _atlas_verify_periodic_anchor(sys::DynamicalSystem,
+                                       sample::AtlasReconSample,
+                                       period::Int,
+                                       base_params::Vector{Float64},
+                                       bf_config::BruteForceConfig,
+                                       cont_config::ContinuationConfig,
+                                       atlas_config::AtlasConfig;
+                                       solver=Tsit5(),
+                                       reltol::Float64=1e-8,
+                                       abstol::Float64=1e-8,
+                                       min_crossing_time::Float64=1e-6)
+    search = _atlas_recon_sample_search_box(sample, atlas_config)
+    isnothing(search) && return false, "empty_orbit_support"
+    search_min, search_max = search
+    n_initial = max(3, min(8, length(sample.support_points)))
+    tol = max(atlas_config.recon_calibration_newton_tol, cont_config.newton_tol)
+    try
+        common_kwargs = (
+            n_initial=n_initial,
+            search_min=search_min,
+            search_max=search_max,
+            seed_points=sample.support_points,
+            params=base_params,
+            param_index=bf_config.param_index,
+            linked_param_indices=bf_config.linked_param_indices,
+            tol=tol,
+            max_iter=cont_config.newton_max_iter,
+            threaded=false,
+            cache_enabled=false,
+        )
+        ode_kwargs = sys isa ContinuousODE ? (
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time,
+        ) : NamedTuple()
+        seeds = find_periodic_skeleton(sys, [period], sample.param; common_kwargs..., ode_kwargs...)
+        return any(seed -> seed.period == period, seeds), ""
+    catch err
+        err isa InterruptException && rethrow()
+        return false, sprint(showerror, err)
+    end
+end
+
+function _atlas_recon_calibration_bf_config(bf_config::BruteForceConfig,
+                                            atlas_config::AtlasConfig,
+                                            periods::Vector{Int})
+    post_count = max(_atlas_recon_max_period(periods) + 4, 8)
+    transient = bf_config.transient + atlas_config.recon_calibration_transient_multiplier * post_count
+    iterations = max(bf_config.iterations, transient + post_count)
+    return BruteForceConfig(
+        param_min=bf_config.param_min,
+        param_max=bf_config.param_max,
+        param_steps=bf_config.param_steps,
+        iterations=iterations,
+        transient=transient,
+        param_index=bf_config.param_index,
+        fixed_params=copy(bf_config.fixed_params),
+        linked_param_indices=copy(bf_config.linked_param_indices),
+        min_crossing_time=bf_config.min_crossing_time,
+    )
+end
+
+function _atlas_recon_calibration_sample(sys::DynamicalSystem,
+                                         sample::AtlasReconSample,
+                                         base_params::Vector{Float64},
+                                         bf_config::BruteForceConfig,
+                                         atlas_config::AtlasConfig,
+                                         periods::Vector{Int};
+                                         initial_point::Union{Nothing, AbstractVector}=nothing,
+                                         solver=Tsit5(),
+                                         reltol::Float64=1e-8,
+                                         abstol::Float64=1e-8,
+                                         min_crossing_time::Float64=1e-6)
+    calibration_bf = _atlas_recon_calibration_bf_config(bf_config, atlas_config, periods)
+    return _atlas_recon_sample(
+        sys,
+        sample.param,
+        base_params,
+        calibration_bf,
+        atlas_config,
+        periods;
+        initial_point=initial_point,
+        solver=solver,
+        reltol=reltol,
+        abstol=abstol,
+        min_crossing_time=min_crossing_time,
+    )
+end
+
+function _atlas_calibrate_recon_precision(sys::DynamicalSystem,
+                                          samples::Vector{AtlasReconSample},
+                                          base_params::Vector{Float64},
+                                          bf_config::BruteForceConfig,
+                                          cont_config::ContinuationConfig,
+                                          atlas_config::AtlasConfig,
+                                          periods::Vector{Int};
+                                          initial_point::Union{Nothing, AbstractVector}=nothing,
+                                          solver=Tsit5(),
+                                          reltol::Float64=1e-8,
+                                          abstol::Float64=1e-8,
+                                          min_crossing_time::Float64=1e-6)
+    diagnostics = Dict{String, Any}(
+        "requested" => atlas_config.recon_calibration == :auto,
+        "mode" => string(atlas_config.recon_calibration),
+        "configuredPrecision" => atlas_config.recon_precision,
+        "effectivePrecision" => atlas_config.recon_precision,
+        "status" => atlas_config.recon_calibration == :auto ? "pending" : "fixed",
+        "periodicAnchorCount" => 0,
+        "aperiodicAnchorCount" => 0,
+        "periodicAnchors" => Dict{String, Any}[],
+        "aperiodicAnchors" => Dict{String, Any}[],
+        "verificationFailures" => Dict{String, Any}[],
+        "minSeparation" => atlas_config.recon_calibration_min_separation,
+    )
+    atlas_config.recon_calibration == :auto || return samples, diagnostics, atlas_config
+
+    max_period = _atlas_recon_max_period(periods)
+    candidates = Tuple{Int, Int, Float64}[]
+    for (idx, sample) in enumerate(samples)
+        best = _atlas_best_requested_closure(sample, periods)
+        isnothing(best) && continue
+        period, closure = best
+        push!(candidates, (idx, period, closure))
+    end
+    sort!(candidates; by=item -> item[3])
+
+    periodic_closures = Float64[]
+    periodic_keys = Set{Tuple{Int, Int}}()
+    for (idx, period, closure) in candidates
+        length(periodic_closures) >= atlas_config.recon_calibration_max_periodic_anchors && break
+        verified, err = _atlas_verify_periodic_anchor(
+            sys,
+            samples[idx],
+            period,
+            base_params,
+            bf_config,
+            cont_config,
+            atlas_config;
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time,
+        )
+        if verified
+            push!(periodic_closures, max(closure, 0.0))
+            push!(periodic_keys, (idx, period))
+            push!(diagnostics["periodicAnchors"], Dict{String, Any}(
+                "param" => samples[idx].param,
+                "period" => period,
+                "closure" => closure,
+            ))
+        elseif !isempty(err)
+            push!(diagnostics["verificationFailures"], Dict{String, Any}(
+                "param" => samples[idx].param,
+                "period" => period,
+                "error" => err,
+            ))
+        end
+    end
+
+    state_scale = _atlas_recon_state_scale(samples)
+    solver_floor = max(100 * max(reltol, abstol, atlas_config.recon_calibration_newton_tol),
+                       sqrt(eps(Float64)) * state_scale)
+    noise_floor = isempty(periodic_closures) ? solver_floor : max(maximum(periodic_closures), solver_floor)
+    noise_source = isempty(periodic_closures) ? "solver_tolerance_floor" : "newton_verified_periodic"
+    diagnostics["periodicAnchorCount"] = length(periodic_closures)
+    diagnostics["noiseFloor"] = noise_floor
+    diagnostics["noiseSource"] = noise_source
+
+    recurrence_scales = Float64[]
+    for (idx, period, closure) in reverse(candidates)
+        length(recurrence_scales) >= atlas_config.recon_calibration_max_aperiodic_anchors && break
+        (idx, period) in periodic_keys && continue
+        closure > noise_floor * atlas_config.recon_calibration_min_separation || continue
+        verified, err = _atlas_verify_periodic_anchor(
+            sys,
+            samples[idx],
+            period,
+            base_params,
+            bf_config,
+            cont_config,
+            atlas_config;
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time,
+        )
+        if verified
+            push!(periodic_keys, (idx, period))
+            continue
+        elseif !isempty(err)
+            push!(diagnostics["verificationFailures"], Dict{String, Any}(
+                "param" => samples[idx].param,
+                "period" => period,
+                "error" => err,
+            ))
+        end
+        escalated = _atlas_recon_calibration_sample(
+            sys,
+            samples[idx],
+            base_params,
+            bf_config,
+            atlas_config,
+            periods;
+            initial_point=initial_point,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time,
+        )
+        escalated_best = _atlas_best_requested_closure(escalated, periods)
+        isnothing(escalated_best) && continue
+        escalated_period, escalated_closure = escalated_best
+        recurrence = min(closure, escalated_closure)
+        recurrence > noise_floor * atlas_config.recon_calibration_min_separation || continue
+        push!(recurrence_scales, recurrence)
+        push!(diagnostics["aperiodicAnchors"], Dict{String, Any}(
+            "param" => samples[idx].param,
+            "initialBestPeriod" => period,
+            "initialClosure" => closure,
+            "escalatedBestPeriod" => escalated_period,
+            "escalatedClosure" => escalated_closure,
+            "recurrenceScale" => recurrence,
+        ))
+    end
+    diagnostics["aperiodicAnchorCount"] = length(recurrence_scales)
+
+    if isempty(recurrence_scales)
+        diagnostics["status"] = "refused_insufficient_aperiodic_anchors"
+        tagged = [_atlas_with_recon_diagnostics(sample, Dict(
+            "thresholdSource" => "calibration_refused",
+            "calibrationStatus" => diagnostics["status"],
+        )) for sample in samples]
+        return tagged, diagnostics, atlas_config
+    end
+
+    recurrence_scale = minimum(recurrence_scales)
+    separation = recurrence_scale / max(noise_floor, eps(Float64))
+    diagnostics["recurrenceScale"] = recurrence_scale
+    diagnostics["separation"] = separation
+    diagnostics["separationMarginDecades"] = log10(separation)
+    if separation <= atlas_config.recon_calibration_min_separation
+        diagnostics["status"] = "refused_nonseparating_scales"
+        tagged = [_atlas_with_recon_diagnostics(sample, Dict(
+            "thresholdSource" => "calibration_refused",
+            "calibrationStatus" => diagnostics["status"],
+        )) for sample in samples]
+        return tagged, diagnostics, atlas_config
+    end
+
+    effective_precision = sqrt(noise_floor * recurrence_scale)
+    diagnostics["effectivePrecision"] = effective_precision
+    diagnostics["status"] = "applied"
+    calibrated = [
+        _atlas_reclassify_recon_sample(sample, max_period, effective_precision, Dict(
+            "thresholdSource" => "auto_calibrated",
+            "calibrationStatus" => "applied",
+        ))
+        for sample in samples
+    ]
+    effective_config = Accessors.@set atlas_config.recon_precision = effective_precision
+    return calibrated, diagnostics, effective_config
+end
+
+function _atlas_recon_calibration_refused(diagnostics::AbstractDict)
+    calibration = get(diagnostics, "reconCalibration", nothing)
+    calibration isa AbstractDict || return false
+    status = String(get(calibration, "status", ""))
+    return startswith(status, "refused")
+end
+
 function _atlas_recon_point_dim(sys::DynamicalSystem, samples::Vector{AtlasReconSample})
     for sample in samples, point in sample.support_points
         return length(point)

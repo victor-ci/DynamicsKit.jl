@@ -580,6 +580,12 @@ Configuration scaffold for the automatic continuation atlas workflow.
 - `continuation`: Optional continuation settings override
 - `recon_steps`: Number of reconnaissance samples across the parameter window
 - `recon_precision`: Period-classification tolerance used during reconnaissance
+- `recon_calibration`: `:fixed` keeps `recon_precision`; `:auto` estimates a closure threshold from reconnaissance evidence
+- `recon_calibration_min_separation`: Required recurrence/noise scale separation for `:auto`
+- `recon_calibration_max_periodic_anchors`: Maximum Newton-verified periodic anchors used to estimate the noise floor
+- `recon_calibration_max_aperiodic_anchors`: Maximum confirmed aperiodic samples used to estimate the recurrence scale
+- `recon_calibration_transient_multiplier`: Extra-transient multiplier for aperiodic confirmation
+- `recon_calibration_newton_tol`: Newton tolerance used when verifying periodic anchors
 - `adaptive_recon`: Whether to insert extra reconnaissance samples before continuation
 - `adaptive_recon_max_samples`: Maximum number of extra reconnaissance samples
 - `adaptive_recon_max_depth`: Maximum midpoint-refinement passes
@@ -618,6 +624,12 @@ Configuration scaffold for the automatic continuation atlas workflow.
     continuation::Union{Nothing, ContinuationConfig} = nothing
     recon_steps::Int = 80
     recon_precision::Float64 = 1e-3
+    recon_calibration::Symbol = :fixed
+    recon_calibration_min_separation::Float64 = 3.0
+    recon_calibration_max_periodic_anchors::Int = 6
+    recon_calibration_max_aperiodic_anchors::Int = 8
+    recon_calibration_transient_multiplier::Int = 4
+    recon_calibration_newton_tol::Float64 = 1e-8
     adaptive_recon::Bool = false
     adaptive_recon_max_samples::Int = 24
     adaptive_recon_max_depth::Int = 1
@@ -650,6 +662,12 @@ Configuration scaffold for the automatic continuation atlas workflow.
     cache_enabled::Bool = true
     time_budget_s::Union{Nothing, Float64} = nothing
     reseed::ReseedConfig = ReseedConfig(enabled=true)
+    @assert recon_calibration in (:fixed, :auto) "AtlasConfig.recon_calibration must be :fixed or :auto"
+    @assert isfinite(recon_calibration_min_separation) && recon_calibration_min_separation > 1.0 "AtlasConfig.recon_calibration_min_separation must be finite and > 1"
+    @assert recon_calibration_max_periodic_anchors >= 0 "AtlasConfig.recon_calibration_max_periodic_anchors must be >= 0"
+    @assert recon_calibration_max_aperiodic_anchors >= 1 "AtlasConfig.recon_calibration_max_aperiodic_anchors must be >= 1"
+    @assert recon_calibration_transient_multiplier >= 1 "AtlasConfig.recon_calibration_transient_multiplier must be >= 1"
+    @assert isfinite(recon_calibration_newton_tol) && recon_calibration_newton_tol > 0.0 "AtlasConfig.recon_calibration_newton_tol must be finite and > 0"
     @assert auto_refine_max_passes >= 0 "AtlasConfig.auto_refine_max_passes must be >= 0"
 end
 

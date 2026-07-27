@@ -501,13 +501,14 @@ function _robust_chaos_analysis(
     end
 
     time_budget_exceeded  = _as_bool(get(_atlas_result.diagnostics, "timeBudgetExceeded", false))
+    calibration_refused   = _atlas_recon_calibration_refused(_atlas_result.diagnostics)
     periods_searched      = Int[_as_int(x) for x in get(_atlas_result.diagnostics, "periods", Int[])]
     n_atlas_covered       = _as_int(get(_atlas_result.coverage_summary, "covered",    0))
     n_atlas_partial       = _as_int(get(_atlas_result.coverage_summary, "partial",    0))
     n_atlas_unresolved_w  = _as_int(get(_atlas_result.coverage_summary, "unresolved", 0))
     n_atlas_windows       = n_atlas_covered + n_atlas_partial + n_atlas_unresolved_w
     n_atlas_gaps          = length(_atlas_result.gaps)
-    atlas_search_complete = !time_budget_exceeded
+    atlas_search_complete = !time_budget_exceeded && !calibration_refused
 
     base_params     = _rc_atlas_base_params(config.atlas)
     stable_evidence, unresolved_stability_count = _rc_stable_window_evidence(
@@ -528,6 +529,8 @@ function _robust_chaos_analysis(
 
     atlas_verdict = if !isempty(stable_evidence)
         :fail
+    elseif calibration_refused
+        :inconclusive
     elseif unresolved_stability_count > 0
         :inconclusive
     elseif time_budget_exceeded
@@ -555,6 +558,7 @@ function _robust_chaos_analysis(
         "n_gaps"               => n_atlas_gaps,
         "unresolved_stability_count" => unresolved_stability_count,
         "stable_evidence_count"=> length(stable_evidence),
+        "recon_calibration"    => get(_atlas_result.diagnostics, "reconCalibration", Dict{String, Any}()),
     ))
     _rc_log!(log, "layer 2 verdict: $atlas_verdict (windows=$n_atlas_windows, covered=$n_atlas_covered, stable=$(length(stable_evidence)), periods=$(periods_searched))")
 
@@ -1101,6 +1105,7 @@ function _rc_region_layer_verdicts(
     slice_values = _rc_region_knot_values(secondary_centers, config.max_atlas_slices_per_region)
     stable_evidence_total = 0
     atlas_passed = 0
+    atlas_calibration_refused = false
     atlas_coverage = Float64[]
     atlas_items = Dict{String, Any}[]
     for secondary in slice_values
@@ -1129,6 +1134,8 @@ function _rc_region_layer_verdicts(
             region_bounds.primary_max,
         )
         time_budget_exceeded = _as_bool(get(atlas_result.diagnostics, "timeBudgetExceeded", false))
+        calibration_refused = _atlas_recon_calibration_refused(atlas_result.diagnostics)
+        atlas_calibration_refused |= calibration_refused
         n_covered = _as_int(get(atlas_result.coverage_summary, "covered", 0))
         n_partial = _as_int(get(atlas_result.coverage_summary, "partial", 0))
         n_unresolved = _as_int(get(atlas_result.coverage_summary, "unresolved", 0))
@@ -1140,6 +1147,7 @@ function _rc_region_layer_verdicts(
             min(1.0, (n_covered / n_windows) * (time_budget_exceeded ? 0.5 : 1.0))
         end
         slice_pass = isempty(stable_evidence) && unresolved_stability == 0 &&
+                     !calibration_refused &&
                      !time_budget_exceeded && n_gaps == 0 &&
                      n_partial == 0 && n_unresolved == 0
         atlas_passed += slice_pass ? 1 : 0
@@ -1152,6 +1160,8 @@ function _rc_region_layer_verdicts(
             "stableEvidenceCount" => length(stable_evidence),
             "unresolvedStabilityCount" => unresolved_stability,
             "timeBudgetExceeded" => time_budget_exceeded,
+            "reconCalibrationRefused" => calibration_refused,
+            "reconCalibration" => get(atlas_result.diagnostics, "reconCalibration", Dict{String, Any}()),
             "nGaps" => n_gaps,
             "nWindows" => n_windows,
             "nPartial" => n_partial,
@@ -1163,6 +1173,8 @@ function _rc_region_layer_verdicts(
     atlas_coverage_effort = isempty(atlas_coverage) ? 0.0 : minimum(atlas_coverage)
     atlas_verdict = if stable_evidence_total > 0
         :fail
+    elseif atlas_calibration_refused
+        :inconclusive
     elseif atlas_slice_count == 0
         :inconclusive
     elseif atlas_pass_fraction >= config.min_atlas_slice_fraction

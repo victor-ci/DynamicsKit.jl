@@ -944,7 +944,7 @@ Each returned item includes the period, point, multipliers, and a stability flag
 
 ## Automatic continuation atlas
 
-The atlas pipeline combines a reconnaissance sweep, window detection, skeleton recovery, continuation, gap retries, optional branch switching, optional sparse-tail auto-refinement for discrete and continuous branches, and optional seed reuse.
+The atlas pipeline combines a reconnaissance sweep, optional closure-threshold calibration, window detection, skeleton recovery, continuation, gap retries, optional branch switching, optional sparse-tail auto-refinement for discrete and continuous branches, and optional seed reuse.
 
 For high-period discrete-map branches, continuation now phase-canonicalizes the recorded representative point along the orbit before results are returned. That keeps `x1`, `x2`, … summaries and saved branch payloads from spuriously hopping between different phases of the same smooth orbit family. Continuous-time branches keep their existing plot-time phase alignment, while atlas auto-refinement now also applies to under-resolved continuous Poincare branches.
 
@@ -970,6 +970,9 @@ atlas = continuation_atlas(sys, AtlasConfig(
         dsmax=0.05,
         max_steps=1000,
     ),
+    # Use recon_calibration=:auto when the closure threshold should be derived
+    # from the run's own periodic/aperiodic evidence instead of fixed manually.
+    recon_calibration=:auto,
     adaptive_recon=true,
     branch_switching=true,
     reuse_neighbor_seeds=true,
@@ -985,6 +988,8 @@ plot_overlay(atlas.brute_force, branches)
 
 Set `auto_refine_sparse_branches=false` (or `auto_refine_max_passes=0`) to disable refinement and accept branches exactly as continuation returns them; raise `auto_refine_max_passes` to densify stubborn tails over additional passes. Each branch's per-attempt outcome is reported in its diagnostics under `autoRefineApplied`, `autoRefineReason`, `autoRefineIntervalsDetected`, and `autoRefinePointCountBefore`/`After`.
 
+Set `recon_calibration=:auto` to replace the fixed `recon_precision` with a run-specific threshold. The atlas estimates a closure-noise scale from Newton-verified periodic anchors when present, otherwise from the solver/Newton tolerance floor; it estimates a recurrence scale from samples that remain aperiodic after an extra-transient check. The selected threshold, both scales, separation margin, and any refusal status are stored in `atlas.diagnostics["reconCalibration"]`. If the scales do not separate, window recovery is skipped and robust-chaos certificates treat the atlas layer as inconclusive.
+
 Important atlas output fields:
 
 | Field              | Meaning                                                                         |
@@ -995,7 +1000,7 @@ Important atlas output fields:
 | `branch_records`   | Recovered continuation branches and provenance                                  |
 | `gaps`             | Uncovered or weakly covered windows after recovery and retries                  |
 | `coverage_summary` | Parameter and geometry coverage diagnostics                                     |
-| `diagnostics`      | Feature flags, seed reuse, branch switching, adaptive recon, and cache metadata |
+| `diagnostics`      | Feature flags, recon calibration, seed reuse, branch switching, adaptive recon, and cache metadata |
 
 ## Continuous-time systems
 

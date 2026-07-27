@@ -409,6 +409,12 @@ Configuration highlights:
 | `brute_force` | Required reconnaissance/brute-force config |
 | `continuation` | Continuation config |
 | `recon_steps`, `recon_precision` | Reconnaissance grid and tolerance |
+| `recon_calibration` | `:fixed` uses `recon_precision`; `:auto` calibrates the tolerance from periodic noise and aperiodic recurrence evidence |
+| `recon_calibration_min_separation` | Minimum recurrence/noise separation required before an auto-calibrated threshold is accepted |
+| `recon_calibration_max_periodic_anchors` | Maximum Newton-verified periodic anchors used for the noise-floor estimate |
+| `recon_calibration_max_aperiodic_anchors` | Maximum extra-transient samples used for the recurrence-scale estimate |
+| `recon_calibration_transient_multiplier` | Extra transient budget used when rechecking candidate aperiodic anchors |
+| `recon_calibration_newton_tol` | Newton tolerance used while verifying candidate periodic anchors |
 | `adaptive_recon` | Add samples near classification/confidence changes before continuation |
 | `window_min_support`, `window_merge_gap` | Candidate-window segmentation |
 | `seed_points_per_window`, `seed_box_padding` | Skeleton seed-box construction |
@@ -421,6 +427,8 @@ Configuration highlights:
 | `cache_enabled` | Allow atlas-level cache use |
 
 The atlas reports both parameter coverage and geometry-aware orbit-cloud coverage, so a branch must match the observed support rather than merely overlap the same parameter interval.
+
+With `recon_calibration=:auto`, the initial reconnaissance pass estimates a closure-noise scale from Newton-verified periodic anchors when available (otherwise from the solver/Newton tolerance floor) and a recurrence scale from samples that remain aperiodic after an extra-transient check. The effective threshold is the geometric mean of the two scales. If they do not separate by `recon_calibration_min_separation`, the atlas records `diagnostics["reconCalibration"]["status"]` as a refusal and skips window recovery; robust-chaos certificates treat that atlas layer as inconclusive.
 
 ## Phase portrait
 
