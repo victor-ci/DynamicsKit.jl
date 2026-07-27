@@ -1097,6 +1097,78 @@ struct RobustChaosCertificate
 end
 
 """
+    RobustChaosRegion
+
+One connected two-parameter candidate region checked by
+`robust_chaos_region_certificate`. The verdict is bounded to the sampled
+operating-map cells, Lyapunov-field grid, atlas slices, basin knots, and finite
+search periods recorded in `certificate_items`.
+"""
+struct RobustChaosRegion
+    id::Int
+    verdict::Symbol
+    robustness_score::Float64
+    a_min::Float64
+    a_max::Float64
+    b_min::Float64
+    b_max::Float64
+    area::Float64
+    leaf_cell_count::Int
+    finest_depth::Int
+    coarsest_depth::Int
+    lyapunov_verdict::Symbol
+    lyapunov_positive_fraction::Float64
+    lyapunov_resolved_fraction::Float64
+    lyapunov_min_resolved_exponent::Float64
+    lyapunov_n_total::Int
+    lyapunov_n_resolved::Int
+    lyapunov_n_positive::Int
+    atlas_verdict::Symbol
+    atlas_slice_count::Int
+    atlas_passed_slices::Int
+    atlas_coverage_effort::Float64
+    atlas_stable_evidence_count::Int
+    basin_verdict::Symbol
+    basin_knot_count::Int
+    basin_chaotic_fraction::Float64
+    basin_resolved_fraction::Float64
+    basin_n_total::Int
+    basin_n_resolved::Int
+    basin_n_chaotic::Int
+    boundary_margin::Float64
+    boundary_edge_censored::Bool
+    counter_evidence::Vector{String}
+    certificate_items::Vector{Dict{String, Any}}
+end
+
+"""
+    RobustChaosRegionResult
+
+Summary of a two-parameter robust-chaos region certification run. It records the
+candidate-region discovery effort, all checked regions, and global budget/scale
+provenance. Use `serialize_robust_chaos_region_result` for a versioned
+JSON-plain representation.
+"""
+struct RobustChaosRegionResult
+    regions::Vector{RobustChaosRegion}
+    system_name::String
+    param_names::Tuple{Symbol, Symbol}
+    candidate_leaf_count::Int
+    rejected_leaf_count::Int
+    adaptive_budget_used::Int
+    adaptive_total_budget::Int
+    adaptive_budget_exhausted::Bool
+    adaptive_uninspected_cell_count::Int
+    adaptive_max_depth_reached::Int
+    adaptive_max_depth_allowed::Int
+    lyapunov_method::Symbol
+    lyapunov_normalization::Symbol
+    boundary_edge_policy::Symbol
+    timestamp::DateTime
+    certificate_items::Vector{Dict{String, Any}}
+end
+
+"""
     ChaosDesignVariable
 
 One scalar design-parameter axis for `design_chaos_source`.

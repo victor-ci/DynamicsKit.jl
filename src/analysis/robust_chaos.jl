@@ -712,3 +712,785 @@ function robust_chaos_certificate(
 )::RobustChaosCertificate
     return _robust_chaos_analysis(sys, config, false; kwargs...)::RobustChaosCertificate
 end
+
+# ─── Two-parameter region certificate ─────────────────────────────────────────
+
+@inline _rc_region_cell_area(cell::AdaptiveMapLeafCell) =
+    max(0.0, cell.a1 - cell.a0) * max(0.0, cell.b1 - cell.b0)
+
+@inline _rc_region_cell_center(cell::AdaptiveMapLeafCell) =
+    ((cell.a0 + cell.a1) * 0.5, (cell.b0 + cell.b1) * 0.5)
+
+function _rc_region_base_params(config::BifurcationMapConfig, a::Float64, b::Float64)
+    required = max(
+        length(config.base_params),
+        config.a_index,
+        config.b_index,
+        maximum(config.a_linked_param_indices; init=0),
+        maximum(config.b_linked_param_indices; init=0),
+    )
+    params = isempty(config.base_params) ? zeros(Float64, required) : copy(config.base_params)
+    if length(params) < required
+        old_length = length(params)
+        resize!(params, required)
+        fill!(@view(params[(old_length + 1):required]), 0.0)
+    end
+    params[config.a_index] = a
+    params[config.b_index] = b
+    for idx in config.a_linked_param_indices
+        params[idx] = a
+    end
+    for idx in config.b_linked_param_indices
+        params[idx] = b
+    end
+    return params
+end
+
+function _rc_region_coarse_status_codes(result::AdaptiveMapResult)
+    na = length(result.coarse_result.a_grid)
+    nb = length(result.coarse_result.b_grid)
+    status = fill(_map_status_code(:unknown), na, nb)
+    a_lookup = Dict(value => idx for (idx, value) in pairs(result.coarse_result.a_grid))
+    b_lookup = Dict(value => idx for (idx, value) in pairs(result.coarse_result.b_grid))
+    for sample in result.samples
+        sample.depth == 0 || continue
+        ia = get(a_lookup, sample.a, nothing)
+        ib = get(b_lookup, sample.b, nothing)
+        if !isnothing(ia) && !isnothing(ib)
+            status[ia, ib] = sample.status_code
+        end
+    end
+    return status
+end
+
+function _rc_region_leaf_candidate(
+    adaptive::AdaptiveMapResult,
+    cell::AdaptiveMapLeafCell,
+    candidate_codes::Set{Int},
+)
+    indices = (cell.si_sw, cell.si_se, cell.si_nw, cell.si_ne)
+    all(idx -> adaptive.samples[idx].status_code in candidate_codes, indices) || return false
+    return cell.si_center == 0 || adaptive.samples[cell.si_center].status_code in candidate_codes
+end
+
+function _rc_region_cells_adjacent(lhs::AdaptiveMapLeafCell, rhs::AdaptiveMapLeafCell)
+    tol = 16 * eps(Float64) * max(
+        abs(lhs.a0), abs(lhs.a1), abs(lhs.b0), abs(lhs.b1),
+        abs(rhs.a0), abs(rhs.a1), abs(rhs.b0), abs(rhs.b1), 1.0,
+    )
+    b_overlap = min(lhs.b1, rhs.b1) - max(lhs.b0, rhs.b0) > tol
+    a_touch = abs(lhs.a1 - rhs.a0) <= tol || abs(rhs.a1 - lhs.a0) <= tol
+    a_overlap = min(lhs.a1, rhs.a1) - max(lhs.a0, rhs.a0) > tol
+    b_touch = abs(lhs.b1 - rhs.b0) <= tol || abs(rhs.b1 - lhs.b0) <= tol
+    return (a_touch && b_overlap) || (b_touch && a_overlap)
+end
+
+@inline _rc_lattice_intervals_overlap(lo1::Int, hi1::Int, lo2::Int, hi2::Int) =
+    min(hi1, hi2) > max(lo1, lo2)
+
+function _rc_region_components(adaptive::AdaptiveMapResult, candidate_leaf_indices::Vector{Int})
+    left_edges = Dict{Int, Vector{Int}}()
+    right_edges = Dict{Int, Vector{Int}}()
+    bottom_edges = Dict{Int, Vector{Int}}()
+    top_edges = Dict{Int, Vector{Int}}()
+    for idx in candidate_leaf_indices
+        cell = adaptive.leaf_cells[idx]
+        push!(get!(left_edges, cell.ia0, Int[]), idx)
+        push!(get!(right_edges, cell.ia1, Int[]), idx)
+        push!(get!(bottom_edges, cell.ib0, Int[]), idx)
+        push!(get!(top_edges, cell.ib1, Int[]), idx)
+    end
+    remaining = Set(candidate_leaf_indices)
+    components = Vector{Int}[]
+    while !isempty(remaining)
+        start = first(remaining)
+        delete!(remaining, start)
+        stack = [start]
+        component = Int[]
+        while !isempty(stack)
+            idx = pop!(stack)
+            push!(component, idx)
+            cell = adaptive.leaf_cells[idx]
+            neighbours = Int[]
+            for other in get(left_edges, cell.ia1, Int[])
+                other in remaining || continue
+                other_cell = adaptive.leaf_cells[other]
+                _rc_lattice_intervals_overlap(cell.ib0, cell.ib1, other_cell.ib0, other_cell.ib1) &&
+                    push!(neighbours, other)
+            end
+            for other in get(right_edges, cell.ia0, Int[])
+                other in remaining || continue
+                other_cell = adaptive.leaf_cells[other]
+                _rc_lattice_intervals_overlap(cell.ib0, cell.ib1, other_cell.ib0, other_cell.ib1) &&
+                    push!(neighbours, other)
+            end
+            for other in get(bottom_edges, cell.ib1, Int[])
+                other in remaining || continue
+                other_cell = adaptive.leaf_cells[other]
+                _rc_lattice_intervals_overlap(cell.ia0, cell.ia1, other_cell.ia0, other_cell.ia1) &&
+                    push!(neighbours, other)
+            end
+            for other in get(top_edges, cell.ib0, Int[])
+                other in remaining || continue
+                other_cell = adaptive.leaf_cells[other]
+                _rc_lattice_intervals_overlap(cell.ia0, cell.ia1, other_cell.ia0, other_cell.ia1) &&
+                    push!(neighbours, other)
+            end
+            for other in neighbours
+                delete!(remaining, other)
+                push!(stack, other)
+            end
+        end
+        push!(components, sort(component))
+    end
+    sort!(components; by = comp -> (
+        minimum(adaptive.leaf_cells[idx].a0 for idx in comp),
+        minimum(adaptive.leaf_cells[idx].b0 for idx in comp),
+        length(comp),
+    ))
+    return components
+end
+
+function _rc_region_bbox(cells::Vector{AdaptiveMapLeafCell})
+    return (
+        a_min = minimum(cell.a0 for cell in cells),
+        a_max = maximum(cell.a1 for cell in cells),
+        b_min = minimum(cell.b0 for cell in cells),
+        b_max = maximum(cell.b1 for cell in cells),
+    )
+end
+
+function _rc_region_contains(cells::Vector{AdaptiveMapLeafCell}, a::Float64, b::Float64)
+    return any(cell -> cell.a0 <= a <= cell.a1 && cell.b0 <= b <= cell.b1, cells)
+end
+
+function _rc_region_grid_indices(cells::Vector{AdaptiveMapLeafCell}, a_grid, b_grid)
+    indices = Set{Tuple{Int, Int}}()
+    a_values = collect(Float64, a_grid)
+    b_values = collect(Float64, b_grid)
+    for cell in cells
+        i0 = searchsortedfirst(a_values, cell.a0)
+        i1 = searchsortedlast(a_values, cell.a1)
+        j0 = searchsortedfirst(b_values, cell.b0)
+        j1 = searchsortedlast(b_values, cell.b1)
+        if i0 <= i1 && j0 <= j1
+            for j in j0:j1, i in i0:i1
+                push!(indices, (i, j))
+            end
+        end
+    end
+    return sort!(collect(indices))
+end
+
+function _rc_region_knot_values(values::Vector{Float64}, max_count::Int)
+    isempty(values) && return Float64[]
+    vals = sort(unique(values))
+    length(vals) <= max_count && return vals
+    max_count == 1 && return [vals[cld(length(vals), 2)]]
+    idxs = round.(Int, range(1, length(vals); length=max_count))
+    return vals[unique(idxs)]
+end
+
+function _rc_region_sample_centers(cells::Vector{AdaptiveMapLeafCell}, max_count::Int)
+    centers = [_rc_region_cell_center(cell) for cell in cells]
+    sort!(centers; by = c -> (c[1] + c[2], c[1], c[2]))
+    length(centers) <= max_count && return centers
+    max_count == 1 && return [centers[cld(length(centers), 2)]]
+    idxs = unique(round.(Int, range(1, length(centers); length=max_count)))
+    return centers[idxs]
+end
+
+function _rc_region_interval_and_secondary(region, axis::Symbol)
+    if axis == :a
+        return (primary_min=region.a_min, primary_max=region.a_max,
+                secondary_min=region.b_min, secondary_max=region.b_max)
+    else
+        return (primary_min=region.b_min, primary_max=region.b_max,
+                secondary_min=region.a_min, secondary_max=region.a_max)
+    end
+end
+
+function _rc_region_atlas_config(
+    config::RobustChaosRegionConfig,
+    region_bounds,
+    secondary_value::Float64,
+)
+    axis = config.slice_axis
+    primary_index = axis == :a ? config.map.a_index : config.map.b_index
+    primary_links = axis == :a ? config.map.a_linked_param_indices : config.map.b_linked_param_indices
+    a = axis == :a ? (region_bounds.primary_min + region_bounds.primary_max) * 0.5 : secondary_value
+    b = axis == :a ? secondary_value : (region_bounds.primary_min + region_bounds.primary_max) * 0.5
+    params = _rc_region_base_params(config.map, a, b)
+    atlas = config.atlas
+    bf = config.atlas.brute_force
+    ct = config.atlas.continuation
+    bf2 = Accessors.@set bf.param_min = region_bounds.primary_min
+    bf2 = Accessors.@set bf2.param_max = region_bounds.primary_max
+    bf2 = Accessors.@set bf2.param_index = primary_index
+    bf2 = Accessors.@set bf2.linked_param_indices = copy(primary_links)
+    bf2 = Accessors.@set bf2.fixed_params = params
+    ct2 = Accessors.@set ct.p_min = region_bounds.primary_min
+    ct2 = Accessors.@set ct2.p_max = region_bounds.primary_max
+    ct2 = Accessors.@set ct2.param_index = primary_index
+    ct2 = Accessors.@set ct2.linked_param_indices = copy(primary_links)
+    atlas2 = Accessors.@set atlas.brute_force = bf2
+    atlas2 = Accessors.@set atlas2.continuation = ct2
+    return atlas2, params
+end
+
+function _rc_region_basin_config(config::RobustChaosRegionConfig, a::Float64, b::Float64)
+    primary = config.slice_axis == :a ? a : b
+    params = _rc_region_base_params(config.map, a, b)
+    template = config.basins
+    basins = Accessors.@set template.bif_param = primary
+    basins = Accessors.@set basins.fixed_params = params
+    return basins, params
+end
+
+function _rc_region_classify_basin_seed(
+    sys::DiscreteMap,
+    ic::AbstractVector,
+    params::AbstractVector,
+    config::BifurcationMapConfig,
+)
+    result = _estimate_discrete_map_largest_lyapunov(
+        sys,
+        params,
+        SVector{sys.dim, Float64}(ic),
+        _map_lyapunov_transient(config),
+        _map_lyapunov_iterations(config),
+        config.lyapunov_perturbation,
+        config.divergence_cutoff,
+    )
+    if result.estimation_status == :collapsed
+        return :non_chaotic
+    elseif result.estimation_status != :ok || !isfinite(result.exponent)
+        return :unresolved
+    elseif result.exponent > config.lyapunov_neutral_tolerance
+        return :chaotic
+    else
+        return :non_chaotic
+    end
+end
+
+function _rc_region_classify_basin_seed(
+    sys::ContinuousODE,
+    ic::AbstractVector,
+    params::AbstractVector,
+    config::BifurcationMapConfig;
+    solver,
+    reltol::Float64,
+    abstol::Float64,
+    min_crossing_time::Float64,
+)
+    result = _estimate_continuous_poincare_largest_lyapunov(
+        sys,
+        params,
+        collect(Float64, ic),
+        _map_lyapunov_transient(config),
+        _map_lyapunov_iterations(config),
+        config.lyapunov_perturbation,
+        config.divergence_cutoff;
+        solver=solver,
+        reltol=reltol,
+        abstol=abstol,
+        min_crossing_time=min_crossing_time,
+    )
+    if result.estimation_status == :collapsed
+        return :non_chaotic
+    elseif result.estimation_status != :ok || !isfinite(result.exponent)
+        return :unresolved
+    elseif result.exponent > config.lyapunov_neutral_tolerance
+        return :chaotic
+    else
+        return :non_chaotic
+    end
+end
+
+function _rc_region_basin_counts(
+    sys::Union{DiscreteMap, ContinuousODE},
+    basins_result::BasinsResult,
+    params::AbstractVector,
+    config::RobustChaosRegionConfig;
+    solver,
+    reltol::Float64,
+    abstol::Float64,
+    min_crossing_time::Float64,
+)
+    x_grid = basins_result.x_grid
+    y_grid = basins_result.y_grid
+    ic = copy(basins_result.ic_template)
+    n_total = 0
+    n_resolved = 0
+    n_chaotic = 0
+    counts = Dict{Symbol, Int}()
+    for (j, y_val) in enumerate(y_grid), (i, x_val) in enumerate(x_grid)
+        n_total += 1
+        period = basins_result.periodicity[i, j]
+        copyto!(ic, basins_result.ic_template)
+        ic[basins_result.x_index] = x_val
+        ic[basins_result.y_index] = y_val
+        cls = if period > 0
+            :periodic
+        elseif sys isa ContinuousODE
+            _rc_region_classify_basin_seed(
+                sys, ic, params, config.lyapunov_field;
+                solver=solver,
+                reltol=reltol,
+                abstol=abstol,
+                min_crossing_time=min_crossing_time,
+            )
+        else
+            _rc_region_classify_basin_seed(sys, ic, params, config.lyapunov_field)
+        end
+        counts[cls] = get(counts, cls, 0) + 1
+        if cls == :chaotic
+            n_resolved += 1
+            n_chaotic += 1
+        elseif cls in (:periodic, :non_chaotic)
+            n_resolved += 1
+        end
+    end
+    return (n_total=n_total, n_resolved=n_resolved, n_chaotic=n_chaotic, counts=counts)
+end
+
+function _rc_region_layer_verdicts(
+    sys::Union{DiscreteMap, ContinuousODE},
+    config::RobustChaosRegionConfig,
+    cells::Vector{AdaptiveMapLeafCell},
+    lyapunov_result::LyapunovFieldResult,
+    boundary::RegimeBoundaryResult;
+    initial_point::Union{Nothing, AbstractVector},
+    solver,
+    reltol::Float64,
+    abstol::Float64,
+    min_crossing_time::Float64,
+    log::Union{Nothing, Function},
+)
+    grid_indices = _rc_region_grid_indices(cells, lyapunov_result.a_grid, lyapunov_result.b_grid)
+    positive_code = _map_lyapunov_status_code(:chaotic_candidate)
+    resolved_codes = Set([
+        _map_lyapunov_status_code(:chaotic_candidate),
+        _map_lyapunov_status_code(:periodic),
+        _map_lyapunov_status_code(:quasiperiodic_neutral_candidate),
+    ])
+    n_lya_total = length(grid_indices)
+    n_lya_resolved = count(idx -> lyapunov_result.classification_status_codes[idx...] in resolved_codes, grid_indices)
+    n_lya_positive = count(idx -> lyapunov_result.classification_status_codes[idx...] == positive_code, grid_indices)
+    resolved_exps = Float64[
+        lyapunov_result.exponents[idx...] for idx in grid_indices
+        if lyapunov_result.classification_status_codes[idx...] in resolved_codes &&
+           isfinite(lyapunov_result.exponents[idx...])
+    ]
+    lya_min = isempty(resolved_exps) ? NaN : minimum(resolved_exps)
+    lya_resolved_frac = n_lya_total > 0 ? n_lya_resolved / n_lya_total : 0.0
+    lya_positive_frac = n_lya_resolved > 0 ? n_lya_positive / n_lya_resolved : 0.0
+    lya_verdict = _rc_lyapunov_verdict(
+        n_lya_total,
+        n_lya_resolved,
+        n_lya_positive,
+        config.min_lyapunov_positive_fraction,
+        config.min_lyapunov_resolved_fraction,
+    )
+
+    bounds = _rc_region_bbox(cells)
+    region_bounds = _rc_region_interval_and_secondary(bounds, config.slice_axis)
+    secondary_centers = config.slice_axis == :a ?
+        [(_rc_region_cell_center(cell))[2] for cell in cells] :
+        [(_rc_region_cell_center(cell))[1] for cell in cells]
+    slice_values = _rc_region_knot_values(secondary_centers, config.max_atlas_slices_per_region)
+    stable_evidence_total = 0
+    atlas_passed = 0
+    atlas_coverage = Float64[]
+    atlas_items = Dict{String, Any}[]
+    for secondary in slice_values
+        atlas_cfg, base_params = _rc_region_atlas_config(config, region_bounds, secondary)
+        _rc_log!(log, "robust_chaos_region_certificate: atlas slice $(config.slice_axis) secondary=$secondary over [$(region_bounds.primary_min), $(region_bounds.primary_max)]")
+        atlas_result = if sys isa ContinuousODE
+            continuation_atlas(
+                sys,
+                atlas_cfg;
+                initial_point=initial_point,
+                solver=solver,
+                reltol=reltol,
+                abstol=abstol,
+                min_crossing_time=min_crossing_time,
+                log=log,
+            )
+        else
+            continuation_atlas(sys, atlas_cfg; initial_point=initial_point, log=log)
+        end
+        stable_evidence, unresolved_stability = _rc_stable_window_evidence(
+            atlas_result,
+            sys,
+            base_params,
+            atlas_cfg,
+            region_bounds.primary_min,
+            region_bounds.primary_max,
+        )
+        time_budget_exceeded = _as_bool(get(atlas_result.diagnostics, "timeBudgetExceeded", false))
+        n_covered = _as_int(get(atlas_result.coverage_summary, "covered", 0))
+        n_partial = _as_int(get(atlas_result.coverage_summary, "partial", 0))
+        n_unresolved = _as_int(get(atlas_result.coverage_summary, "unresolved", 0))
+        n_windows = n_covered + n_partial + n_unresolved
+        n_gaps = length(atlas_result.gaps)
+        coverage_effort = if n_windows == 0
+            (!time_budget_exceeded && n_gaps == 0) ? 1.0 : 0.0
+        else
+            min(1.0, (n_covered / n_windows) * (time_budget_exceeded ? 0.5 : 1.0))
+        end
+        slice_pass = isempty(stable_evidence) && unresolved_stability == 0 &&
+                     !time_budget_exceeded && n_gaps == 0 &&
+                     n_partial == 0 && n_unresolved == 0
+        atlas_passed += slice_pass ? 1 : 0
+        stable_evidence_total += length(stable_evidence)
+        push!(atlas_coverage, coverage_effort)
+        push!(atlas_items, Dict{String, Any}(
+            "secondary" => secondary,
+            "passed" => slice_pass,
+            "coverageEffort" => coverage_effort,
+            "stableEvidenceCount" => length(stable_evidence),
+            "unresolvedStabilityCount" => unresolved_stability,
+            "timeBudgetExceeded" => time_budget_exceeded,
+            "nGaps" => n_gaps,
+            "nWindows" => n_windows,
+            "nPartial" => n_partial,
+            "nUnresolved" => n_unresolved,
+        ))
+    end
+    atlas_slice_count = length(slice_values)
+    atlas_pass_fraction = atlas_slice_count > 0 ? atlas_passed / atlas_slice_count : 0.0
+    atlas_coverage_effort = isempty(atlas_coverage) ? 0.0 : minimum(atlas_coverage)
+    atlas_verdict = if stable_evidence_total > 0
+        :fail
+    elseif atlas_slice_count == 0
+        :inconclusive
+    elseif atlas_pass_fraction >= config.min_atlas_slice_fraction
+        :pass
+    else
+        :inconclusive
+    end
+
+    basin_centers = _rc_region_sample_centers(cells, config.max_basin_knots_per_region)
+    basin_total = 0
+    basin_resolved = 0
+    basin_chaotic = 0
+    basin_items = Dict{String, Any}[]
+    for (a, b) in basin_centers
+        basin_cfg, params = _rc_region_basin_config(config, a, b)
+        _rc_log!(log, "robust_chaos_region_certificate: basin knot a=$a b=$b")
+        basin_result = if sys isa ContinuousODE
+            basins_of_attraction(sys, basin_cfg; solver=solver, reltol=reltol, abstol=abstol)
+        else
+            basins_of_attraction(sys, basin_cfg)
+        end
+        counts = _rc_region_basin_counts(
+            sys,
+            basin_result,
+            params,
+            config;
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time,
+        )
+        basin_total += counts.n_total
+        basin_resolved += counts.n_resolved
+        basin_chaotic += counts.n_chaotic
+        push!(basin_items, Dict{String, Any}(
+            "a" => a,
+            "b" => b,
+            "nTotal" => counts.n_total,
+            "nResolved" => counts.n_resolved,
+            "nChaotic" => counts.n_chaotic,
+            "classCounts" => Dict{String, Int}(String(k) => v for (k, v) in counts.counts),
+        ))
+    end
+    basin_resolved_frac = basin_total > 0 ? basin_resolved / basin_total : 0.0
+    basin_chaotic_frac = basin_resolved > 0 ? basin_chaotic / basin_resolved : 0.0
+    basin_verdict = _rc_basin_verdict(
+        basin_total,
+        basin_resolved,
+        basin_chaotic,
+        config.min_chaotic_basin_fraction,
+        config.min_basin_resolved_fraction,
+    )
+
+    boundary_indices = _rc_region_grid_indices(cells, boundary.a_grid, boundary.b_grid)
+    margins = Float64[
+        boundary.distance[idx...] for idx in boundary_indices
+        if boundary.valid[idx...] && isfinite(boundary.distance[idx...])
+    ]
+    margin = isempty(margins) ? NaN : minimum(margins)
+    edge_censored = any(idx -> boundary.edge_censored[idx...], boundary_indices)
+
+    counter = String[]
+    lya_verdict == :pass || push!(counter, "lyapunov:$lya_verdict positive=$(round(lya_positive_frac, digits=4)) resolved=$(round(lya_resolved_frac, digits=4))")
+    atlas_verdict == :pass || push!(counter, "atlas:$atlas_verdict passed=$atlas_passed/$atlas_slice_count stable=$stable_evidence_total")
+    basin_verdict == :pass || push!(counter, "basins:$basin_verdict chaotic=$(round(basin_chaotic_frac, digits=4)) resolved=$(round(basin_resolved_frac, digits=4))")
+    edge_censored && push!(counter, "boundary:edge_censored")
+
+    verdicts = (lya_verdict, atlas_verdict, basin_verdict)
+    overall = if any(==(:fail), verdicts)
+        :fragile
+    elseif all(==(:pass), verdicts)
+        :certified
+    else
+        :inconclusive
+    end
+    lya_score = lya_positive_frac * lya_resolved_frac
+    atlas_score = stable_evidence_total == 0 ? atlas_coverage_effort * atlas_pass_fraction : 0.0
+    basin_score = basin_chaotic_frac * basin_resolved_frac
+    score = min(lya_score, atlas_score, basin_score)
+
+    items = Dict{String, Any}[
+        Dict("layer" => "lyapunov", "verdict" => String(lya_verdict),
+             "nTotal" => n_lya_total, "nResolved" => n_lya_resolved,
+             "nPositive" => n_lya_positive,
+             "positiveFraction" => lya_positive_frac,
+             "resolvedFraction" => lya_resolved_frac,
+             "minResolvedExponent" => lya_min),
+        Dict("layer" => "atlas", "verdict" => String(atlas_verdict),
+             "sliceCount" => atlas_slice_count,
+             "passedSlices" => atlas_passed,
+             "coverageEffort" => atlas_coverage_effort,
+             "stableEvidenceCount" => stable_evidence_total,
+             "slices" => atlas_items),
+        Dict("layer" => "basins", "verdict" => String(basin_verdict),
+             "knotCount" => length(basin_centers),
+             "nTotal" => basin_total,
+             "nResolved" => basin_resolved,
+             "nChaotic" => basin_chaotic,
+             "chaoticFraction" => basin_chaotic_frac,
+             "resolvedFraction" => basin_resolved_frac,
+             "knots" => basin_items),
+        Dict("layer" => "boundary", "margin" => margin,
+             "edgeCensored" => edge_censored),
+        Dict("layer" => "overall", "verdict" => String(overall),
+             "robustnessScore" => score),
+    ]
+
+    return (
+        verdict=overall,
+        score=score,
+        lyapunov_verdict=lya_verdict,
+        lyapunov_positive_fraction=lya_positive_frac,
+        lyapunov_resolved_fraction=lya_resolved_frac,
+        lyapunov_min_resolved_exponent=lya_min,
+        lyapunov_n_total=n_lya_total,
+        lyapunov_n_resolved=n_lya_resolved,
+        lyapunov_n_positive=n_lya_positive,
+        atlas_verdict=atlas_verdict,
+        atlas_slice_count=atlas_slice_count,
+        atlas_passed_slices=atlas_passed,
+        atlas_coverage_effort=atlas_coverage_effort,
+        atlas_stable_evidence_count=stable_evidence_total,
+        basin_verdict=basin_verdict,
+        basin_knot_count=length(basin_centers),
+        basin_chaotic_fraction=basin_chaotic_frac,
+        basin_resolved_fraction=basin_resolved_frac,
+        basin_n_total=basin_total,
+        basin_n_resolved=basin_resolved,
+        basin_n_chaotic=basin_chaotic,
+        boundary_margin=margin,
+        boundary_edge_censored=edge_censored,
+        counter_evidence=counter,
+        certificate_items=items,
+    )
+end
+
+"""
+    robust_chaos_region_certificate(sys, config; kwargs...) -> RobustChaosRegionResult
+
+Certify robust-chaos regions in a two-parameter operating plane. The analysis is
+conservative: candidate regions come from adaptive map cells, unresolved
+refinement or failed evidence layers block certification, and every verdict is
+bounded to the recorded finite grid, slice, basin, and continuation budgets.
+"""
+function robust_chaos_region_certificate(
+    sys::Union{DiscreteMap, ContinuousODE},
+    config::RobustChaosRegionConfig;
+    initial_point::Union{Nothing, AbstractVector} = nothing,
+    solver = Tsit5(),
+    reltol::Float64 = 1e-8,
+    abstol::Float64 = 1e-8,
+    min_crossing_time::Float64 = config.map.min_crossing_time,
+    log::Union{Nothing, Function} = nothing,
+    compute_backend::ComputeBackend = cpu_backend(),
+)::RobustChaosRegionResult
+    if sys isa ContinuousODE
+        map_cfg = Accessors.@set config.map.min_crossing_time = min_crossing_time
+        field_cfg = Accessors.@set config.lyapunov_field.min_crossing_time = min_crossing_time
+        basins_cfg = Accessors.@set config.basins.min_crossing_time = min_crossing_time
+        # ContinuationConfig has no crossing-time field; atlas continuation receives
+        # the same value through the `continuation_atlas(...; min_crossing_time)` keyword.
+        atlas_bf = Accessors.@set config.atlas.brute_force.min_crossing_time = min_crossing_time
+        atlas_cfg = Accessors.@set config.atlas.brute_force = atlas_bf
+        config = Accessors.@set config.map = map_cfg
+        config = Accessors.@set config.lyapunov_field = field_cfg
+        config = Accessors.@set config.basins = basins_cfg
+        config = Accessors.@set config.atlas = atlas_cfg
+    end
+
+    _rc_log!(log, "robust_chaos_region_certificate: adaptive candidate map")
+    adaptive = if sys isa ContinuousODE
+        adaptive_bifurcation_map(
+            sys,
+            config.map,
+            config.adaptive;
+            initial_point=initial_point,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            backend=compute_backend,
+        )
+    else
+        adaptive_bifurcation_map(
+            sys,
+            config.map,
+            config.adaptive;
+            initial_point=initial_point,
+            backend=compute_backend,
+        )
+    end
+
+    _rc_log!(log, "robust_chaos_region_certificate: Lyapunov field")
+    lyapunov_result = if sys isa ContinuousODE
+        lyapunov_field(
+            sys,
+            config.lyapunov_field;
+            initial_point=initial_point,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            backend=compute_backend,
+        )
+    else
+        lyapunov_field(
+            sys,
+            config.lyapunov_field;
+            initial_point=initial_point,
+            backend=compute_backend,
+        )
+    end
+
+    status_codes = _rc_region_coarse_status_codes(adaptive)
+    boundary = regime_boundary_distances(
+        adaptive.coarse_result;
+        status_codes=status_codes,
+        config=RegimeBoundaryConfig(edge_policy=config.boundary_edge_policy),
+    )
+
+    candidate_codes = Set(_map_status_code(status) for status in config.candidate_statuses)
+    candidate_leaf_indices = Int[
+        idx for idx in eachindex(adaptive.leaf_cells)
+        if _rc_region_leaf_candidate(adaptive, adaptive.leaf_cells[idx], candidate_codes)
+    ]
+    components = _rc_region_components(adaptive, candidate_leaf_indices)
+
+    regions = RobustChaosRegion[]
+    rejected = 0
+    for component in components
+        cells = [adaptive.leaf_cells[idx] for idx in component]
+        area = sum(_rc_region_cell_area, cells)
+        if area < config.min_region_area
+            rejected += length(component)
+            continue
+        end
+        bounds = _rc_region_bbox(cells)
+        layers = _rc_region_layer_verdicts(
+            sys,
+            config,
+            cells,
+            lyapunov_result,
+            boundary;
+            initial_point=initial_point,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time,
+            log=log,
+        )
+        push!(regions, RobustChaosRegion(
+            length(regions) + 1,
+            layers.verdict,
+            layers.score,
+            bounds.a_min,
+            bounds.a_max,
+            bounds.b_min,
+            bounds.b_max,
+            area,
+            length(cells),
+            maximum(cell.depth for cell in cells),
+            minimum(cell.depth for cell in cells),
+            layers.lyapunov_verdict,
+            layers.lyapunov_positive_fraction,
+            layers.lyapunov_resolved_fraction,
+            layers.lyapunov_min_resolved_exponent,
+            layers.lyapunov_n_total,
+            layers.lyapunov_n_resolved,
+            layers.lyapunov_n_positive,
+            layers.atlas_verdict,
+            layers.atlas_slice_count,
+            layers.atlas_passed_slices,
+            layers.atlas_coverage_effort,
+            layers.atlas_stable_evidence_count,
+            layers.basin_verdict,
+            layers.basin_knot_count,
+            layers.basin_chaotic_fraction,
+            layers.basin_resolved_fraction,
+            layers.basin_n_total,
+            layers.basin_n_resolved,
+            layers.basin_n_chaotic,
+            layers.boundary_margin,
+            layers.boundary_edge_censored,
+            layers.counter_evidence,
+            layers.certificate_items,
+        ))
+    end
+
+    items = Dict{String, Any}[
+        Dict("layer" => "adaptive_map",
+             "candidate_leaf_count" => length(candidate_leaf_indices),
+             "component_count" => length(components),
+             "budget_used" => adaptive.budget_used,
+             "total_budget" => adaptive.total_budget,
+             "budget_exhausted" => adaptive.budget_exhausted,
+             "uninspected_cell_count" => adaptive.uninspected_cell_count,
+             "max_depth_reached" => adaptive.max_depth_reached,
+             "max_depth_allowed" => adaptive.max_depth_allowed),
+        Dict("layer" => "lyapunov_field",
+             "method" => String(lyapunov_result.lyapunov_method),
+             "normalization" => String(lyapunov_result.normalization),
+             "grid" => [length(lyapunov_result.a_grid), length(lyapunov_result.b_grid)]),
+        Dict("layer" => "boundary_margin",
+             "edge_policy" => String(boundary.edge_policy),
+             "status_evidence" => boundary.status_evidence),
+        Dict("layer" => "overall",
+             "region_count" => length(regions),
+             "certified_region_count" => count(region -> region.verdict == :certified, regions),
+             "fragile_region_count" => count(region -> region.verdict == :fragile, regions),
+             "inconclusive_region_count" => count(region -> region.verdict == :inconclusive, regions)),
+    ]
+
+    return RobustChaosRegionResult(
+        regions,
+        sys.name,
+        config.map.a_index <= length(sys.param_names) && config.map.b_index <= length(sys.param_names) ?
+            (sys.param_names[config.map.a_index], sys.param_names[config.map.b_index]) :
+            (:a, :b),
+        length(candidate_leaf_indices),
+        rejected,
+        adaptive.budget_used,
+        adaptive.total_budget,
+        adaptive.budget_exhausted,
+        adaptive.uninspected_cell_count,
+        adaptive.max_depth_reached,
+        adaptive.max_depth_allowed,
+        lyapunov_result.lyapunov_method,
+        lyapunov_result.normalization,
+        boundary.edge_policy,
+        now(),
+        items,
+    )
+end

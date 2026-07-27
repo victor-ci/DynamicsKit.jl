@@ -13,6 +13,7 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | Which periodic orbits exist at one parameter value? | Periodic skeleton |
 | Which attractor is reached from each initial condition? | Basins of attraction |
 | What happens across two parameters? | 2D bifurcation map |
+| Which robust-chaos regions survive plane-level counter-evidence checks? | Robust-chaos region certificate |
 | Where does a continuation bifurcation boundary bend across two parameters? | Codimension-2 curve |
 | Where are fold / flip / Neimark-Sacker points and what is their local criticality? | Map special points + normal forms |
 | How does the largest Lyapunov exponent vary along one parameter? | Lyapunov diagram |
@@ -741,6 +742,43 @@ result2 = deserialize_adaptive_map_result(data)    # exact round-trip
 
 The adaptive-map serializer uses a columnar layout: `samples`, `leafCells`, and
 `boundarySegments` are dictionaries of flat arrays rather than row-wise records.
+
+## Robust-chaos region certificate
+
+Function:
+
+```julia
+robust_chaos_region_certificate(sys, config::RobustChaosRegionConfig; kwargs...)
+```
+
+This is the plane-level counterpart of `robust_chaos_certificate`. It composes
+existing primitives without changing their numerical meanings:
+
+1. `adaptive_bifurcation_map` proposes connected candidate cells with configured
+   map statuses, defaulting to `:aperiodic_or_high_period`.
+2. `lyapunov_field` checks the candidate interiors on the same parameter rectangle.
+3. `continuation_atlas` runs deterministic one-parameter slices through each
+   region and reports stable low-period counter-evidence.
+4. `basins_of_attraction` runs deterministic interior knots; undetected-period
+   seeds are rechecked by a finite-time Lyapunov estimator before counting as chaotic.
+5. `regime_boundary_distances` attaches the finite-grid boundary margin and
+   edge-censoring flag.
+
+`RobustChaosRegionConfig` carries the coarse/adaptive map configs, the Lyapunov
+field config, atlas and basin templates, the slice axis (`:a` or `:b`), layer
+thresholds, and deterministic per-region effort caps. The map and Lyapunov-field
+configs must describe the same parameter rectangle and base parameters outside
+the swept axes. The atlas and basin templates are filled per region/knot, so their
+primary `param_index` must match the selected slice axis.
+
+Each `RobustChaosRegion` records bounds, area, leaf-cell count, finest/coarsest
+quadtree depth, layer verdicts and fractions, atlas slice counts, basin knot
+counts, boundary margin, edge-censoring, named counter-evidence, and a
+conservative score. `:certified` requires all layers to pass; stable atlas evidence
+or failed Lyapunov/basin thresholds makes the region `:fragile`, and insufficient
+coverage makes it `:inconclusive`. The claim is bounded to the adaptive scale,
+field grid, atlas slice/period budget, basin knots, and boundary-distance
+convention recorded in the result.
 
 ## Power spectrum
 

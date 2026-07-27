@@ -126,6 +126,94 @@ using Dates: DateTime
         @test !f([0.7], [0.7000001], Int[])
     end
 
+    @testset "RobustChaosRegionConfig validation" begin
+        map_cfg = BifurcationMapConfig(
+            a_min=0.0, a_max=1.0, a_steps=2,
+            b_min=0.0, b_max=1.0, b_steps=2,
+            a_index=1, b_index=2,
+            base_params=[0.5, 0.5],
+            lyapunov_iterations=12,
+        )
+        adaptive = AdaptiveMapConfig(total_budget=32, max_depth=1)
+        atlas = AtlasConfig(
+            brute_force=BruteForceConfig(
+                param_min=0.0, param_max=1.0, param_index=1,
+                fixed_params=[0.5, 0.5], param_steps=2,
+            ),
+            continuation=ContinuationConfig(
+                p_min=0.0, p_max=1.0, param_index=1,
+                ds=0.05, dsmax=0.1, max_steps=10,
+            ),
+            periods=[1], max_period=1, cache_enabled=false, threaded=false,
+        )
+        basins = BasinsConfig(
+            bif_param=0.5, param_index=1, fixed_params=[0.5, 0.5],
+            x_min=0.1, x_max=0.9, x_steps=1,
+            y_min=0.1, y_max=0.9, y_steps=1,
+            iterations=10, max_period=1,
+        )
+
+        cfg = RobustChaosRegionConfig(
+            map=map_cfg,
+            adaptive=adaptive,
+            lyapunov_field=map_cfg,
+            atlas=atlas,
+            basins=basins,
+        )
+        @test cfg.slice_axis == :a
+        @test cfg.candidate_statuses == [:aperiodic_or_high_period]
+        @test_throws AssertionError RobustChaosRegionConfig(
+            map=map_cfg, adaptive=adaptive, lyapunov_field=map_cfg,
+            atlas=atlas, basins=basins, slice_axis=:bad)
+        @test_throws AssertionError RobustChaosRegionConfig(
+            map=map_cfg, adaptive=adaptive, lyapunov_field=map_cfg,
+            atlas=atlas, basins=basins, candidate_statuses=Symbol[])
+        bad_field = BifurcationMapConfig(
+            a_min=0.0, a_max=1.0, a_steps=2,
+            b_min=0.0, b_max=2.0, b_steps=2,
+            a_index=1, b_index=2,
+            base_params=[0.5, 0.5],
+        )
+        @test_throws AssertionError RobustChaosRegionConfig(
+            map=map_cfg, adaptive=adaptive,
+            lyapunov_field=bad_field,
+            atlas=atlas, basins=basins)
+    end
+
+    @testset "Serialization — robust-chaos region result" begin
+        region = RobustChaosRegion(
+            1, :certified, 0.75,
+            0.1, 0.9, 0.2, 0.8,
+            0.48, 6, 2, 1,
+            :pass, 1.0, 1.0, 0.12, 9, 9, 9,
+            :pass, 2, 2, 1.0, 0,
+            :pass, 2, 1.0, 1.0, 18, 18, 18,
+            0.05, false,
+            String[],
+            Dict{String, Any}[Dict("layer" => "overall", "verdict" => "certified")],
+        )
+        result = RobustChaosRegionResult(
+            [region],
+            "synthetic",
+            (:a, :b),
+            6, 0, 64, 80, false, 0, 2, 2,
+            :two_trajectory,
+            :per_iteration,
+            :censored,
+            DateTime(2026, 7, 27),
+            Dict{String, Any}[Dict("layer" => "adaptive_map", "budget_used" => 64)],
+        )
+        plain = serialize_robust_chaos_region_result(result)
+        @test plain["format"] == "robust-chaos-region-result-v1"
+        restored = deserialize_robust_chaos_region_result(plain)
+        @test restored.system_name == result.system_name
+        @test restored.candidate_leaf_count == 6
+        @test length(restored.regions) == 1
+        @test restored.regions[1].verdict == :certified
+        @test restored.regions[1].boundary_margin ≈ 0.05
+        @test restored.regions[1].atlas_slice_count == 2
+    end
+
     @testset "Stable evidence keeps disjoint runs separate" begin
         samples = Tuple{Float64, Union{Bool, Nothing}}[
             (0.1, true),
@@ -345,6 +433,71 @@ using Dates: DateTime
         @test cert2.basin_verdict == :fail
         @test cert2.basin_chaotic_fraction < 0.1
         @test cert2.robustness_score == 0.0
+    end
+
+    @testset "Integration — two-parameter region certificate (cat map)" begin
+        cat_map_2p = DiscreteMap(
+            (x, p) -> SVector(mod(x[1] + x[2], 1.0), mod(x[1] + 2 * x[2], 1.0)),
+            2, [:a, :b], "cat_map_region_rc_test"
+        )
+        map_cfg = BifurcationMapConfig(
+            a_min=0.0, a_max=1.0, a_steps=2,
+            b_min=0.0, b_max=1.0, b_steps=2,
+            a_index=1, b_index=2,
+            base_params=[0.5, 0.5],
+            max_period=2, iterations=70, precision=1e-6,
+            reuse_neighbor_seeds=false,
+            lyapunov_iterations=80,
+            lyapunov_transient=20,
+        )
+        atlas = AtlasConfig(
+            brute_force=BruteForceConfig(
+                param_min=0.0, param_max=1.0, param_index=1,
+                fixed_params=[0.5, 0.5], param_steps=3,
+                iterations=70, transient=30,
+            ),
+            continuation=ContinuationConfig(
+                p_min=0.0, p_max=1.0, param_index=1,
+                ds=0.05, dsmax=0.1, max_steps=30,
+            ),
+            periods=[1, 2], max_period=2, recon_steps=3,
+            cache_enabled=false, threaded=false,
+        )
+        basins = BasinsConfig(
+            bif_param=0.5, param_index=1, fixed_params=[0.5, 0.5],
+            x_min=0.1, x_max=0.9, x_steps=2,
+            y_min=0.1, y_max=0.9, y_steps=2,
+            iterations=20, max_period=2,
+        )
+        cfg = RobustChaosRegionConfig(
+            map=map_cfg,
+            adaptive=AdaptiveMapConfig(total_budget=25, max_depth=1),
+            lyapunov_field=map_cfg,
+            atlas=atlas,
+            basins=basins,
+            max_atlas_slices_per_region=1,
+            max_basin_knots_per_region=1,
+        )
+
+        result = robust_chaos_region_certificate(
+            cat_map_2p,
+            cfg;
+            initial_point=[sqrt(2) - 1, sqrt(3) - 1],
+        )
+
+        @test result isa RobustChaosRegionResult
+        @test result.candidate_leaf_count > 0
+        @test length(result.regions) == 1
+        region = only(result.regions)
+        @test region.verdict == :certified
+        @test region.lyapunov_verdict == :pass
+        @test region.atlas_verdict == :pass
+        @test region.basin_verdict == :pass
+        @test region.finest_depth <= cfg.adaptive.max_depth
+        @test isfinite(region.boundary_margin) || isnan(region.boundary_margin)
+        rt = deserialize_robust_chaos_region_result(serialize_robust_chaos_region_result(result))
+        @test only(rt.regions).verdict == :certified
+        @test only(rt.regions).leaf_cell_count == region.leaf_cell_count
     end
 
     # --- Source-result reuse ---

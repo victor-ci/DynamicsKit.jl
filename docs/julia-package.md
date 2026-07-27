@@ -220,6 +220,62 @@ that no stable orbit exists outside those limits. Use
 `serialize_robust_chaos_evidence` and `deserialize_robust_chaos_evidence` for
 the complete versioned evidence bundle.
 
+### Two-parameter region certificates
+
+`robust_chaos_region_certificate` lifts the same conservative evidence pattern to
+an operating plane. It uses an adaptive bifurcation map to propose connected
+aperiodic/high-period candidate regions, checks each region against a direct
+2D Lyapunov field, runs deterministic atlas slices through the interior, evaluates
+basin censuses at deterministic knots, and attaches a finite-grid boundary margin
+from `regime_boundary_distances`.
+
+```julia
+plane = BifurcationMapConfig(
+    a_min=1.1, a_max=1.3, a_steps=30,
+    b_min=0.2, b_max=0.4, b_steps=30,
+    a_index=1, b_index=2,
+    base_params=[1.2, 0.3],
+    max_period=8, iterations=600,
+    lyapunov_iterations=400,
+)
+
+region_result = robust_chaos_region_certificate(
+    henon_map(),
+    RobustChaosRegionConfig(
+        map=plane,
+        adaptive=AdaptiveMapConfig(total_budget=3000, max_depth=3),
+        lyapunov_field=plane,
+        atlas=AtlasConfig(
+            periods=collect(1:8),
+            brute_force=BruteForceConfig(
+                param_min=1.1, param_max=1.3, param_index=1,
+                fixed_params=[1.2, 0.3], param_steps=80,
+            ),
+            continuation=ContinuationConfig(
+                p_min=1.1, p_max=1.3, param_index=1,
+                ds=0.002, dsmax=0.01,
+            ),
+        ),
+        basins=BasinsConfig(
+            bif_param=1.2, param_index=1, fixed_params=[1.2, 0.3],
+            x_min=-1.5, x_max=1.5, y_min=-0.5, y_max=0.5,
+            x_steps=20, y_steps=20, max_period=8, iterations=600,
+        ),
+    );
+    initial_point=[0.1, 0.1],
+)
+
+certified = filter(r -> r.verdict == :certified, region_result.regions)
+```
+
+Each `RobustChaosRegion` records its parameter bounds, area, finest checked
+quadtree depth, Lyapunov/atlas/basin verdicts, conservative score, boundary
+margin, edge-censoring flag, and named counter-evidence. `:certified` is bounded
+to the adaptive-map scale, Lyapunov grid, atlas slice count and period ceiling,
+basin knots, and finite-grid boundary convention. Use
+`serialize_robust_chaos_region_result` /
+`deserialize_robust_chaos_region_result` for the versioned summary.
+
 ## Chaos-source inverse design
 
 `design_chaos_source` searches design-component parameter space for

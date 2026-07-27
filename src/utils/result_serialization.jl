@@ -992,6 +992,160 @@ function _deserialize_robust_chaos_evidence(data::AbstractDict)::RobustChaosEvid
     )
 end
 
+const _ROBUST_CHAOS_REGION_FORMAT = "robust-chaos-region-result-v1"
+
+function _serialize_robust_chaos_region(region::RobustChaosRegion)
+    return Dict{String, Any}(
+        "id" => region.id,
+        "verdict" => String(region.verdict),
+        "robustnessScore" => _encode_special_float(region.robustness_score),
+        "bounds" => Dict{String, Any}(
+            "aMin" => _encode_special_float(region.a_min),
+            "aMax" => _encode_special_float(region.a_max),
+            "bMin" => _encode_special_float(region.b_min),
+            "bMax" => _encode_special_float(region.b_max),
+        ),
+        "area" => _encode_special_float(region.area),
+        "leafCellCount" => region.leaf_cell_count,
+        "finestDepth" => region.finest_depth,
+        "coarsestDepth" => region.coarsest_depth,
+        "lyapunov" => Dict{String, Any}(
+            "verdict" => String(region.lyapunov_verdict),
+            "positiveFraction" => _encode_special_float(region.lyapunov_positive_fraction),
+            "resolvedFraction" => _encode_special_float(region.lyapunov_resolved_fraction),
+            "minResolvedExponent" => _encode_special_float(region.lyapunov_min_resolved_exponent),
+            "nTotal" => region.lyapunov_n_total,
+            "nResolved" => region.lyapunov_n_resolved,
+            "nPositive" => region.lyapunov_n_positive,
+        ),
+        "atlas" => Dict{String, Any}(
+            "verdict" => String(region.atlas_verdict),
+            "sliceCount" => region.atlas_slice_count,
+            "passedSlices" => region.atlas_passed_slices,
+            "coverageEffort" => _encode_special_float(region.atlas_coverage_effort),
+            "stableEvidenceCount" => region.atlas_stable_evidence_count,
+        ),
+        "basins" => Dict{String, Any}(
+            "verdict" => String(region.basin_verdict),
+            "knotCount" => region.basin_knot_count,
+            "chaoticFraction" => _encode_special_float(region.basin_chaotic_fraction),
+            "resolvedFraction" => _encode_special_float(region.basin_resolved_fraction),
+            "nTotal" => region.basin_n_total,
+            "nResolved" => region.basin_n_resolved,
+            "nChaotic" => region.basin_n_chaotic,
+        ),
+        "boundary" => Dict{String, Any}(
+            "margin" => _encode_special_float(region.boundary_margin),
+            "edgeCensored" => region.boundary_edge_censored,
+        ),
+        "counterEvidence" => copy(region.counter_evidence),
+        "certificateItems" => _plain(region.certificate_items),
+    )
+end
+
+function _deserialize_robust_chaos_region(data::AbstractDict)::RobustChaosRegion
+    bounds = _jsonish_dict(get(data, "bounds", Dict{String, Any}()))
+    lya = _jsonish_dict(get(data, "lyapunov", Dict{String, Any}()))
+    atlas = _jsonish_dict(get(data, "atlas", Dict{String, Any}()))
+    basins = _jsonish_dict(get(data, "basins", Dict{String, Any}()))
+    boundary = _jsonish_dict(get(data, "boundary", Dict{String, Any}()))
+    items = Dict{String, Any}[
+        Dict{String, Any}(String(k) => v for (k, v) in _jsonish_dict(item))
+        for item in get(data, "certificateItems", Any[])
+    ]
+    return RobustChaosRegion(
+        _as_int(get(data, "id", 0), 0),
+        Symbol(_as_string(get(data, "verdict", "inconclusive"), "inconclusive")),
+        _decode_special_float(get(data, "robustnessScore", 0.0)),
+        _decode_special_float(get(bounds, "aMin", NaN)),
+        _decode_special_float(get(bounds, "aMax", NaN)),
+        _decode_special_float(get(bounds, "bMin", NaN)),
+        _decode_special_float(get(bounds, "bMax", NaN)),
+        _decode_special_float(get(data, "area", 0.0)),
+        _as_int(get(data, "leafCellCount", 0), 0),
+        _as_int(get(data, "finestDepth", 0), 0),
+        _as_int(get(data, "coarsestDepth", 0), 0),
+        Symbol(_as_string(get(lya, "verdict", "inconclusive"), "inconclusive")),
+        _decode_special_float(get(lya, "positiveFraction", 0.0)),
+        _decode_special_float(get(lya, "resolvedFraction", 0.0)),
+        _decode_special_float(get(lya, "minResolvedExponent", NaN)),
+        _as_int(get(lya, "nTotal", 0), 0),
+        _as_int(get(lya, "nResolved", 0), 0),
+        _as_int(get(lya, "nPositive", 0), 0),
+        Symbol(_as_string(get(atlas, "verdict", "inconclusive"), "inconclusive")),
+        _as_int(get(atlas, "sliceCount", 0), 0),
+        _as_int(get(atlas, "passedSlices", 0), 0),
+        _decode_special_float(get(atlas, "coverageEffort", 0.0)),
+        _as_int(get(atlas, "stableEvidenceCount", 0), 0),
+        Symbol(_as_string(get(basins, "verdict", "inconclusive"), "inconclusive")),
+        _as_int(get(basins, "knotCount", 0), 0),
+        _decode_special_float(get(basins, "chaoticFraction", 0.0)),
+        _decode_special_float(get(basins, "resolvedFraction", 0.0)),
+        _as_int(get(basins, "nTotal", 0), 0),
+        _as_int(get(basins, "nResolved", 0), 0),
+        _as_int(get(basins, "nChaotic", 0), 0),
+        _decode_special_float(get(boundary, "margin", NaN)),
+        _as_bool(get(boundary, "edgeCensored", false), false),
+        String[_as_string(value, "") for value in get(data, "counterEvidence", Any[])],
+        items,
+    )
+end
+
+function _serialize_robust_chaos_region_result(result::RobustChaosRegionResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _ROBUST_CHAOS_REGION_FORMAT,
+        "systemName" => result.system_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "regions" => [_serialize_robust_chaos_region(region) for region in result.regions],
+        "candidateLeafCount" => result.candidate_leaf_count,
+        "rejectedLeafCount" => result.rejected_leaf_count,
+        "adaptiveBudgetUsed" => result.adaptive_budget_used,
+        "adaptiveTotalBudget" => result.adaptive_total_budget,
+        "adaptiveBudgetExhausted" => result.adaptive_budget_exhausted,
+        "adaptiveUninspectedCellCount" => result.adaptive_uninspected_cell_count,
+        "adaptiveMaxDepthReached" => result.adaptive_max_depth_reached,
+        "adaptiveMaxDepthAllowed" => result.adaptive_max_depth_allowed,
+        "lyapunovMethod" => String(result.lyapunov_method),
+        "lyapunovNormalization" => String(result.lyapunov_normalization),
+        "boundaryEdgePolicy" => String(result.boundary_edge_policy),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+        "certificateItems" => _plain(result.certificate_items),
+    )
+end
+
+function _deserialize_robust_chaos_region_result(data::AbstractDict)::RobustChaosRegionResult
+    format = _as_string(get(data, "format", ""), "")
+    format == _ROBUST_CHAOS_REGION_FORMAT || error(
+        "Unsupported robust-chaos region result format '$format'; expected '$(_ROBUST_CHAOS_REGION_FORMAT)'.")
+    param_names = get(data, "paramNames", Any["a", "b"])
+    length(param_names) == 2 || error("Serialized robust-chaos region paramNames must have two entries.")
+    items = Dict{String, Any}[
+        Dict{String, Any}(String(k) => v for (k, v) in _jsonish_dict(item))
+        for item in get(data, "certificateItems", Any[])
+    ]
+    return RobustChaosRegionResult(
+        RobustChaosRegion[
+            _deserialize_robust_chaos_region(_jsonish_dict(region))
+            for region in get(data, "regions", Any[])
+        ],
+        _as_string(get(data, "systemName", ""), ""),
+        (Symbol(_as_string(param_names[1], "a")), Symbol(_as_string(param_names[2], "b"))),
+        _as_int(get(data, "candidateLeafCount", 0), 0),
+        _as_int(get(data, "rejectedLeafCount", 0), 0),
+        _as_int(get(data, "adaptiveBudgetUsed", 0), 0),
+        _as_int(get(data, "adaptiveTotalBudget", 0), 0),
+        _as_bool(get(data, "adaptiveBudgetExhausted", false), false),
+        _as_int(get(data, "adaptiveUninspectedCellCount", 0), 0),
+        _as_int(get(data, "adaptiveMaxDepthReached", 0), 0),
+        _as_int(get(data, "adaptiveMaxDepthAllowed", 0), 0),
+        Symbol(_as_string(get(data, "lyapunovMethod", "two_trajectory"), "two_trajectory")),
+        Symbol(_as_string(get(data, "lyapunovNormalization", "unspecified"), "unspecified")),
+        Symbol(_as_string(get(data, "boundaryEdgePolicy", "censored"), "censored")),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+        items,
+    )
+end
+
 const _BRANCH_REACHABILITY_FORMAT = "branch-reachability-v1"
 
 _serialize_reach_int_matrix(m::AbstractMatrix{<:Integer}) =
@@ -1773,6 +1927,10 @@ const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certifica
 const serialize_robust_chaos_evidence = _serialize_robust_chaos_evidence
 """    deserialize_robust_chaos_evidence(data::AbstractDict) -> RobustChaosEvidence"""
 const deserialize_robust_chaos_evidence = _deserialize_robust_chaos_evidence
+"""    serialize_robust_chaos_region_result(result::RobustChaosRegionResult) -> Dict — versioned JSON-plain two-parameter certificate summary."""
+const serialize_robust_chaos_region_result = _serialize_robust_chaos_region_result
+"""    deserialize_robust_chaos_region_result(data::AbstractDict) -> RobustChaosRegionResult"""
+const deserialize_robust_chaos_region_result = _deserialize_robust_chaos_region_result
 """    serialize_chaos_design_result(result::ChaosDesignResult) -> Dict — versioned JSON-plain form."""
 const serialize_chaos_design_result = _serialize_chaos_design_result
 """    deserialize_chaos_design_result(data::AbstractDict) -> ChaosDesignResult"""

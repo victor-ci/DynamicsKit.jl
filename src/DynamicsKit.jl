@@ -83,6 +83,7 @@ include("visualization/plots.jl")
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
 export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, HomoclinicOrbitRecord, HomoclinicSpecialPoint, HomoclinicBranchResult, MapNormalForm, MapSpecialPoint, Codim2SpecialPoint
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
+export RobustChaosRegion, RobustChaosRegionResult
 export ChaosDesignVariable, ChaosDesignTarget, ChaosDesignCandidate, ChaosDesignResult
 export BorderCollisionClassification, BorderCollisionPoint
 export AffineModeSpec, SwitchingCircuitDescription
@@ -156,7 +157,7 @@ export border_collision_classify, border_collision_at_cycle, border_collision_po
 export basins_of_attraction, bifurcation_map, adaptive_bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
-export robust_chaos_certificate, robust_chaos_evidence
+export robust_chaos_certificate, robust_chaos_evidence, robust_chaos_region_certificate
 export design_chaos_source, chaos_design_summary, spectral_flatness
 
 # Exports — atlas + combined-branch results
@@ -166,7 +167,7 @@ export Codim2ContinuationResult
 
 # Exports — config
 export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, ConnectingOrbitConfig, BasinsConfig, BifurcationMapConfig, AdaptiveMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
-export RobustChaosConfig
+export RobustChaosConfig, RobustChaosRegionConfig
 export ChaosDesignSignalConfig, ChaosDesignConfig
 export BranchReachabilityConfig
 export RegimeBoundaryConfig, ToleranceConfig
@@ -182,6 +183,7 @@ export serialize_atlas_result, deserialize_atlas_result
 export serialize_codim2_continuation_result, deserialize_codim2_continuation_result
 export serialize_robust_chaos_certificate, deserialize_robust_chaos_certificate
 export serialize_robust_chaos_evidence, deserialize_robust_chaos_evidence
+export serialize_robust_chaos_region_result, deserialize_robust_chaos_region_result
 export serialize_chaos_design_result, deserialize_chaos_design_result
 export serialize_branch_reachability_result, deserialize_branch_reachability_result
 export serialize_regime_boundary_result, deserialize_regime_boundary_result

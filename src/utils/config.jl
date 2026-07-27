@@ -1108,3 +1108,81 @@ const _ADAPTIVE_MAP_MAX_DEPTH = 30
     @assert isfinite(confidence_delta) && confidence_delta >= 0.0 && confidence_delta <= 1.0 "AdaptiveMapConfig.confidence_delta must be in [0, 1]"
     @assert refine_on_period_disagreement || refine_on_status_disagreement || min_confidence > 0.0 || confidence_delta > 0.0 "AdaptiveMapConfig: at least one refinement trigger must be active"
 end
+
+"""
+    RobustChaosRegionConfig
+
+Configuration for `robust_chaos_region_certificate`, a two-parameter extension of
+the robust-chaos certificate. The adaptive map proposes candidate high-period /
+aperiodic regions, the Lyapunov field scores their interiors, atlas slices search
+for stable low-period counter-evidence, basin knots test attractor dominance, and
+regime-boundary distances attach finite-grid margin evidence.
+
+# Fields
+- `map`: Coarse operating-map configuration used by `adaptive_bifurcation_map`.
+- `adaptive`: Quadtree refinement controls for candidate-region discovery.
+- `lyapunov_field`: Direct 2D Lyapunov-field configuration over the same parameter
+  plane as `map`.
+- `atlas`: Template atlas configuration. Its swept parameter must match the
+  configured `slice_axis`; slice intervals and fixed secondary parameter values
+  are filled in per region.
+- `basins`: Template basin configuration. Its `param_index` must match the
+  primary slice parameter; both parameter coordinates are filled in per knot.
+- `slice_axis`: `:a` (default) certifies slices along the map's a-axis at
+  deterministic b-values; `:b` swaps the roles.
+- `candidate_statuses`: Map statuses eligible for robust-chaos candidates.
+- `min_region_area`: Reject smaller connected candidate components.
+- `min_*_fraction`: Conservative pass thresholds for Lyapunov, atlas, and basin layers.
+- `max_atlas_slices_per_region`, `max_basin_knots_per_region`: Deterministic
+  per-region effort caps. Budget caps are reported in the result.
+- `boundary_edge_policy`: Edge policy passed to `regime_boundary_distances`.
+"""
+const _ROBUST_REGION_ALLOWED_MAP_STATUSES = (
+    :unknown,
+    :periodic,
+    :aperiodic_or_high_period,
+    :diverged,
+    :insufficient_crossings,
+    :integration_failed,
+    :invalid_state,
+)
+
+@with_kw struct RobustChaosRegionConfig
+    map::BifurcationMapConfig
+    adaptive::AdaptiveMapConfig
+    lyapunov_field::BifurcationMapConfig
+    atlas::AtlasConfig
+    basins::BasinsConfig
+    slice_axis::Symbol = :a
+    candidate_statuses::Vector{Symbol} = [:aperiodic_or_high_period]
+    min_region_area::Float64 = 0.0
+    min_lyapunov_positive_fraction::Float64 = 1.0
+    min_lyapunov_resolved_fraction::Float64 = 1.0
+    min_atlas_slice_fraction::Float64 = 1.0
+    min_chaotic_basin_fraction::Float64 = 1.0
+    min_basin_resolved_fraction::Float64 = 1.0
+    max_atlas_slices_per_region::Int = 3
+    max_basin_knots_per_region::Int = 3
+    boundary_edge_policy::Symbol = :censored
+    @assert slice_axis in (:a, :b) "RobustChaosRegionConfig.slice_axis must be :a or :b"
+    @assert !isempty(candidate_statuses) "RobustChaosRegionConfig.candidate_statuses must not be empty"
+    @assert isempty(setdiff(candidate_statuses, _ROBUST_REGION_ALLOWED_MAP_STATUSES)) "RobustChaosRegionConfig.candidate_statuses contains unknown map status(es): $(join(string.(setdiff(candidate_statuses, _ROBUST_REGION_ALLOWED_MAP_STATUSES)), ", ")). Allowed: $(join(string.(_ROBUST_REGION_ALLOWED_MAP_STATUSES), ", "))"
+    @assert isfinite(min_region_area) && min_region_area >= 0.0 "RobustChaosRegionConfig.min_region_area must be finite and >= 0"
+    @assert 0.0 <= min_lyapunov_positive_fraction <= 1.0 "RobustChaosRegionConfig.min_lyapunov_positive_fraction must be in [0, 1]"
+    @assert 0.0 <= min_lyapunov_resolved_fraction <= 1.0 "RobustChaosRegionConfig.min_lyapunov_resolved_fraction must be in [0, 1]"
+    @assert 0.0 <= min_atlas_slice_fraction <= 1.0 "RobustChaosRegionConfig.min_atlas_slice_fraction must be in [0, 1]"
+    @assert 0.0 <= min_chaotic_basin_fraction <= 1.0 "RobustChaosRegionConfig.min_chaotic_basin_fraction must be in [0, 1]"
+    @assert 0.0 <= min_basin_resolved_fraction <= 1.0 "RobustChaosRegionConfig.min_basin_resolved_fraction must be in [0, 1]"
+    @assert max_atlas_slices_per_region >= 1 "RobustChaosRegionConfig.max_atlas_slices_per_region must be >= 1"
+    @assert max_basin_knots_per_region >= 1 "RobustChaosRegionConfig.max_basin_knots_per_region must be >= 1"
+    @assert boundary_edge_policy in (:censored, :boundary, :ignore) "RobustChaosRegionConfig.boundary_edge_policy must be :censored, :boundary, or :ignore"
+    @assert map.a_index == lyapunov_field.a_index && map.b_index == lyapunov_field.b_index "RobustChaosRegionConfig: map and lyapunov_field parameter axes must match"
+    @assert map.a_linked_param_indices == lyapunov_field.a_linked_param_indices && map.b_linked_param_indices == lyapunov_field.b_linked_param_indices "RobustChaosRegionConfig: map and lyapunov_field linked parameter axes must match"
+    @assert map.a_min == lyapunov_field.a_min && map.a_max == lyapunov_field.a_max && map.b_min == lyapunov_field.b_min && map.b_max == lyapunov_field.b_max "RobustChaosRegionConfig: lyapunov_field must cover the same parameter rectangle as map"
+    @assert _robust_config_base_params_match(map.base_params, lyapunov_field.base_params, unique(vcat([map.a_index, map.b_index], map.a_linked_param_indices, map.b_linked_param_indices))) "RobustChaosRegionConfig: map and lyapunov_field base parameters must match outside swept axes"
+    @assert !isnothing(atlas.brute_force) "RobustChaosRegionConfig: atlas must carry a non-nothing brute_force template"
+    @assert !isnothing(atlas.continuation) "RobustChaosRegionConfig: atlas must carry a non-nothing continuation template"
+    @assert atlas.brute_force.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: atlas.brute_force.param_index must match slice_axis"
+    @assert atlas.continuation.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: atlas.continuation.param_index must match slice_axis"
+    @assert basins.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: basins.param_index must match slice_axis"
+end
