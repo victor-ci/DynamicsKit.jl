@@ -54,7 +54,8 @@ function vilnius_oscillator(; b::Float64=30.0, ε::Float64=0.2)
         (u, t, integrator) -> u[2];
         direction = :up,
         projection = [1, 3],
-        template = [0.0, 0.0, 0.0]
+        template = [0.0, 0.0, 0.0],
+        constant_normal = [0.0, 1.0, 0.0]
     )
     ContinuousODE(
         _vilnius_ode!, 3, section, [:a, :b, :ε], "Vilnius";

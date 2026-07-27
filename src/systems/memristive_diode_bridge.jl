@@ -96,7 +96,8 @@ function memristive_diode_bridge(; c::Float64=6.02e-6, k::Float64=0.05)
         (u, t, integrator) -> u[2];   # y = 0
         direction = :up,
         projection = [1, 3],          # keep x and z; y reset to 0 on the section
-        template = [0.0, 0.0, 0.0]
+        template = [0.0, 0.0, 0.0],
+        constant_normal = [0.0, 1.0, 0.0]
     )
     # Out-of-place StaticArray form of the same right-hand side (all the same domain guards) for
     # the GPU ensemble path; native second form, not a wrapper (see ContinuousODE `f_svector`).

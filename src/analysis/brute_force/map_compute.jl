@@ -882,7 +882,9 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
 
     param_names = (sys.param_names[config.a_index], sys.param_names[config.b_index])
     timestamp = now()
-    lyapunov = _map_lyapunov_result(lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp; compute_backend=compute_backend_used)
+    lyapunov = _map_lyapunov_result(
+        lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp;
+        compute_backend=compute_backend_used, normalization=:per_iteration)
     result = BifurcationMapResult(a_vals, b_vals, periodicity, config.max_period,
                                   sys.name, param_names, timestamp; lyapunov=lyapunov, compute_backend=compute_backend_used)
     diagnostics = _map_neighbor_seed_diagnostics(
@@ -1127,7 +1129,9 @@ function _bifurcation_map(sys::ContinuousODE, config::BifurcationMapConfig;
 
     param_names = (sys.param_names[config.a_index], sys.param_names[config.b_index])
     timestamp = now()
-    lyapunov = _map_lyapunov_result(lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp; compute_backend=compute_backend_used)
+    lyapunov = _map_lyapunov_result(
+        lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp;
+        compute_backend=compute_backend_used, normalization=:per_return)
     result = BifurcationMapResult(a_vals, b_vals, periodicity, config.max_period,
                                   sys.name, param_names, timestamp; lyapunov=lyapunov, compute_backend=compute_backend_used)
     diagnostics = _map_neighbor_seed_diagnostics(

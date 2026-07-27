@@ -391,8 +391,12 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
  - `lyapunov_enabled`: Compute optional largest-Lyapunov diagnostics for each map cell
  - `lyapunov_iterations`: Renormalized steps used for Lyapunov estimation; `0` selects an internal default
  - `lyapunov_transient`: Extra post-classification transient before Lyapunov estimation; `nothing` uses `0`
- - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation
+ - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation (`:two_trajectory` method)
  - `lyapunov_neutral_tolerance`: Absolute exponent threshold for neutral/quasiperiodic candidates
+ - `lyapunov_method`: Lyapunov estimation method — `:auto` (default), `:variational`, or `:two_trajectory`.
+   `:auto` resolves to `:variational` for `ContinuousODE` (tangent-space, normalized by flow time,
+   GPU-eligible when the system has a constant section normal) and `:two_trajectory` for `DiscreteMap`.
+   `:two_trajectory` keeps the coupled two-trajectory Poincaré estimator as an explicit cheap screen.
  - `min_crossing_time`: Ignore section crossings before this time for continuous-time maps and Lyapunov-field runs
 """
 @with_kw struct BifurcationMapConfig
@@ -421,6 +425,7 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     lyapunov_transient::Union{Nothing, Int} = nothing
     lyapunov_perturbation::Float64 = 1e-8
     lyapunov_neutral_tolerance::Float64 = 1e-3
+    lyapunov_method::Symbol = :auto
     min_crossing_time::Float64 = 1e-6
     @assert isnothing(neighbor_transient) || neighbor_transient >= 0 "BifurcationMapConfig.neighbor_transient must be nothing or >= 0"
     @assert neighbor_tile_size_a >= 0 "BifurcationMapConfig.neighbor_tile_size_a must be >= 0"
@@ -431,6 +436,7 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     @assert isnothing(lyapunov_transient) || lyapunov_transient >= 0 "BifurcationMapConfig.lyapunov_transient must be nothing or >= 0"
     @assert isfinite(lyapunov_perturbation) && lyapunov_perturbation > 0.0 "BifurcationMapConfig.lyapunov_perturbation must be finite and > 0"
     @assert isfinite(lyapunov_neutral_tolerance) && lyapunov_neutral_tolerance >= 0.0 "BifurcationMapConfig.lyapunov_neutral_tolerance must be finite and >= 0"
+    @assert lyapunov_method in (:auto, :variational, :two_trajectory) "BifurcationMapConfig.lyapunov_method must be :auto, :variational, or :two_trajectory"
     @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BifurcationMapConfig.min_crossing_time must be finite and >= 0"
 end
 

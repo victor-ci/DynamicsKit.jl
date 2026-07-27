@@ -82,6 +82,8 @@ plot_lyapunov_spectrum(spectrum)
 
 For a direct 2D exponent sweep, call `lyapunov_field(sys, config)` with the same parameter-plane axes you would use for a 2D map. This path skips period classification entirely and computes the Lyapunov field directly from the fixed initial condition at each cell. For continuous systems, `BifurcationMapConfig.min_crossing_time` controls the minimum accepted separation between Poincare crossings and therefore participates in both the run semantics and cache identity.
 
+For `sys::ContinuousODE`, the default method (`:auto`, resolved through `BifurcationMapConfig.lyapunov_method`) is the **variational** estimator: each cell integrates one augmented trajectory `[u; v]` through the first variational equation, applies the **return-time correction** `v ← v - f · (n'v)/(n'f)` at each accepted Poincaré section return to project out the along-flow neutral exponent, then normalizes by the accumulated physical flow time. This gives the **largest transverse Lyapunov exponent**, directly comparable to `lyapunov_spectrum`'s leading transverse exponent. The legacy **two-trajectory** Benettin method (`:two_trajectory`) remains public and accessible via `lyapunov_method=:two_trajectory` in `BifurcationMapConfig`; it is a cheap screen but does not time-normalize exponents and can give misleading results with low iteration counts.
+
 ```julia
 field = lyapunov_field(memristive_diode_bridge(), BifurcationMapConfig(
     a_min=0.001,
@@ -103,6 +105,15 @@ plot_lyapunov_field(field)
 ```
 
 `lyapunov_field(result::BifurcationMapResult)` still works for combined map+field runs that were computed via `bifurcation_map(..., lyapunov_enabled=true)`. Use the direct `lyapunov_field(sys, config)` method when you want the exponent field itself as the primary artifact and want to avoid paying for a full period map first.
+
+The `LyapunovFieldResult` carries a `lyapunov_method` field (`:variational` or
+`:two_trajectory`), a `normalization` field (`:flow_time`, `:per_return`, or
+`:per_iteration`), and a `compute_backend` field (`:cpu`, `:_ka_cpu_test`, `:cuda`, …)
+for provenance. These fields survive serialization and deserialization round-trips;
+older serialized results without explicit method/normalization metadata deserialize as
+`:two_trajectory` and `:unspecified`.
+
+The `BifurcationMapConfig` field `lyapunov_method` defaults to `:auto`; for `ContinuousODE` this resolves to `:variational`. Pass `lyapunov_method=:two_trajectory` explicitly to use the legacy cheap-screen estimator. The `bifurcation_map(sys::ContinuousODE, ..., lyapunov_enabled=true)` path always uses two-trajectory (shared ensemble integration makes variational duplication expensive).
 
 ## Robust-chaos certificate
 
@@ -1161,18 +1172,9 @@ and aperiodic because the exact integer period there is itself sensitive to inte
 between CPU `Tsit5` and GPU `Tsit5`; this is inherent sensitive dependence, not a GPU defect, and shrinks
 as the transient grows.
 
-**The continuous Lyapunov field/diagram is deliberately *not* GPU-accelerated**, and an explicit
-`GPUBackend` for `lyapunov_field(sys::ContinuousODE, ...)` raises a specific `ArgumentError` (auto/CPU
-run on the CPU). This is a *narrow* exclusion with a concrete technical reason, not a blanket
-"no ContinuousODE GPU": the continuous Lyapunov exponent is a **coupled two-trajectory** Benettin
-computation — a reference and a perturbed trajectory each integrated to their *own* next Poincaré
-crossing, with per-return renormalization and reprojection of the separation onto the section — whereas
-`EnsembleGPUKernel` is built for *independent* trajectories. The two trajectories reach the section at
-different times and must be resynchronized/renormalized sequentially between returns, which the
-single-time-axis ensemble event model does not express; a faithful version would need a bespoke coupled
-GPU integrator (outside DiffEqGPU's provided APIs) or a variational/Jacobian reformulation (a *different*
-method that would not reproduce the CPU finite-difference exponent values). Until one is validated, the
-faithful CPU path is authoritative.
+**The continuous Lyapunov field (variational method) is GPU-accelerated for built-in systems.** For `sys::ContinuousODE` with `lyapunov_method=:auto` (the default, resolved to `:variational`), each GPU trajectory carries an augmented `SVector{2D+6}` state (physical state + tangent vector + accumulation registers). The crossing callback applies the return-time correction and renormalizes the tangent in-kernel. Eligibility requires the system to supply an out-of-place `SVector` RHS (`has_continuous_gpu_rhs`) and a non-empty constant section normal (`sys.section.constant_normal`) — all built-in continuous systems provide both; user-defined systems that supply only an in-place RHS or lack a constant section normal automatically fall back to the CPU with `AutoBackend()`, or raise a clear error with an explicit `GPUBackend`.
+
+The explicit `:two_trajectory` method is always CPU-only (it is a coupled computation where two neighbouring trajectories reach the section at different times, not an independent-ensemble workload); an explicit `GPUBackend` with `lyapunov_method=:two_trajectory` raises an `ArgumentError`.
 
 **`ContinuousODE` continuation** (`continuation_branch`, `continuation_atlas`, ...) is likewise not
 GPU-accelerated: pseudo-arclength path-following is inherently sequential (each point depends on the
@@ -1195,7 +1197,7 @@ gain would justify — advertising ODE acceleration there would be misleading.
 | `bifurcation_map` (`ContinuousODE`) | ✅; CUDA-validated | fixed-seed, Lyapunov off, GPU RHS, `precision ≥ 1.19e-5`; exact Rössler CPU/CUDA parity measured on physical hardware |
 | `basins_of_attraction` (`ContinuousODE`) | ✅; CUDA-validated | GPU RHS, `precision ≥ 1.19e-5`; exact Rössler CPU/CUDA parity measured on physical hardware |
 | `brute_force_diagram` (`ContinuousODE`) | ❌ | returns a variable-size cloud of retained crossings per parameter, not the fixed-size per-trajectory summary supported by the current GPU path — CPU-only |
-| `lyapunov_field` (`ContinuousODE`) | ❌ | coupled two-trajectory Benettin — not an independent ensemble |
+| `lyapunov_field` (`ContinuousODE`) | ✅ variational; ❌ two-trajectory | variational: GPU RHS + constant section normal required; built-in systems provide both. Two-trajectory (`:two_trajectory`) is CPU-only (coupled computation). |
 | continuation / atlas | ❌ | inherently sequential (no cell-independent work) |
 | `tolerance_regime_map` / `regime_boundary_distances` | ❌ | post-processing classification, not ODE integration |
 

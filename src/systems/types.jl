@@ -48,20 +48,29 @@ Defines a Poincaré section for continuous-time systems.
 - `direction`: `:up` (+1), `:down` (-1), or `:both` (0) — crossing direction to detect
 - `projection`: Indices of state variables kept after section crossing (the Poincaré map coordinates)
 - `template`: Optional full-state template used to lift projected section coordinates back to a full state
+- `constant_normal`: Optional constant section normal vector (gradient of `condition` w.r.t. state),
+  required for the GPU variational Lyapunov path; CPU paths derive the normal via automatic
+  differentiation when this is empty. For coordinate-hyperplane sections (`u[k] = c`), the normal is
+  the k-th unit vector. Leave empty for sections with non-constant normals (only CPU is supported there).
 """
 struct PoincareSection{F}
     condition::F
     direction::Int
     projection::Vector{Int}
     template::Vector{Float64}
+    constant_normal::Vector{Float64}
 end
 
 function PoincareSection(condition::F;
                          direction::Symbol=:up,
                          projection::Vector{Int}=[1, 3],
-                         template::AbstractVector=Float64[]) where F
+                         template::AbstractVector=Float64[],
+                         constant_normal::AbstractVector=Float64[]) where F
+    direction in (:up, :down, :both) || throw(ArgumentError(
+        "PoincareSection.direction must be :up, :down, or :both; got $(repr(direction))."))
     dir_int = direction == :up ? 1 : direction == :down ? -1 : 0
-    PoincareSection{F}(condition, dir_int, projection, collect(Float64, template))
+    PoincareSection{F}(condition, dir_int, projection, collect(Float64, template),
+                       collect(Float64, constant_normal))
 end
 
 """
@@ -462,6 +471,8 @@ struct LyapunovFieldResult
     param_names::Tuple{Symbol, Symbol}
     timestamp::DateTime
     compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this field
+    lyapunov_method::Symbol           # :variational or :two_trajectory
+    normalization::Symbol             # :flow_time, :per_return, :per_iteration, or :unspecified
 end
 
 function LyapunovFieldResult(a_grid::Vector{Float64},
@@ -474,9 +485,17 @@ function LyapunovFieldResult(a_grid::Vector{Float64},
                              system_name::String,
                              param_names::Tuple{Symbol, Symbol},
                              timestamp::DateTime;
-                             compute_backend::Symbol=:cpu)
+                             compute_backend::Symbol=:cpu,
+                             lyapunov_method::Symbol=:two_trajectory,
+                             normalization::Symbol=:unspecified)
+    lyapunov_method in (:variational, :two_trajectory) || throw(ArgumentError(
+        "LyapunovFieldResult.lyapunov_method must be :variational or :two_trajectory; got $(repr(lyapunov_method))."))
+    normalization in (:flow_time, :per_return, :per_iteration, :unspecified) || throw(ArgumentError(
+        "LyapunovFieldResult.normalization must be :flow_time, :per_return, :per_iteration, or :unspecified; " *
+        "got $(repr(normalization))."))
     return LyapunovFieldResult(a_grid, b_grid, exponents, classification_status_codes, estimation_status_codes,
-                               sample_counts, neutral_tolerance, system_name, param_names, timestamp, compute_backend)
+                               sample_counts, neutral_tolerance, system_name, param_names, timestamp,
+                               compute_backend, lyapunov_method, normalization)
 end
 
 """

@@ -69,7 +69,8 @@ function rossler_oscillator(; a::Float64=0.2, b::Float64=0.2, c::Float64=5.7)
         (u, t, integrator) -> u[2];   # y = 0
         direction = :up,
         projection = [1, 3],          # keep x and z; y reset to 0 on the section
-        template = [0.0, 0.0, 0.0]
+        template = [0.0, 0.0, 0.0],
+        constant_normal = [0.0, 1.0, 0.0]
     )
     ContinuousODE(
         f!, 3, section, [:a, :b, :c], "Rössler";

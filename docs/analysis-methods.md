@@ -666,7 +666,7 @@ Advanced fields:
 | `lyapunov_neutral_tolerance` | Threshold for neutral/quasiperiodic candidates |
 If Lyapunov diagnostics were enabled, call `lyapunov_field(result)` to extract the co-computed `LyapunovFieldResult` without re-running the map.
 
-This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The continuous Lyapunov field stays CPU-only (coupled two-trajectory method). See "Optional GPU acceleration" in `docs/julia-package.md`.
+This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The standalone continuous Lyapunov field is GPU-eligible with the variational method when the system provides a GPU RHS and constant section normal; the explicit two-trajectory screen remains CPU-only. See "Optional GPU acceleration" in `docs/julia-package.md`.
 
 ## Adaptive bifurcation map
 

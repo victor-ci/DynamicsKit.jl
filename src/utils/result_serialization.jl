@@ -2282,6 +2282,19 @@ function _deserialize_special_float_vec(raw::AbstractVector)
     return Float64[_decode_special_float(x) for x in raw]
 end
 
+function _lyapunov_method_symbol(name::AbstractString)
+    name in ("variational", "two_trajectory") || throw(ArgumentError(
+        "Unknown Lyapunov field method $(repr(name)); expected \"variational\" or \"two_trajectory\"."))
+    return Symbol(name)
+end
+
+function _lyapunov_normalization_symbol(name::AbstractString)
+    name in ("flow_time", "per_return", "per_iteration", "unspecified") || throw(ArgumentError(
+        "Unknown Lyapunov field normalization $(repr(name)); expected \"flow_time\", \"per_return\", " *
+        "\"per_iteration\", or \"unspecified\"."))
+    return Symbol(name)
+end
+
 function _serialize_lyapunov_field_result_v2(r::LyapunovFieldResult)
     na = length(r.a_grid); nb = length(r.b_grid)
     expected_size = (na, nb)
@@ -2306,6 +2319,8 @@ function _serialize_lyapunov_field_result_v2(r::LyapunovFieldResult)
         "paramNames"               => String.(collect(r.param_names)),
         "timestamp"                => _serialize_timestamp(r.timestamp),
         "computeBackend"           => String(r.compute_backend),
+        "lyapunovMethod"           => String(r.lyapunov_method),
+        "normalization"            => String(r.normalization),
     )
 end
 
@@ -2339,6 +2354,8 @@ function _deserialize_lyapunov_field_result_v2(data::AbstractDict)
         (Symbol(pn_raw[1]), Symbol(pn_raw[2])),
         _deserialize_timestamp(data["timestamp"]);
         compute_backend=_compute_backend_symbol(String(data["computeBackend"])),
+        lyapunov_method=_lyapunov_method_symbol(String(get(data, "lyapunovMethod", "two_trajectory"))),
+        normalization=_lyapunov_normalization_symbol(String(get(data, "normalization", "unspecified"))),
     )
 end
 

@@ -43,6 +43,27 @@ using StaticArrays
         end
     end
 
+    @testset "variational GPU RHS computes an explicit vector-output JVP" begin
+        sys_jvp = rossler_oscillator()
+        f_oop = BE.continuous_gpu_rhs(sys_jvp)
+        u = SVector(1.0, 0.5, -0.25)
+        v = SVector(0.2, -0.3, 0.4)
+        p = SVector(0.2, 0.2, 5.7)
+        aug = SVector{BE._variational_lyapunov_gpu_state_dim(3), Float64}(
+            ntuple(i -> i <= 3 ? u[i] : i <= 6 ? v[i - 3] : 0.0, Val(BE._variational_lyapunov_gpu_state_dim(3)))
+        )
+        rhs = BE._variational_lyapunov_gpu_rhs(f_oop, aug, p, 0.0, Val(3))
+        expected_state = f_oop(u, p, 0.0)
+        expected_tangent = SVector(
+            -v[2] - v[3],
+            v[1] + p[1] * v[2],
+            u[3] * v[1] + (u[1] - p[3]) * v[3],
+        )
+        @test SVector(rhs[1], rhs[2], rhs[3]) ≈ expected_state
+        @test SVector(rhs[4], rhs[5], rhs[6]) ≈ expected_tangent
+        @test all(iszero, rhs[7:end])
+    end
+
     sys = rossler_oscillator()
     # Robust period-doubling cascade (c in [2.3, 4.1], pre-chaos): classifications are numerically
     # stable, so GPU/CPU parity is exact. (In deep chaos, near-threshold closures are sensitive to
@@ -346,17 +367,25 @@ using StaticArrays
         @test bifurcation_map(bare, cfg; backend=auto_backend()) isa BifurcationMapResult
     end
 
-    @testset "continuous Lyapunov field GPU request is rejected with its coupled-trajectory reason" begin
+    @testset "variational Lyapunov field runs on GPU for systems with constant_normal" begin
         lcfg = BifurcationMapConfig(a_min=0.15, a_max=0.25, a_steps=2, b_min=2.3, b_max=4.1, b_steps=2,
                                     a_index=1, b_index=3, base_params=[0.2, 0.2, 3.0],
-                                    max_period=6, iterations=140, precision=1e-3,
-                                    lyapunov_enabled=true, lyapunov_iterations=40)
-        @test_throws ArgumentError lyapunov_field(sys, lcfg; backend=seam)
-        try
-            lyapunov_field(sys, lcfg; backend=seam)
-        catch e
-            @test occursin("coupled", lowercase(e.msg))
-        end
+                                    max_period=6, iterations=40, precision=1e-3,
+                                    lyapunov_enabled=true, lyapunov_iterations=30)
+        # Rössler has constant_normal and f_svector, so GPU variational runs without error.
+        r_gpu = lyapunov_field(sys, lcfg; backend=seam)
+        @test r_gpu isa LyapunovFieldResult
+        @test r_gpu.compute_backend == :_ka_cpu_test
+        @test r_gpu.lyapunov_method == :variational
+
+        # Explicit :two_trajectory with GPU is always rejected.
+        lcfg2 = BifurcationMapConfig(a_min=0.15, a_max=0.25, a_steps=2, b_min=2.3, b_max=4.1, b_steps=2,
+                                     a_index=1, b_index=3, base_params=[0.2, 0.2, 3.0],
+                                     max_period=6, iterations=40, precision=1e-3,
+                                     lyapunov_enabled=true, lyapunov_iterations=30,
+                                     lyapunov_method=:two_trajectory)
+        @test_throws ArgumentError lyapunov_field(sys, lcfg2; backend=seam)
+
         # Auto/CPU run on the CPU without error.
         @test lyapunov_field(sys, lcfg; backend=auto_backend()) isa LyapunovFieldResult
     end

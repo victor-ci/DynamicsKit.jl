@@ -221,19 +221,20 @@ function _resolve_continuous_gpu_backend(backend::ComputeBackend, sys::Continuou
 end
 
 """
-Reject a GPU request for the continuous Lyapunov field/diagram with its specific reason: it is a
-*coupled two-trajectory* computation (two neighbouring trajectories integrated together, renormalized
-and reprojected onto the Poincaré section at each return), not the embarrassingly-parallel
-independent-trajectory pattern the continuous GPU ensemble path implements. `CPUBackend`/`AutoBackend`
-run on the CPU; an explicit `GPUBackend` gets a clear `ArgumentError` naming this — not a blanket
-"no ContinuousODE GPU".
+Resolve the GPU backend for the variational continuous Lyapunov field. Eligibility requires
+`has_continuous_gpu_rhs(sys)` (built-in continuous systems provide one; imported systems that supply
+only an in-place RHS do not) and a non-empty `sys.section.constant_normal` (built-in systems populate
+this; a user-defined system without it can still run on the CPU). The precision parameter is unused for
+crossing-localization purposes (variational has no period-closure logic) so we pass a loose value.
 """
-function _reject_continuous_lyapunov_gpu_backend(backend::ComputeBackend, analysis_name::AbstractString)
-    _resolve_gpu_backend(backend, false, analysis_name,
-        "an independent per-cell trajectory workload; the continuous Lyapunov field is instead a " *
-        "coupled two-trajectory computation with per-return renormalization and section reprojection, " *
-        "which the continuous GPU ensemble path does not implement (run it on the CPU, backend=CPUBackend())")
-    return nothing
+function _resolve_variational_lyapunov_gpu_backend(backend::ComputeBackend, sys::ContinuousODE,
+                                                    analysis_name::AbstractString)
+    normal = sys.section.constant_normal
+    has_normal = length(normal) == sys.dim && all(isfinite, normal) && any(x -> !iszero(x), normal)
+    return _resolve_continuous_gpu_backend(backend, sys, has_normal, 1.0, analysis_name,
+        "a constant section normal on the system's PoincareSection " *
+        "(built-in continuous systems provide this; user-defined systems without constant_normal " *
+        "can still run the variational estimator on the CPU, backend=CPUBackend())")
 end
 
 # Small host<->device transfer helpers shared by the GPU-kernel launch paths.
