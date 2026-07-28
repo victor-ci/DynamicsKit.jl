@@ -15,6 +15,9 @@ const _BORDER_COLLISION_CLASSIFICATION_FORMAT = "border-collision-classification
 const _BORDER_COLLISION_POINT_FORMAT = "border-collision-point-v1"
 const _BORDER_SCENARIO_PREDICTION_FORMAT = "border-scenario-prediction-v1"
 const _BORDER_SCENARIO_VERIFICATION_FORMAT = "border-scenario-verification-v1"
+const _FILIPPOV_GRAZING_RESULT_FORMAT = "filippov-grazing-result-v1"
+const _FILIPPOV_GRAZING_LOCUS_RESULT_FORMAT = "filippov-grazing-locus-result-v1"
+const _FILIPPOV_SLIDING_RESULT_FORMAT = "filippov-sliding-result-v1"
 
 function _require_serialized_fields(data::AbstractDict, fields, label::AbstractString)
     missing = filter(field -> !haskey(data, field), fields)
@@ -600,6 +603,191 @@ function _deserialize_border_scenario_verification(data::AbstractDict)
         consistency_passed = _as_bool(data["consistencyPassed"], false),
         inference = _as_string(data["inference"], ""),
         warnings = warnings,
+    )
+end
+
+function _serialize_filippov_grazing_point(point::FilippovGrazingPoint)
+    return Dict{String, Any}(
+        "eventName" => point.event_name,
+        "time" => point.time,
+        "state" => copy(point.state),
+        "params" => copy(point.params),
+        "guardValue" => point.guard_value,
+        "normalVelocity" => point.normal_velocity,
+        "normalAcceleration" => point.normal_acceleration,
+        "status" => String(point.status),
+        "converged" => point.converged,
+    )
+end
+
+function _deserialize_filippov_grazing_point(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("eventName", "time", "state", "params", "guardValue", "normalVelocity",
+         "normalAcceleration", "status", "converged"),
+        "Filippov grazing point")
+    return FilippovGrazingPoint(
+        _as_string(data["eventName"], ""),
+        _as_float(data["time"], NaN),
+        _as_float_vector(data["state"], Float64[]),
+        _as_float_vector(data["params"], Float64[]),
+        _as_float(data["guardValue"], NaN),
+        _as_float(data["normalVelocity"], NaN),
+        _as_float(data["normalAcceleration"], NaN),
+        Symbol(_as_string(data["status"], "")),
+        _as_bool(data["converged"], false),
+    )
+end
+
+function _serialize_filippov_grazing_result(result::FilippovGrazingResult)
+    return Dict{String, Any}(
+        "format" => _FILIPPOV_GRAZING_RESULT_FORMAT,
+        "points" => [_serialize_filippov_grazing_point(point) for point in result.points],
+        "systemName" => result.system_name,
+        "eventName" => result.event_name,
+        "params" => copy(result.params),
+        "tspan" => [result.tspan[1], result.tspan[2]],
+        "status" => String(result.status),
+        "warnings" => copy(result.warnings),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_filippov_grazing_result(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "points", "systemName", "eventName", "params", "tspan",
+         "status", "warnings", "timestamp"),
+        "Filippov grazing result")
+    format = _as_string(data["format"], "")
+    format == _FILIPPOV_GRAZING_RESULT_FORMAT || error(
+        "Unsupported Filippov grazing result format '$format'.")
+    tspan = collect(get(data, "tspan", Any[]))
+    length(tspan) == 2 || error("Serialized Filippov grazing result requires a two-value tspan.")
+    points_raw = get(data, "points", Any[])
+    points_raw isa AbstractVector || error("Serialized Filippov grazing points must be an array.")
+    return FilippovGrazingResult(
+        FilippovGrazingPoint[_deserialize_filippov_grazing_point(point) for point in points_raw],
+        _as_string(data["systemName"], ""),
+        _as_string(data["eventName"], ""),
+        _as_float_vector(data["params"], Float64[]),
+        (_as_float(tspan[1], NaN), _as_float(tspan[2], NaN)),
+        Symbol(_as_string(data["status"], "")),
+        String[_as_string(w, "") for w in get(data, "warnings", Any[])],
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
+function _filippov_state_columns(matrix::AbstractMatrix)
+    return [collect(Float64, view(matrix, :, j)) for j in 1:size(matrix, 2)]
+end
+
+function _serialize_filippov_grazing_locus_result(result::FilippovGrazingLocusResult)
+    return Dict{String, Any}(
+        "format" => _FILIPPOV_GRAZING_LOCUS_RESULT_FORMAT,
+        "primaryValues" => copy(result.primary_values),
+        "secondaryValues" => copy(result.secondary_values),
+        "states" => _filippov_state_columns(result.states),
+        "guardValues" => copy(result.guard_values),
+        "normalVelocities" => copy(result.normal_velocities),
+        "normalAccelerations" => copy(result.normal_accelerations),
+        "statuses" => String.(result.statuses),
+        "systemName" => result.system_name,
+        "eventName" => result.event_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_filippov_grazing_locus_result(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "primaryValues", "secondaryValues", "states", "guardValues",
+         "normalVelocities", "normalAccelerations", "statuses", "systemName",
+         "eventName", "paramNames", "timestamp"),
+        "Filippov grazing locus result")
+    format = _as_string(data["format"], "")
+    format == _FILIPPOV_GRAZING_LOCUS_RESULT_FORMAT || error(
+        "Unsupported Filippov grazing locus result format '$format'.")
+    param_names = collect(get(data, "paramNames", Any[]))
+    length(param_names) == 2 || error("Serialized Filippov grazing locus requires exactly two paramNames.")
+    return FilippovGrazingLocusResult(
+        _as_float_vector(data["primaryValues"], Float64[]),
+        _as_float_vector(data["secondaryValues"], Float64[]),
+        _codim2_columns_to_matrix(get(data, "states", Any[])),
+        _as_float_vector(data["guardValues"], Float64[]),
+        _as_float_vector(data["normalVelocities"], Float64[]),
+        _as_float_vector(data["normalAccelerations"], Float64[]),
+        Symbol[Symbol(_as_string(status, "")) for status in get(data, "statuses", Any[])],
+        _as_string(data["systemName"], ""),
+        _as_string(data["eventName"], ""),
+        (Symbol(_as_string(param_names[1], "")), Symbol(_as_string(param_names[2], ""))),
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
+function _serialize_filippov_sliding_segment(segment::FilippovSlidingSegment)
+    return Dict{String, Any}(
+        "eventName" => segment.event_name,
+        "startIndex" => segment.start_index,
+        "endIndex" => segment.end_index,
+        "startState" => copy(segment.start_state),
+        "endState" => copy(segment.end_state),
+        "normalVelocityMinus" => segment.normal_velocity_minus,
+        "normalVelocityPlus" => segment.normal_velocity_plus,
+        "kind" => String(segment.kind),
+        "status" => String(segment.status),
+    )
+end
+
+function _deserialize_filippov_sliding_segment(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("eventName", "startIndex", "endIndex", "startState", "endState",
+         "normalVelocityMinus", "normalVelocityPlus", "kind", "status"),
+        "Filippov sliding segment")
+    return FilippovSlidingSegment(
+        _as_string(data["eventName"], ""),
+        _as_int(data["startIndex"], 0),
+        _as_int(data["endIndex"], 0),
+        _as_float_vector(data["startState"], Float64[]),
+        _as_float_vector(data["endState"], Float64[]),
+        _as_float(data["normalVelocityMinus"], NaN),
+        _as_float(data["normalVelocityPlus"], NaN),
+        Symbol(_as_string(data["kind"], "")),
+        Symbol(_as_string(data["status"], "")),
+    )
+end
+
+function _serialize_filippov_sliding_result(result::FilippovSlidingResult)
+    return Dict{String, Any}(
+        "format" => _FILIPPOV_SLIDING_RESULT_FORMAT,
+        "segments" => [_serialize_filippov_sliding_segment(segment) for segment in result.segments],
+        "eventName" => result.event_name,
+        "sampleCount" => result.sample_count,
+        "status" => String(result.status),
+        "warnings" => copy(result.warnings),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_filippov_sliding_result(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "segments", "eventName", "sampleCount", "status", "warnings", "timestamp"),
+        "Filippov sliding result")
+    format = _as_string(data["format"], "")
+    format == _FILIPPOV_SLIDING_RESULT_FORMAT || error(
+        "Unsupported Filippov sliding result format '$format'.")
+    segments_raw = get(data, "segments", Any[])
+    segments_raw isa AbstractVector || error("Serialized Filippov sliding segments must be an array.")
+    return FilippovSlidingResult(
+        FilippovSlidingSegment[_deserialize_filippov_sliding_segment(segment) for segment in segments_raw],
+        _as_string(data["eventName"], ""),
+        _as_int(data["sampleCount"], 0),
+        Symbol(_as_string(data["status"], "")),
+        String[_as_string(w, "") for w in get(data, "warnings", Any[])],
+        _deserialize_timestamp(data["timestamp"]),
     )
 end
 
@@ -2366,6 +2554,18 @@ const deserialize_border_scenario_prediction = _deserialize_border_scenario_pred
 const serialize_border_scenario_verification = _serialize_border_scenario_verification
 """    deserialize_border_scenario_verification(data::AbstractDict) -> BorderScenarioVerification"""
 const deserialize_border_scenario_verification = _deserialize_border_scenario_verification
+"""    serialize_filippov_grazing_result(result::FilippovGrazingResult) -> Dict — versioned JSON-plain form (format "filippov-grazing-result-v1")."""
+const serialize_filippov_grazing_result = _serialize_filippov_grazing_result
+"""    deserialize_filippov_grazing_result(data::AbstractDict) -> FilippovGrazingResult"""
+const deserialize_filippov_grazing_result = _deserialize_filippov_grazing_result
+"""    serialize_filippov_grazing_locus_result(result::FilippovGrazingLocusResult) -> Dict — versioned JSON-plain form (format "filippov-grazing-locus-result-v1")."""
+const serialize_filippov_grazing_locus_result = _serialize_filippov_grazing_locus_result
+"""    deserialize_filippov_grazing_locus_result(data::AbstractDict) -> FilippovGrazingLocusResult"""
+const deserialize_filippov_grazing_locus_result = _deserialize_filippov_grazing_locus_result
+"""    serialize_filippov_sliding_result(result::FilippovSlidingResult) -> Dict — versioned JSON-plain form (format "filippov-sliding-result-v1")."""
+const serialize_filippov_sliding_result = _serialize_filippov_sliding_result
+"""    deserialize_filippov_sliding_result(data::AbstractDict) -> FilippovSlidingResult"""
+const deserialize_filippov_sliding_result = _deserialize_filippov_sliding_result
 
 # ---- Codim2SpecialPoint serialization ------------------------------------
 

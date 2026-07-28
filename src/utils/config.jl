@@ -288,6 +288,68 @@ result provenance.
 end
 
 """
+    FilippovGrazingConfig
+
+Configuration for detecting orbit tangencies with a continuous-flow
+`SwitchingEvent` guard. A grazing point satisfies `h = 0`, `∇h⋅f = 0`, and a
+nonzero second normal derivative.
+"""
+@with_kw struct FilippovGrazingConfig
+    event_name::Union{Nothing, String} = nothing
+    t_start::Float64 = 0.0
+    t_stop::Float64
+    sample_count::Int = 800
+    guard_tolerance::Float64 = 1e-8
+    velocity_tolerance::Float64 = 1e-8
+    acceleration_tolerance::Float64 = 1e-8
+    derivative_step::Float64 = 1e-5
+    refine_iterations::Int = 64
+    min_event_separation::Float64 = 1e-5
+    maxiters::Int = 10_000_000
+    @assert isfinite(t_start) "FilippovGrazingConfig.t_start must be finite"
+    @assert isfinite(t_stop) && t_stop > t_start "FilippovGrazingConfig.t_stop must be finite and greater than t_start"
+    @assert sample_count >= 5 "FilippovGrazingConfig.sample_count must be >= 5"
+    @assert isfinite(guard_tolerance) && guard_tolerance >= 0 "FilippovGrazingConfig.guard_tolerance must be finite and >= 0"
+    @assert isfinite(velocity_tolerance) && velocity_tolerance >= 0 "FilippovGrazingConfig.velocity_tolerance must be finite and >= 0"
+    @assert isfinite(acceleration_tolerance) && acceleration_tolerance >= 0 "FilippovGrazingConfig.acceleration_tolerance must be finite and >= 0"
+    @assert isfinite(derivative_step) && derivative_step > 0 "FilippovGrazingConfig.derivative_step must be finite and > 0"
+    @assert refine_iterations >= 1 "FilippovGrazingConfig.refine_iterations must be >= 1"
+    @assert isfinite(min_event_separation) && min_event_separation >= 0 "FilippovGrazingConfig.min_event_separation must be finite and >= 0"
+    @assert maxiters >= 1 "FilippovGrazingConfig.maxiters must be >= 1"
+end
+
+"""
+    FilippovGrazingLocusConfig
+
+Slice-based two-parameter grazing-locus configuration. On each secondary
+parameter value, the primary parameter is solved so the selected guard's
+minimum or maximum orbit margin reaches zero.
+"""
+@with_kw struct FilippovGrazingLocusConfig
+    grazing::FilippovGrazingConfig
+    primary_index::Int = 1
+    secondary_index::Int = 2
+    primary_min::Float64
+    primary_max::Float64
+    secondary_min::Float64
+    secondary_max::Float64
+    secondary_steps::Int = 20
+    fixed_params::Vector{Float64} = Float64[]
+    margin::Symbol = :minimum
+    root_tolerance::Float64 = 1e-8
+    max_bisection_iterations::Int = 60
+    @assert primary_index >= 1 "FilippovGrazingLocusConfig.primary_index must be >= 1"
+    @assert secondary_index >= 1 "FilippovGrazingLocusConfig.secondary_index must be >= 1"
+    @assert primary_index != secondary_index "FilippovGrazingLocusConfig primary and secondary indices must differ"
+    @assert isfinite(primary_min) && isfinite(primary_max) && primary_max > primary_min "FilippovGrazingLocusConfig requires finite primary bounds with max > min"
+    @assert isfinite(secondary_min) && isfinite(secondary_max) && secondary_max >= secondary_min "FilippovGrazingLocusConfig requires finite secondary bounds with max >= min"
+    @assert secondary_steps >= 1 "FilippovGrazingLocusConfig.secondary_steps must be >= 1"
+    @assert margin in (:minimum, :maximum) "FilippovGrazingLocusConfig.margin must be :minimum or :maximum"
+    @assert isfinite(root_tolerance) && root_tolerance > 0 "FilippovGrazingLocusConfig.root_tolerance must be finite and > 0"
+    @assert max_bisection_iterations >= 1 "FilippovGrazingLocusConfig.max_bisection_iterations must be >= 1"
+end
+
+"""
     ReseedConfig
 
 Controls automatic re-seeding when a continuation direction terminates prematurely in the

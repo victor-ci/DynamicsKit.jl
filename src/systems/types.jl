@@ -878,6 +878,117 @@ struct HomoclinicBranchResult
 end
 
 """
+    FilippovGuardDiagnostic
+
+Local guard diagnostics for a flow-side switching surface. `guard_value` is
+`h(x,p)`, `normal` is `∇h`, `normal_velocity` is `∇h⋅f`, and
+`normal_acceleration` is the directional derivative of `normal_velocity` along
+the flow. `status` is `:ok` when all quantities are available.
+"""
+struct FilippovGuardDiagnostic
+    event_name::String
+    state::Vector{Float64}
+    params::Vector{Float64}
+    guard_value::Float64
+    normal::Vector{Float64}
+    vector_field::Vector{Float64}
+    normal_velocity::Float64
+    normal_acceleration::Float64
+    status::Symbol
+    message::String
+end
+
+"""
+    FilippovGrazingPoint
+
+Detected tangency between a continuous-flow orbit and a `SwitchingEvent`
+guard. `status == :grazing` means `h = 0`, `∇h⋅f = 0`, and the second
+normal derivative is nonzero within the configured tolerances;
+`:degenerate` means the same first two conditions hold but genericity failed.
+"""
+struct FilippovGrazingPoint
+    event_name::String
+    time::Float64
+    state::Vector{Float64}
+    params::Vector{Float64}
+    guard_value::Float64
+    normal_velocity::Float64
+    normal_acceleration::Float64
+    status::Symbol
+    converged::Bool
+end
+
+"""
+    FilippovGrazingResult
+
+Orbit-level grazing detection result for a continuous-time system.
+"""
+struct FilippovGrazingResult
+    points::Vector{FilippovGrazingPoint}
+    system_name::String
+    event_name::String
+    params::Vector{Float64}
+    tspan::Tuple{Float64, Float64}
+    status::Symbol
+    warnings::Vector{String}
+    timestamp::DateTime
+end
+
+"""
+    FilippovGrazingLocusResult
+
+Two-parameter grazing locus assembled by solving a signed guard-margin
+condition on repeated secondary-parameter slices. Each sample records the
+primary/secondary coordinates and the corresponding grazing state when
+available.
+"""
+struct FilippovGrazingLocusResult
+    primary_values::Vector{Float64}
+    secondary_values::Vector{Float64}
+    states::Matrix{Float64}
+    guard_values::Vector{Float64}
+    normal_velocities::Vector{Float64}
+    normal_accelerations::Vector{Float64}
+    statuses::Vector{Symbol}
+    system_name::String
+    event_name::String
+    param_names::Tuple{Symbol, Symbol}
+    timestamp::DateTime
+end
+
+"""
+    FilippovSlidingSegment
+
+Consecutive guard samples classified from the one-sided normal velocities.
+`kind` is `:attracting`, `:repelling`, `:crossing`, or `:degenerate`.
+"""
+struct FilippovSlidingSegment
+    event_name::String
+    start_index::Int
+    end_index::Int
+    start_state::Vector{Float64}
+    end_state::Vector{Float64}
+    normal_velocity_minus::Float64
+    normal_velocity_plus::Float64
+    kind::Symbol
+    status::Symbol
+end
+
+"""
+    FilippovSlidingResult
+
+Sliding/crossing classification for sampled points on a switching surface.
+"""
+struct FilippovSlidingResult
+    segments::Vector{FilippovSlidingSegment}
+    event_name::String
+    sample_count::Int
+    status::Symbol
+    warnings::Vector{String}
+    timestamp::DateTime
+end
+
+"""
     MapNormalForm
 
 Plain-data normal-form classification for a map bifurcation. `coefficient_name` is `:b`

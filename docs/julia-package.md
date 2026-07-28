@@ -799,6 +799,30 @@ Axis calibration is explicit. `axis_calibration=:provided` requires a `ModeAssim
 
 `switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.
 
+## Filippov grazing and sliding for flows
+
+For `ContinuousODE` systems with scalar `SwitchingEvent` guards, `filippov_guard_diagnostic(sys, event_name, state, params)` evaluates the flow-side nonsmooth test functions: the guard value `h(x,p)`, guard normal `∇h`, normal velocity `∇h⋅f`, and second normal derivative along the flow. Generic grazing requires `h = 0`, `∇h⋅f = 0`, and nonzero second normal derivative; degenerate tangencies are reported explicitly rather than promoted to grazing.
+
+```julia
+sys = my_piecewise_flow()  # ContinuousODE with a SwitchingEvent named "impact"
+diag = filippov_guard_diagnostic(sys, "impact", state, params)
+
+grazing = filippov_grazing_points(
+    sys,
+    FilippovGrazingConfig(event_name="impact", t_stop=100.0);
+    params=params,
+    initial_point=u0,
+)
+grazing.status          # :grazing, :degenerate, :not_found, or :warning
+grazing.points          # Vector{FilippovGrazingPoint}
+```
+
+`filippov_grazing_locus(sys, FilippovGrazingLocusConfig(...))` assembles a two-parameter grazing locus by solving a signed guard-margin condition on repeated secondary-parameter slices. This is a compact flow-grazing locus tool, not a full hybrid-segment continuation engine.
+
+Sliding classification is separate because it needs the two one-sided vector fields. `filippov_sliding_segments(event, states, params, f_minus, f_plus)` classifies sampled guard-surface segments as `:attracting`, `:repelling`, `:crossing`, or `:degenerate` from the signs of the two one-sided normal velocities. `f_minus` is the vector field on `h < 0`; `f_plus` is the field on `h > 0`.
+
+`FilippovGrazingResult`, `FilippovGrazingLocusResult`, and `FilippovSlidingResult` are plain data. Use `serialize_filippov_grazing_result` / `deserialize_filippov_grazing_result`, `serialize_filippov_grazing_locus_result` / `deserialize_filippov_grazing_locus_result`, and `serialize_filippov_sliding_result` / `deserialize_filippov_sliding_result` for strict, versioned JSON-plain persistence.
+
 ## Map normal forms and special points
 
 `map_normal_form(sys, kind, state, params; period=1)` computes the local coefficient for a fold (`kind=:fold`), flip (`:pd`), or Neimark-Sacker point (`:ns`) of the period-`N` map `G=F^N`. The overload `map_normal_form(sys, point::MapSpecialPoint, params)` uses the point's kind, state, and period. Discrete maps use nested ForwardDiff directional derivatives. Continuous ODEs use centered finite differences of the Poincare return map and require three successive step sizes to agree in sign, classification, and scale. `normal_form_fd_step` controls the initial scale (default `3e-3`); the implementation increases it adaptively when integration error dominates.
@@ -1394,6 +1418,11 @@ These are for callers that drive the analyses programmatically and need more tha
   `state_dim(sys)` and `switching_events(sys)`; and the trace-data helpers behind the Plots recipes
   (`branch_plot_traces`, `resolve_plot_params`, `branch_point_state`, `orbit_phase_alignment_shift`,
   `phase_jump_break_indices`, `trace_breaks`, `codim2_curve_label`, `codim2_valid_runs`).
+
+- **Flow-side nonsmooth diagnostics** — `filippov_guard_diagnostic`,
+  `filippov_grazing_points`, `filippov_grazing_locus`, and
+  `filippov_sliding_segments` expose the `SwitchingEvent` guard derivatives,
+  grazing points/loci, and one-sided sliding classification for continuous flows.
 
 ## Adding a system in code
 

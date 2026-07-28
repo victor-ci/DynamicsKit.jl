@@ -66,6 +66,7 @@ include("analysis/map_special_points.jl")      # map-aware fold/flip/NS emission
 include("analysis/codim2_special_points.jl")   # test-function pass for codim-2 organising points
 include("analysis/border_collision.jl")        # continuous-map border-collision classification
 include("analysis/border_scenario.jl")         # BCNF robust-chaos + scalar period-adding predictions
+include("analysis/filippov.jl")                # flow-side grazing and sliding diagnostics
 include("analysis/atlas.jl")
 include("analysis/contract_kernels.jl")     # publish analysis kernels (after defs)
 include("analysis/contract_accessors.jl")   # publish result/diagnostics accessors (after defs)
@@ -89,6 +90,7 @@ export RobustChaosRegion, RobustChaosRegionResult
 export ChaosDesignVariable, ChaosDesignTarget, ChaosDesignCandidate, ChaosDesignResult
 export BorderCollisionClassification, BorderCollisionPoint
 export BorderScenarioRung, BorderScenarioPrediction, BorderScenarioVerification
+export FilippovGuardDiagnostic, FilippovGrazingPoint, FilippovGrazingResult, FilippovGrazingLocusResult, FilippovSlidingSegment, FilippovSlidingResult
 export AffineModeSpec, SwitchingCircuitDescription
 export AdaptiveMapSample, AdaptiveMapLeafCell, AdaptiveMapSegment, AdaptiveMapResult
 
@@ -162,6 +164,7 @@ export homoclinic_orbit, homoclinic_special_point_label
 export map_normal_form, codim2_normal_form, map_special_points, codim2_special_points
 export border_collision_classify, border_collision_at_cycle, border_collision_points
 export border_period_adding_order, border_scenario_predict, border_scenario_verify
+export filippov_guard_diagnostic, filippov_grazing_points, filippov_grazing_locus, filippov_sliding_segments
 export basins_of_attraction, bifurcation_map, adaptive_bifurcation_map, phase_portrait, refine_branch, auto_refine_branch
 export lyapunov_diagram, lyapunov_field, lyapunov_spectrum, power_spectrum, codim2_curve
 export switching_event_diagnostics
@@ -179,6 +182,7 @@ export RobustChaosConfig, RobustChaosRegionConfig
 export ChaosDesignSignalConfig, ChaosDesignConfig
 export BranchReachabilityConfig
 export RegimeBoundaryConfig, ToleranceConfig
+export FilippovGrazingConfig, FilippovGrazingLocusConfig
 
 # Exports — I/O
 export save_result, load_result
@@ -205,6 +209,9 @@ export serialize_border_collision_classification, deserialize_border_collision_c
 export serialize_border_collision_point, deserialize_border_collision_point
 export serialize_border_scenario_prediction, deserialize_border_scenario_prediction
 export serialize_border_scenario_verification, deserialize_border_scenario_verification
+export serialize_filippov_grazing_result, deserialize_filippov_grazing_result
+export serialize_filippov_grazing_locus_result, deserialize_filippov_grazing_locus_result
+export serialize_filippov_sliding_result, deserialize_filippov_sliding_result
 export serialize_codim2_special_point, deserialize_codim2_special_point
 export serialize_homoclinic_branch_result, deserialize_homoclinic_branch_result
 export serialize_bifurcation_map_result, deserialize_bifurcation_map_result
