@@ -13,6 +13,8 @@ const _CODIM2_NORMAL_FORM_FORMAT = "codim2-normal-form-v1"
 const _MAP_SPECIAL_POINT_FORMAT = "map-special-point-v1"
 const _BORDER_COLLISION_CLASSIFICATION_FORMAT = "border-collision-classification-v1"
 const _BORDER_COLLISION_POINT_FORMAT = "border-collision-point-v1"
+const _BORDER_SCENARIO_PREDICTION_FORMAT = "border-scenario-prediction-v1"
+const _BORDER_SCENARIO_VERIFICATION_FORMAT = "border-scenario-verification-v1"
 
 function _require_serialized_fields(data::AbstractDict, fields, label::AbstractString)
     missing = filter(field -> !haskey(data, field), fields)
@@ -292,6 +294,17 @@ end
 _bcb_opt_bool(value) = value === nothing ? nothing : _as_bool(value, false)
 _bcb_opt_int(value) = value === nothing ? nothing : _as_int(value, 0)
 _bcb_opt_float(value) = value === nothing ? nothing : _as_float(value, NaN)
+function _bsp_optional_string(value, field::AbstractString)
+    value === nothing && return nothing
+    value isa AbstractString || error("Serialized border-scenario $field must be a string or null.")
+    return _as_string(value, "")
+end
+
+function _bsp_string_vector(data::AbstractDict, field::AbstractString)
+    value = get(data, field, Any[])
+    value isa AbstractVector || error("Serialized border-scenario $field must be an array.")
+    return String[_as_string(item, "") for item in value]
+end
 
 function _serialize_border_collision_classification(c::BorderCollisionClassification)
     return Dict{String, Any}(
@@ -442,6 +455,151 @@ function _deserialize_border_collision_point(data::AbstractDict)
         period,
         classification,
         data["converged"],
+    )
+end
+
+function _serialize_border_scenario_rung(rung::BorderScenarioRung)
+    return Dict{String, Any}(
+        "word" => rung.word,
+        "rotationNumerator" => rung.rotation_numerator,
+        "period" => rung.period,
+        "leftParent" => rung.left_parent,
+        "rightParent" => rung.right_parent,
+    )
+end
+
+function _deserialize_border_scenario_rung(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("word", "rotationNumerator", "period", "leftParent", "rightParent"),
+        "border scenario rung")
+    return BorderScenarioRung(
+        _as_string(data["word"], ""),
+        _as_int(data["rotationNumerator"], 0),
+        _as_int(data["period"], 0),
+        _bsp_optional_string(get(data, "leftParent", nothing), "leftParent"),
+        _bsp_optional_string(get(data, "rightParent", nothing), "rightParent"),
+    )
+end
+
+function _serialize_border_scenario_prediction(prediction::BorderScenarioPrediction)
+    return Dict{String, Any}(
+        "format" => _BORDER_SCENARIO_PREDICTION_FORMAT,
+        "status" => String(prediction.status),
+        "model" => String(prediction.model),
+        "classification" => _serialize_border_collision_classification(prediction.classification),
+        "bcnfParameters" => copy(prediction.bcnf_parameters),
+        "predictedCascade" => String(prediction.predicted_cascade),
+        "robustChaosVerdict" => String(prediction.robust_chaos_verdict),
+        "robustChaosConditions" => copy(prediction.robust_chaos_conditions),
+        "periodAddingRungs" => [_serialize_border_scenario_rung(r) for r in prediction.period_adding_rungs],
+        "validityRegion" => copy(prediction.validity_region),
+        "inference" => prediction.inference,
+        "warnings" => copy(prediction.warnings),
+        "convention" => prediction.convention,
+    )
+end
+
+function _deserialize_border_scenario_prediction(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "status", "model", "classification", "bcnfParameters",
+         "predictedCascade", "robustChaosVerdict", "robustChaosConditions",
+         "periodAddingRungs", "validityRegion", "inference", "warnings", "convention"),
+        "border scenario prediction")
+    format = _as_string(get(data, "format", ""), "")
+    format == _BORDER_SCENARIO_PREDICTION_FORMAT || error(
+        "Unsupported border-scenario prediction format '$format'.")
+    params_raw = get(data, "bcnfParameters", Dict{String, Any}())
+    params_raw isa AbstractDict || error("Serialized border-scenario bcnfParameters must be a dictionary.")
+    params = Dict{String, Float64}(String(k) => _as_float(v, NaN) for (k, v) in params_raw)
+    conditions_raw = get(data, "robustChaosConditions", Dict{String, Any}())
+    conditions_raw isa AbstractDict || error("Serialized border-scenario robustChaosConditions must be a dictionary.")
+    region_raw = get(data, "validityRegion", Dict{String, Any}())
+    region_raw isa AbstractDict || error("Serialized border-scenario validityRegion must be a dictionary.")
+    rungs_raw = get(data, "periodAddingRungs", Any[])
+    rungs_raw isa AbstractVector || error("Serialized border-scenario periodAddingRungs must be an array.")
+    warnings = _bsp_string_vector(data, "warnings")
+    return BorderScenarioPrediction(
+        status = Symbol(_as_string(data["status"], "")),
+        model = Symbol(_as_string(data["model"], "")),
+        classification = _deserialize_border_collision_classification(data["classification"]),
+        bcnf_parameters = params,
+        predicted_cascade = Symbol(_as_string(data["predictedCascade"], "")),
+        robust_chaos_verdict = Symbol(_as_string(data["robustChaosVerdict"], "")),
+        robust_chaos_conditions = Dict{String, Any}(String(k) => v for (k, v) in conditions_raw),
+        period_adding_rungs = BorderScenarioRung[
+            _deserialize_border_scenario_rung(r) for r in rungs_raw],
+        validity_region = Dict{String, Any}(String(k) => v for (k, v) in region_raw),
+        inference = _as_string(data["inference"], ""),
+        warnings = warnings,
+        convention = _as_string(data["convention"], ""),
+    )
+end
+
+function _serialize_border_scenario_verification(result::BorderScenarioVerification)
+    return Dict{String, Any}(
+        "format" => _BORDER_SCENARIO_VERIFICATION_FORMAT,
+        "status" => String(result.status),
+        "predictionStatus" => String(result.prediction_status),
+        "verificationKind" => String(result.verification_kind),
+        "paramValues" => copy(result.param_values),
+        "observedPeriods" => copy(result.observed_periods),
+        "observedRuns" => copy(result.observed_runs),
+        "lyapunovExponents" => copy(result.lyapunov_exponents),
+        "lyapunovStatuses" => String.(result.lyapunov_statuses),
+        "positiveLyapunovFraction" => result.positive_lyapunov_fraction,
+        "aperiodicFraction" => result.aperiodic_fraction,
+        "matchedPrefixLength" => result.matched_prefix_length,
+        "requiredPrefixLength" => result.required_prefix_length,
+        "consistencyPassed" => result.consistency_passed,
+        "inference" => result.inference,
+        "warnings" => copy(result.warnings),
+    )
+end
+
+function _deserialize_border_scenario_verification(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "status", "predictionStatus", "paramValues", "observedPeriods",
+         "observedRuns", "matchedPrefixLength", "requiredPrefixLength",
+         "consistencyPassed", "inference", "warnings"),
+        "border scenario verification")
+    format = _as_string(get(data, "format", ""), "")
+    format == _BORDER_SCENARIO_VERIFICATION_FORMAT || error(
+        "Unsupported border-scenario verification format '$format'.")
+    runs_raw = get(data, "observedRuns", Any[])
+    runs_raw isa AbstractVector || error("Serialized border-scenario observedRuns must be an array.")
+    param_values_raw = get(data, "paramValues", Any[])
+    param_values_raw isa AbstractVector || error("Serialized border-scenario paramValues must be an array.")
+    periods_raw = get(data, "observedPeriods", Any[])
+    periods_raw isa AbstractVector || error("Serialized border-scenario observedPeriods must be an array.")
+    lyaps_raw = get(data, "lyapunovExponents", Any[])
+    lyaps_raw isa AbstractVector || error("Serialized border-scenario lyapunovExponents must be an array.")
+    lyap_statuses_raw = get(data, "lyapunovStatuses", Any[])
+    lyap_statuses_raw isa AbstractVector || error("Serialized border-scenario lyapunovStatuses must be an array.")
+    warnings = _bsp_string_vector(data, "warnings")
+    runs = Dict{String, Any}[]
+    for run in runs_raw
+        run isa AbstractDict || error("Serialized border-scenario observedRuns entries must be dictionaries.")
+        push!(runs, Dict{String, Any}(String(k) => v for (k, v) in run))
+    end
+    return BorderScenarioVerification(
+        status = Symbol(_as_string(data["status"], "")),
+        prediction_status = Symbol(_as_string(data["predictionStatus"], "")),
+        verification_kind = Symbol(_as_string(get(data, "verificationKind", "period_sequence"), "period_sequence")),
+        param_values = Float64[_as_float(v, NaN) for v in param_values_raw],
+        observed_periods = Int[_as_int(v, 0) for v in periods_raw],
+        observed_runs = runs,
+        lyapunov_exponents = Float64[_as_float(v, NaN) for v in lyaps_raw],
+        lyapunov_statuses = Symbol[Symbol(_as_string(v, "unavailable")) for v in lyap_statuses_raw],
+        positive_lyapunov_fraction = _as_float(get(data, "positiveLyapunovFraction", NaN), NaN),
+        aperiodic_fraction = _as_float(get(data, "aperiodicFraction", NaN), NaN),
+        matched_prefix_length = _as_int(data["matchedPrefixLength"], 0),
+        required_prefix_length = _as_int(data["requiredPrefixLength"], 0),
+        consistency_passed = _as_bool(data["consistencyPassed"], false),
+        inference = _as_string(data["inference"], ""),
+        warnings = warnings,
     )
 end
 
@@ -2036,6 +2194,14 @@ const deserialize_border_collision_classification = _deserialize_border_collisio
 const serialize_border_collision_point = _serialize_border_collision_point
 """    deserialize_border_collision_point(data::AbstractDict) -> BorderCollisionPoint"""
 const deserialize_border_collision_point = _deserialize_border_collision_point
+"""    serialize_border_scenario_prediction(prediction::BorderScenarioPrediction) -> Dict — versioned JSON-plain form (format "border-scenario-prediction-v1")."""
+const serialize_border_scenario_prediction = _serialize_border_scenario_prediction
+"""    deserialize_border_scenario_prediction(data::AbstractDict) -> BorderScenarioPrediction"""
+const deserialize_border_scenario_prediction = _deserialize_border_scenario_prediction
+"""    serialize_border_scenario_verification(result::BorderScenarioVerification) -> Dict — versioned JSON-plain form (format "border-scenario-verification-v1")."""
+const serialize_border_scenario_verification = _serialize_border_scenario_verification
+"""    deserialize_border_scenario_verification(data::AbstractDict) -> BorderScenarioVerification"""
+const deserialize_border_scenario_verification = _deserialize_border_scenario_verification
 
 # ---- Codim2SpecialPoint serialization ------------------------------------
 

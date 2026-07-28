@@ -1502,3 +1502,119 @@ function BorderCollisionPoint(param::Real, orbit::AbstractVector, colliding_phas
         classification,
         converged)
 end
+
+"""
+    BorderScenarioRung
+
+One symbolic rung in a Farey/Stern-Brocot period-adding ordering. `word` is the
+left/right itinerary label, `rotation_numerator / period` is the corresponding
+symbolic rotation number, and the parent labels identify the neighbouring words
+whose concatenation produced this rung.
+"""
+struct BorderScenarioRung
+    word::String
+    rotation_numerator::Int
+    period::Int
+    left_parent::Union{Nothing, String}
+    right_parent::Union{Nothing, String}
+end
+
+function BorderScenarioRung(word::AbstractString, rotation_numerator::Integer,
+                            period::Integer, left_parent, right_parent)
+    period >= 1 || throw(ArgumentError("BorderScenarioRung period must be >= 1; got $period."))
+    0 <= rotation_numerator <= period || throw(ArgumentError(
+        "BorderScenarioRung rotation numerator must lie in 0:period; got $rotation_numerator/$period."))
+    return BorderScenarioRung(String(word), Int(rotation_numerator), Int(period),
+        left_parent === nothing ? nothing : String(left_parent),
+        right_parent === nothing ? nothing : String(right_parent))
+end
+
+"""
+    BorderScenarioPrediction
+
+Prediction layer built from one-sided border-collision data. The determinant-sign
+classification is retained, the 2-D BCNF reduction stores trace/determinant
+parameters when available, robust-chaos conditions store the evaluated
+Banerjee--Yorke--Grebogi / Glendinning inequalities, and `period_adding_rungs`
+stores only the scalar Farey ordering that is valid under the 1-D discontinuous
+piecewise-linear hypotheses.
+"""
+struct BorderScenarioPrediction
+    status::Symbol
+    model::Symbol
+    classification::BorderCollisionClassification
+    bcnf_parameters::Dict{String, Float64}
+    predicted_cascade::Symbol
+    robust_chaos_verdict::Symbol
+    robust_chaos_conditions::Dict{String, Any}
+    period_adding_rungs::Vector{BorderScenarioRung}
+    validity_region::Dict{String, Any}
+    inference::String
+    warnings::Vector{String}
+    convention::String
+end
+
+function BorderScenarioPrediction(; status::Symbol, model::Symbol,
+        classification::BorderCollisionClassification,
+        bcnf_parameters::AbstractDict=Dict{String, Float64}(),
+        predicted_cascade::Symbol=:undetermined,
+        robust_chaos_verdict::Symbol=:not_applicable,
+        robust_chaos_conditions::AbstractDict=Dict{String, Any}(),
+        period_adding_rungs::AbstractVector{BorderScenarioRung}=BorderScenarioRung[],
+        validity_region::AbstractDict=Dict{String, Any}(),
+        inference::AbstractString="",
+        warnings::AbstractVector=String[],
+        convention::AbstractString="border-scenario-v1")
+    params = Dict{String, Float64}(String(k) => Float64(v) for (k, v) in bcnf_parameters)
+    conditions = Dict{String, Any}(String(k) => v for (k, v) in robust_chaos_conditions)
+    region = Dict{String, Any}(String(k) => v for (k, v) in validity_region)
+    return BorderScenarioPrediction(status, model, classification, params, predicted_cascade,
+        robust_chaos_verdict, conditions, collect(BorderScenarioRung, period_adding_rungs),
+        region, String(inference), collect(String, warnings), String(convention))
+end
+
+"""
+    BorderScenarioVerification
+
+Result of a targeted one-parameter sweep against a `BorderScenarioPrediction`.
+`observed_runs` compresses consecutive samples with the same detected period;
+`matched_prefix_length` compares the observed positive-period sequence with the
+prediction's expected period list (or an explicitly supplied list).
+"""
+struct BorderScenarioVerification
+    status::Symbol
+    prediction_status::Symbol
+    verification_kind::Symbol
+    param_values::Vector{Float64}
+    observed_periods::Vector{Int}
+    observed_runs::Vector{Dict{String, Any}}
+    lyapunov_exponents::Vector{Float64}
+    lyapunov_statuses::Vector{Symbol}
+    positive_lyapunov_fraction::Float64
+    aperiodic_fraction::Float64
+    matched_prefix_length::Int
+    required_prefix_length::Int
+    consistency_passed::Bool
+    inference::String
+    warnings::Vector{String}
+end
+
+function BorderScenarioVerification(; status::Symbol, prediction_status::Symbol,
+        verification_kind::Symbol=:period_sequence,
+        param_values::AbstractVector, observed_periods::AbstractVector{<:Integer},
+        observed_runs::AbstractVector=Dict{String, Any}[],
+        lyapunov_exponents::AbstractVector{<:Real}=Float64[],
+        lyapunov_statuses::AbstractVector{Symbol}=Symbol[],
+        positive_lyapunov_fraction::Real=NaN,
+        aperiodic_fraction::Real=NaN,
+        matched_prefix_length::Integer=0, required_prefix_length::Integer=0,
+        consistency_passed::Bool=false, inference::AbstractString="",
+        warnings::AbstractVector=String[])
+    return BorderScenarioVerification(status, prediction_status, verification_kind,
+        collect(Float64, param_values), collect(Int, observed_periods),
+        collect(Dict{String, Any}, observed_runs), collect(Float64, lyapunov_exponents),
+        collect(Symbol, lyapunov_statuses), Float64(positive_lyapunov_fraction),
+        Float64(aperiodic_fraction), Int(matched_prefix_length),
+        Int(required_prefix_length), consistency_passed, String(inference),
+        collect(String, warnings))
+end

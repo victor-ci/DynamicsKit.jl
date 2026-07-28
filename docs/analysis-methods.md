@@ -317,6 +317,22 @@ transversality, status, scenario, and a conservative inference string) and versi
 serializers. Validated against the Simpson (2014) 1D fixtures for all four scenarios,
 2D border-collision-normal-form fixtures, and a period-2 cycle-phase fixture.
 
+`border_scenario_predict(A_L, A_R; switching_normal=...)` is the explicit prediction
+layer above the classifier. For a successful 2D continuous-map classification it records
+the BCNF trace/determinant reduction (`tau = tr(A)`, `delta = det(A)`) and evaluates the
+Banerjee-Yorke-Grebogi trapping inequality and Glendinning's transverse-homoclinic
+condition. Verdicts such as `:glendinning_fixed_point_candidate` and
+`:byg_trapping_candidate` are local normal-form candidates, not global robust-chaos
+proofs for the original nonlinear map. For scalar data the prediction exposes only the
+Farey/Stern-Brocot symbolic period-adding order (`border_period_adding_order`); the 1D
+discontinuous period-adding theory is not transferred to the continuous 2D BCNF.
+`border_scenario_verify` performs the targeted one-parameter sweep of the actual map.
+Scalar predictions compare the observed period sequence with a predicted or supplied
+prefix. BCNF robust-chaos candidates use finite-time evidence: a configured fraction of
+sampled parameters must have no low-period closure and a positive largest-Lyapunov
+estimate. That verification is bounded to the sampled interval, transient/iteration
+budget, period ceiling, Lyapunov threshold, and initial condition.
+
 
 
 Functions:
