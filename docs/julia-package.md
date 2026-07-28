@@ -1411,7 +1411,7 @@ duffing = ContinuousODE(duffing!, 2, section, [:mu], "Duffing";
 
 ## Switching-map generator (piecewise-linear circuits)
 
-`switching_map` constructs a 2-D `DiscreteMap` from a `SwitchingCircuitDescription` — an ordered
+`switching_map` constructs a `DiscreteMap` from a `SwitchingCircuitDescription` — an ordered
 list of `AffineModeSpec` values plus a clock period — without hand-deriving the period-advance map:
 
 ```julia
@@ -1420,6 +1420,8 @@ using DynamicsKit, StaticArrays
 # ── Built-in descriptions ─────────────────────────────────────────────────────
 sys_buck  = switching_map(buck_converter_description())   # identical to buck_converter()
 sys_boost = switching_map(boost_converter_description())  # identical to boost_converter()
+sys_cuk   = cuk_converter()
+sys_sepic = sepic_converter()
 
 # ── Custom two-mode affine circuit ────────────────────────────────────────────
 # Diagonal A in each mode; equilibria known analytically.
@@ -1446,6 +1448,11 @@ A_off = p -> SMatrix{2,2}(-1/(p[3]*C), -1/L, 1/C, 0.0)
 b_off = p -> SVector(0.0, E/L)
 mode_off = AffineModeSpec(A_off, b_off)
 ```
+
+For descriptions whose matrices and vectors are all parameter-dependent callables, pass
+`state_dim` to `SwitchingCircuitDescription`; otherwise the dimension is inferred from the constant
+mode data. Affine mode flows use an augmented Duhamel matrix exponential, so singular and defective
+matrices are handled without a special equilibrium solve.
 
 The optional `boundary` keyword enforces an exact switching condition at the end of an intermediate
 mode — for example, forcing the inductor current to `Iref`:

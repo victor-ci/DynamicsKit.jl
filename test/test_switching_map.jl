@@ -30,8 +30,53 @@ using StaticArrays
         end
         J
     end
+    function affine_ref(x0::AbstractVector, A::AbstractMatrix, b::AbstractVector, tau)
+        n = length(x0)
+        M = [Matrix(A) collect(b); zeros(1, n) 0.0]
+        return (exp(M * tau) * [collect(x0); 1.0])[1:n]
+    end
 
     # ── Analytic affine-flow fixtures ─────────────────────────────────────────
+
+    @testset "_affine_flow_nd — augmented exponential fixtures" begin
+        @test DynamicsKit._sw_one_norm(SMatrix{1,1}(big"1e400")) isa BigFloat
+        fixtures = (
+            (
+                SMatrix{3,3}(-1.0, 0.0, 0.0, 2.0, -2.0, 0.0, 0.0, 3.0, -3.0),
+                SVector(0.1, 0.2, 0.3),
+                SVector(1.0, -0.5, 0.25),
+                0.7,
+            ),
+            (
+                SMatrix{4,4}(0.0, 0.0, 0.0, 0.0,
+                             1.0, 0.0, 0.0, 0.0,
+                             0.0, 1.0, 0.0, 0.0,
+                             0.0, 0.0, 1.0, 0.0),
+                SVector(0.0, 0.1, -0.2, 0.3),
+                SVector(1.0, 2.0, 3.0, 4.0),
+                0.125,
+            ),
+            (
+                SMatrix{6,6}(-0.2, -1.0, 0.0, 0.0, 0.0, 0.0,
+                              1.0, -0.2, 0.0, 0.0, 0.0, 0.0,
+                              0.0, 0.0, -0.5, 0.0, 0.0, 0.0,
+                              0.0, 0.0, 0.0, -1.0, 0.0, 0.0,
+                              0.0, 0.0, 0.0, 1.0, -1.0, 0.0,
+                              0.0, 0.0, 0.0, 0.0, 1.0, -1.0),
+                SVector(0.3, -0.1, 0.2, 0.0, 0.4, -0.2),
+                SVector(1.0, 0.0, -1.0, 0.5, -0.5, 0.25),
+                0.4,
+            ),
+        )
+        for (A, b, x0, tau) in fixtures
+            y = DynamicsKit._affine_flow_nd(x0, A, b, tau)
+            ref = affine_ref(x0, A, b, tau)
+            @test isapprox(collect(y), ref; atol=2e-13, rtol=2e-13)
+            J_ad = ForwardDiff.jacobian(x -> collect(DynamicsKit._affine_flow_nd(SVector{length(x0)}(x), A, b, tau)), collect(x0))
+            J_ref = Matrix(exp(Matrix(A) * tau))
+            @test isapprox(J_ad, J_ref; atol=2e-12, rtol=2e-12)
+        end
+    end
 
     @testset "_affine_flow_2d — over-damped (diagonal A)" begin
         # A = diag(-1, -2), b = [1, 2]
@@ -356,12 +401,36 @@ using StaticArrays
             (AffineModeSpec(A, b), "not a mode"), 1.0)
     end
 
+    @testset "Description dimension inference errors are explicit" begin
+        A_fn = p -> SMatrix{2,2}(-one(p[1]), zero(p[1]), zero(p[1]), -2 * one(p[1]))
+        b_fn = p -> SVector(zero(p[1]), p[1])
+        @test_throws ArgumentError SwitchingCircuitDescription(
+            (AffineModeSpec(A_fn, b_fn),), 1.0)
+
+        desc = SwitchingCircuitDescription(
+            (AffineModeSpec(A_fn, b_fn),), 1.0;
+            state_dim=2, param_names=[:a])
+        @test desc.state_dim == 2
+        @test switching_map(desc).dim == 2
+
+        A2 = SMatrix{2,2}(-1.0, 0.0, 0.0, -1.0)
+        b2 = SVector(0.0, 0.0)
+        A3 = SMatrix{3,3}(-1.0, 0.0, 0.0,
+                          0.0, -1.0, 0.0,
+                          0.0, 0.0, -1.0)
+        b3 = SVector(0.0, 0.0, 0.0)
+        @test_throws ArgumentError SwitchingCircuitDescription(
+            (AffineModeSpec(A2, b2; duration=(x, p) -> 0.5), AffineModeSpec(A3, b3)), 1.0)
+    end
+
     # ── Public API surface ────────────────────────────────────────────────────
 
     @testset "Exported symbols present" begin
         for sym in [:AffineModeSpec, :SwitchingCircuitDescription,
                     :switching_map,
-                    :buck_converter_description, :boost_converter_description]
+                    :buck_converter_description, :boost_converter_description,
+                    :cuk_converter, :sepic_converter,
+                    :cuk_converter_description, :sepic_converter_description]
             @test sym in names(DynamicsKit)
         end
     end
@@ -387,6 +456,32 @@ using StaticArrays
 
         @test_throws ArgumentError boost_converter_description(L=-1.0)
         @test_throws ArgumentError boost_converter_description(C=0.0)
+    end
+
+    @testset "Cuk and SEPIC descriptions return 4-D generated maps" begin
+        for (desc, sys, name, seed, params) in (
+            (cuk_converter_description(), cuk_converter(), "Cuk (peak-current)",
+             SVector(16.0, 1.5, 32.0, 1.8), [3.5, 15.0, 10.0]),
+            (sepic_converter_description(), sepic_converter(), "SEPIC (peak-current)",
+             SVector(22.0, 1.9, 26.0, 1.4), [5.25, 24.0, 10.0]),
+        )
+            @test desc isa SwitchingCircuitDescription
+            @test desc.state_dim == 4
+            @test desc.param_names == [:Iref, :Vin, :R]
+            @test sys.dim == 4
+            @test sys.name == name
+            @test sys.param_names == [:Iref, :Vin, :R]
+            @test length(switching_events(sys)) == 2
+            y = sys.f(seed, params)
+            @test length(y) == 4
+            @test all(isfinite.(y))
+            Jx = ForwardDiff.jacobian(x -> collect(sys.f(SVector{4}(x), params)), collect(seed))
+            @test size(Jx) == (4, 4)
+            @test all(isfinite, Jx)
+            @test sys.f(seed, [params[1]]) == sys.f(seed, params)
+        end
+        @test_throws ArgumentError cuk_converter_description(L1=-1.0)
+        @test_throws ArgumentError sepic_converter_description(C1=0.0)
     end
 
     @testset "switching_map forwards switching events" begin

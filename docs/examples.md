@@ -265,6 +265,39 @@ diag["switchingEvents"]
 
 Switching diagnostics report proximity to guard surfaces. Treat near-guard points as nonsmooth event candidates even when smooth multiplier labels are inconclusive.
 
+## Fourth-order Cuk and SEPIC switching maps
+
+```julia
+using DynamicsKit
+
+sys = sepic_converter()
+params = [5.25, 24.0, 10.0]   # Iref, Vin, R
+
+lyap = lyapunov_diagram(sys, LyapunovConfig(
+    param_min=4.8,
+    param_max=6.2,
+    param_steps=160,
+    iterations=600,
+    transient=500,
+    fixed_params=params,
+))
+
+map = bifurcation_map(sys, BifurcationMapConfig(
+    a_min=4.8, a_max=6.2, a_steps=80,
+    b_min=7.0, b_max=14.0, b_steps=64,
+    a_index=1,
+    b_index=3,
+    base_params=params,
+    max_period=8,
+    iterations=700,
+    transient=500,
+))
+```
+
+`cuk_converter()` uses the same `[Iref, Vin, R]` parameter convention and state order
+`[vC2, iL2, vC1, iL1]`. The SEPIC defaults reproduce the published first flip near
+`Iref = 5.25 A`; the Cuk defaults follow the printed source matrices and component set.
+
 ## Memristive diode bridge multistability map
 
 ```julia
@@ -306,6 +339,8 @@ Several examples are built around established dynamical-systems models:
 | Rossler oscillator | O. E. Rossler, "An equation for continuous chaos", *Physics Letters A* 57, 397-398 (1976). doi:10.1016/0375-9601(76)90101-8 |
 | Vilnius oscillator | A. Ipatovs, C. Iheanacho, D. Pikuļins, S. Tjukovs, A. Litviņenko, "Complete Bifurcation Analysis of the Vilnius Chaotic Oscillator", *Electronics* 12(13), Article 2861 (2023). doi:10.3390/electronics12132861 |
 | Boost converter | W. C. Y. Chan, C. K. Tse, "Study of bifurcations in current-programmed DC/DC boost converters", *IEEE Trans. Circuits Syst. I* 44(12), 1129-1142 (1997). doi:10.1109/81.645151 |
+| Cuk converter | M. B. Debbat, A. El Aroudi, R. Bouyadjra, "Bifurcation Analysis of Current Mode Control Cuk DC-DC Converter", *International Journal of Computer Applications* 55(3), 20-25 (2012). doi:10.5120/8735-2810 |
+| SEPIC converter | M. B. Debbat, A. El Aroudi, R. Giral, L. Martinez-Salamero, "Stability Analysis and Bifurcations of SEPIC DC-DC Converter Using a Discrete-Time Model", *IEEE ICIT* (2002). doi:10.1109/ICIT.2002.1189317 |
 | Memristive diode bridge | Q. Xu, Q. Zhang, N. Wang, H. Wu, B. Bao, "An Improved Memristive Diode Bridge-Based Band Pass Filter Chaotic Circuit", *Mathematical Problems in Engineering*, Article ID 2461964 (2017). doi:10.1155/2017/2461964 |
 
 ## Defining a system in your own file

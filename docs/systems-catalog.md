@@ -12,6 +12,8 @@ presets; the analyses listed below are library capabilities available to any cal
 | `buck` | `buck_converter()` | Discrete switching map | `Iref`, `Ein` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, basins, 2D map |
 | `buck_voltage_mode` | `buck_voltage_mode(...)` | Discrete switching map | `E`, `Vref`, `R`, `gain` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, basins, 2D map |
 | `boost_converter` | `boost_converter(...)` | Discrete switching map | `Iref`, `E`, `R`, `Sc` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, 2D map |
+| `cuk_converter` | `cuk_converter(...)` | Discrete switching map | `Iref`, `Vin`, `R` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, 2D map |
+| `sepic_converter` | `sepic_converter(...)` | Discrete switching map | `Iref`, `Vin`, `R` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, 2D map |
 | `vilnius` | `vilnius_oscillator(...)` | Continuous ODE | `a`, `b`, `epsilon` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, phase portrait, Power spectrum, skeleton, 2D map |
 | `colpitts_simple` | `colpitts_simple_oscillator(...)` | Continuous ODE | `C1`, `C2`, `beta`, `V1`, `V2` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, phase portrait, Power spectrum, skeleton, 2D map |
 | `colpitts_exponential` | `colpitts_exponential_oscillator(...)` | Continuous ODE | `C1`, `C2`, `beta`, `V1`, `V2` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, phase portrait, Power spectrum, skeleton, 2D map |
@@ -19,6 +21,8 @@ presets; the analyses listed below are library capabilities available to any cal
 | `ikeda` | `ikeda_map(...)` | Discrete map | `u`, `a`, `b` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, skeleton, basins, 2D map |
 | `rossler` | `rossler_oscillator(...)` | Continuous ODE | `a`, `b`, `c` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, phase portrait, Power spectrum, skeleton, 2D map |
 | `memristive_diode_bridge` | `memristive_diode_bridge(...)` | Continuous ODE | `a`, `c`, `k` | atlas, continuation, brute force, Lyapunov diagram, Codim-2 curves, phase portrait, Power spectrum, skeleton, basins, 2D map |
+
+Here "2D map" means the two-parameter operating-map analysis, not the state dimension.
 
 ## Henon map
 
@@ -68,6 +72,23 @@ Basin analysis is rarely useful for this model; the default workflow focuses on 
 A description-based equivalent that produces the same `DiscreteMap` is available via
 `switching_map(boost_converter_description())` (see the switching-map generator below).
 
+## Fourth-order Cuk and SEPIC converters
+
+`cuk_converter()` and `sepic_converter()` are generated four-state current-programmed
+switching maps with state order `[vC2, iL2, vC1, iL1]`. Both use a clock-latched
+peak-current rule on the sum current `iL1 + iL2`: the switch starts ON at the clock edge,
+opens when the sum current reaches `Iref`, and remains OFF until the next period.
+
+Typical uses:
+
+- fourth-order switching-map continuation;
+- period-doubling and border-collision studies in `Iref`;
+- two-parameter `(Iref, R)` or `(Iref, Vin)` operating maps.
+
+The Cuk defaults follow Debbat, El Aroudi, and Bouyadjra (2012). The SEPIC defaults follow
+Debbat, El Aroudi, Giral, and Martinez-Salamero (2002), including the first flip near
+`Iref = 5.25 A`.
+
 ## Switching-map generator
 
 `switching_map(desc)` generates a `DiscreteMap` from a `SwitchingCircuitDescription` — an ordered
@@ -77,20 +98,24 @@ hand-deriving the period-advance formula.
 | Constructor/type | Purpose |
 | --- | --- |
 | `AffineModeSpec(A, b; duration, boundary, events)` | One operating mode |
-| `SwitchingCircuitDescription(modes, period; param_names, name)` | Ordered list of modes + clock |
+| `SwitchingCircuitDescription(modes, period; param_names, name, state_dim)` | Ordered list of modes + clock |
 | `switching_map(desc)` | Generate a ForwardDiff-compatible `DiscreteMap` |
 | `buck_converter_description()` | Description reproducing `buck_converter()` |
 | `boost_converter_description()` | Description reproducing `boost_converter()` |
+| `cuk_converter_description()` | Description used by `cuk_converter()` |
+| `sepic_converter_description()` | Description used by `sepic_converter()` |
 
 `A` and `b` are constant `SMatrix`/`SVector` values or parameter-dependent callables
-`p -> SMatrix` / `p -> SVector`. The optional `boundary = (x_flow, p) -> SVector{2}` overrides the
+`p -> SMatrix` / `p -> SVector`. `SwitchingCircuitDescription` infers the state dimension from
+constant modes; pass `state_dim` when every mode is parameter-dependent. The optional
+`boundary = (x_flow, p) -> SVector` overrides the
 state at the end of an intermediate mode — used, for example, to enforce the comparator trip
 condition `I = Iref` in the buck converter. Intermediate-mode durations are clamped to
 `[0, remaining]`; the final mode consumes the remaining period exactly.
 
-The generated map handles under-, over-, and critically-damped 2-D circuit matrices, as well as
-singular `A` (boost ON stage, one zero eigenvalue), via the `ψ₀`/`ψ₁` matrix-exponential
-decomposition and the Duhamel integral for the singular case.
+The generated map handles arbitrary finite state dimension by exponentiating the augmented
+Duhamel matrix for `dx/dt = A*x + b`. Singular, defective, and nilpotent mode matrices use the
+same exact affine-flow path as nonsingular matrices.
 
 ## Vilnius oscillator
 

@@ -94,11 +94,13 @@ export state_dim, switching_events
 
 # Exports — built-in systems
 export henon_map, vilnius_oscillator, buck_converter, buck_voltage_mode, boost_converter
+export cuk_converter, sepic_converter
 export colpitts_simple_oscillator, colpitts_exponential_oscillator, colpitts_dynamic_beta_oscillator
 export ikeda_map, rossler_oscillator, memristive_diode_bridge
 
 # Exports — switching map generator
 export switching_map, buck_converter_description, boost_converter_description
+export cuk_converter_description, sepic_converter_description
 
 # Exports — parameter mapping
 export inject_param, build_sweep_params, build_basins_params, basins_ic_template
