@@ -773,6 +773,28 @@ The affine map `aligned = experimental_scale * measured + experimental_offset` h
 
 Mode changes are interval-censored between adjacent measurements. A transition matches only when a computed transition has the same ordered mode pair and falls inside the measured interval expanded by `transition_tolerance`; matching is one-to-one. The result separately reports transition precision, recall, F1, missing measured transitions, and unexpected computed transitions. Interfaces involving unresolved computed modes are excluded rather than treated as physical transitions. `serialize_mode_sequence_alignment` / `deserialize_mode_sequence_alignment` preserve the complete versioned result (`"mode-sequence-alignment-v1"`).
 
+## Hardware acceptance against certificates
+
+`hardware_acceptance_test` composes a measured route, an operating-map cross-section, a robust-chaos certificate (`RobustChaosCertificate` or `RobustChaosRegionResult`), and optional boundary/tolerance fields into an accept/reject/refuse verdict. It does not rerun the system. Mismatched observations are named, mapped to the certified operating point, and compared with the local margin when one is supplied.
+
+```julia
+boundary = regime_boundary_distances(map_result; status_codes=map_status_codes)
+
+acceptance = hardware_acceptance_test(
+    measured,
+    route,
+    region_certificate;
+    boundary,
+    config=HardwareAcceptanceConfig(axis_calibration=:identity),
+)
+
+acceptance.verdict           # :accepted, :rejected, :inconclusive, or :refused
+acceptance.mismatches        # named observations with margin status
+hardware_acceptance_summary(acceptance)
+```
+
+Axis calibration is explicit. `axis_calibration=:provided` requires a `ModeAssimilationConfig`; `:identity` uses the measured coordinates directly; `:transition_affine` estimates scale and offset from at least two matching measured/model transition anchors and returns `:refused` when that calibration is underdetermined. `:accepted` requires an accepted certificate verdict (default `:certified`) and no falsifying mismatch. A mismatch can remain acceptable only when its required shift is within the supplied local margin plus `margin_slack`; missing or unresolved margins make the result inconclusive rather than silently accepting the hardware claim. Serialize with `serialize_hardware_acceptance_result` / `deserialize_hardware_acceptance_result` (format `"hardware-acceptance-v1"`).
+
 ## Switching-event diagnostics
 
 `switching_event_diagnostics(sys, states, params) -> Dict{String,Any}` reports how close sampled states come to a system's `SwitchingEvent` guards (e.g. the switching surfaces of the buck / boost converters). `states` is a vector of state samples; `params` is either one shared parameter vector or one vector per sample. The returned dict summarizes proximity across all events: `eventCount`, `sampledPointCount`, `nearEventCount`, `nearestEvent`, `minDistance`, `minNormalizedDistance`, a per-event `events` array (each with `name`, `kind`, `near`, `minDistance`, ...), any guard-evaluation `warnings`, and a `status` (`"ok"`, `"warning"`, or `"unavailable"` when the system declares no switching events). This is the same producer behind `continuation_branch_diagnostics(...; include_switching_events=true)` and the 2-D map switching diagnostics.

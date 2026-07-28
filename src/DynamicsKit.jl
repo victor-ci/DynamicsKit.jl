@@ -74,6 +74,7 @@ include("analysis/branch_reachability.jl")  # multistability-aware continuation 
 include("analysis/tolerance_fields.jl")     # parameter-robustness: regime-boundary margins + tolerance maps
 include("analysis/mode_assimilation.jl")    # experimental mode-sequence assimilation against operating-map slices
 include("analysis/robust_chaos.jl")         # robust-chaos certificate (after atlas + kernels/accessors)
+include("analysis/hardware_acceptance.jl")  # hardware route acceptance against certificate + margin evidence
 include("analysis/chaos_design.jl")         # inverse chaos-source design
 include("utils/result_serialization.jl")    # serialize library result types (atlas cache; after Atlas* types)
 
@@ -142,6 +143,8 @@ export AbstractTolerance, UniformTolerance, GaussianTolerance
 export ModeSequence, OperatingMapCrossSection, ModeTransition, ModeTransitionComparison, ModeSequenceAlignment
 export ModeAssimilationConfig, load_mode_sequence_csv, operating_map_cross_section
 export mode_sequence_transitions, assimilate_mode_sequence, mode_assimilation_summary
+export HardwareAcceptanceConfig, HardwareAcceptanceMismatch, HardwareAcceptanceResult
+export hardware_acceptance_test, hardware_acceptance_summary
 export map_effective_settings
 export map_status_code, map_status_label
 export map_lyapunov_diagnostics, map_neighbor_seed_diagnostics, poincare_crossing_diagnostics_summary, orbit_geometry_summary
@@ -194,6 +197,7 @@ export serialize_branch_reachability_result, deserialize_branch_reachability_res
 export serialize_regime_boundary_result, deserialize_regime_boundary_result
 export serialize_tolerance_map_result, deserialize_tolerance_map_result
 export serialize_mode_sequence_alignment, deserialize_mode_sequence_alignment
+export serialize_hardware_acceptance_result, deserialize_hardware_acceptance_result
 export serialize_map_normal_form, deserialize_map_normal_form
 export serialize_codim2_normal_form, deserialize_codim2_normal_form
 export serialize_map_special_point, deserialize_map_special_point

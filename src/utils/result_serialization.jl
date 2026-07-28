@@ -1513,6 +1513,7 @@ end
 const _REGIME_BOUNDARY_FORMAT = "regime-boundary-v1"
 const _TOLERANCE_MAP_FORMAT = "tolerance-map-v1"
 const _MODE_SEQUENCE_ALIGNMENT_FORMAT = "mode-sequence-alignment-v1"
+const _HARDWARE_ACCEPTANCE_FORMAT = "hardware-acceptance-v1"
 
 # Special-float aware matrix (de)serialization: unlike the reachability helpers, margin fields
 # distinguish Inf (no boundary on this line) from NaN (invalid cell), so non-finite values are
@@ -1867,6 +1868,165 @@ function _deserialize_mode_sequence_alignment(raw)::ModeSequenceAlignment
     )
 end
 
+const _HARDWARE_ACCEPTANCE_OBSERVATION_STATUS_MAP = Dict(
+    "matched" => :matched,
+    "mismatched" => :mismatched,
+    "unresolved_prediction" => :unresolved_prediction,
+    "outside_coverage" => :outside_coverage,
+)
+const _HARDWARE_ACCEPTANCE_MARGIN_STATUS_MAP = Dict(
+    "inside_margin" => :inside_margin,
+    "outside_margin" => :outside_margin,
+    "margin_unavailable" => :margin_unavailable,
+    "unresolved_margin" => :unresolved_margin,
+    "outside_margin_domain" => :outside_margin_domain,
+    "no_compatible_mode" => :no_compatible_mode,
+)
+const _HARDWARE_ACCEPTANCE_AXIS_MAP = Dict("a" => :a, "b" => :b)
+const _HARDWARE_ACCEPTANCE_KIND_MAP = Dict(
+    "band" => :band,
+    "region_result" => :region_result,
+)
+const _HARDWARE_ACCEPTANCE_VERDICT_MAP = Dict(
+    "accepted" => :accepted,
+    "rejected" => :rejected,
+    "inconclusive" => :inconclusive,
+    "refused" => :refused,
+    "certified" => :certified,
+    "fragile" => :fragile,
+    "pass" => :pass,
+    "fail" => :fail,
+)
+const _HARDWARE_ACCEPTANCE_CERT_VERDICT_MAP = Dict(
+    "certified" => :certified,
+    "fragile" => :fragile,
+    "inconclusive" => :inconclusive,
+    "pass" => :pass,
+    "fail" => :fail,
+)
+
+function _hardware_acceptance_symbol(value, mapping::AbstractDict{String, Symbol},
+                                     label::AbstractString, default::AbstractString)
+    key = _as_string(value, default)
+    symbol = get(mapping, key, nothing)
+    symbol === nothing && throw(ArgumentError(
+        "Serialized hardware-acceptance $label must be one of " *
+        "$(join(sort(collect(keys(mapping))), ", ")); got $(repr(key))."))
+    return symbol
+end
+
+function _serialize_hardware_acceptance_mismatch(mismatch::HardwareAcceptanceMismatch)::Dict{String, Any}
+    return Dict{String, Any}(
+        "observationIndex" => mismatch.observation_index,
+        "measuredParameter" => mismatch.measured_parameter,
+        "alignedParameter" => mismatch.aligned_parameter,
+        "measuredMode" => mismatch.measured_mode,
+        "predictedMode" => mismatch.predicted_mode,
+        "observationStatus" => String(mismatch.observation_status),
+        "requiredShift" => mismatch.required_shift,
+        "margin" => mismatch.margin,
+        "marginAxis" => mismatch.margin_axis === nothing ? nothing : String(mismatch.margin_axis),
+        "toleranceProbability" => mismatch.tolerance_probability,
+        "marginStatus" => String(mismatch.margin_status),
+        "message" => mismatch.message,
+    )
+end
+
+function _deserialize_hardware_acceptance_mismatch(raw)::HardwareAcceptanceMismatch
+    data = _jsonish_dict(raw)
+    margin_axis = get(data, "marginAxis", nothing)
+    return HardwareAcceptanceMismatch(
+        _as_int(get(data, "observationIndex", 0), 0),
+        _as_float(get(data, "measuredParameter", 0.0), 0.0),
+        _as_float(get(data, "alignedParameter", 0.0), 0.0),
+        _as_string(get(data, "measuredMode", ""), ""),
+        get(data, "predictedMode", nothing) === nothing ? nothing :
+            _as_string(get(data, "predictedMode", ""), ""),
+        _hardware_acceptance_symbol(
+            get(data, "observationStatus", "mismatched"),
+            _HARDWARE_ACCEPTANCE_OBSERVATION_STATUS_MAP,
+            "observationStatus",
+            "mismatched"),
+        _optional_float(get(data, "requiredShift", nothing)),
+        _optional_float(get(data, "margin", nothing)),
+        margin_axis === nothing ? nothing :
+            _hardware_acceptance_symbol(
+                margin_axis,
+                _HARDWARE_ACCEPTANCE_AXIS_MAP,
+                "marginAxis",
+                "a"),
+        _optional_float(get(data, "toleranceProbability", nothing)),
+        _hardware_acceptance_symbol(
+            get(data, "marginStatus", "margin_unavailable"),
+            _HARDWARE_ACCEPTANCE_MARGIN_STATUS_MAP,
+            "marginStatus",
+            "margin_unavailable"),
+        _as_string(get(data, "message", ""), ""),
+    )
+end
+
+function _serialize_hardware_acceptance_result(result::HardwareAcceptanceResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _HARDWARE_ACCEPTANCE_FORMAT,
+        "alignment" => result.alignment === nothing ? nothing :
+            _serialize_mode_sequence_alignment(result.alignment),
+        "certificateKind" => String(result.certificate_kind),
+        "certificateVerdict" => String(result.certificate_verdict),
+        "verdict" => String(result.verdict),
+        "mismatches" => _serialize_hardware_acceptance_mismatch.(result.mismatches),
+        "acceptedCertificateVerdicts" => String.(result.accepted_certificate_verdicts),
+        "score" => result.score,
+        "certificateItems" => _plain(result.certificate_items),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_hardware_acceptance_result(raw)::HardwareAcceptanceResult
+    data = _jsonish_dict(raw)
+    format = _as_string(get(data, "format", ""), "")
+    format == _HARDWARE_ACCEPTANCE_FORMAT || throw(ArgumentError(
+        "Unsupported hardware-acceptance format '$format'; expected '$(_HARDWARE_ACCEPTANCE_FORMAT)'."))
+    _require_serialized_fields(data, ("timestamp",), "hardware-acceptance result")
+    alignment_raw = get(data, "alignment", nothing)
+    items = Dict{String, Any}[
+        Dict{String, Any}(String(k) => v for (k, v) in _jsonish_dict(item))
+        for item in get(data, "certificateItems", Any[])
+    ]
+    return HardwareAcceptanceResult(
+        alignment_raw === nothing ? nothing : _deserialize_mode_sequence_alignment(alignment_raw),
+        _hardware_acceptance_symbol(
+            get(data, "certificateKind", "band"),
+            _HARDWARE_ACCEPTANCE_KIND_MAP,
+            "certificateKind",
+            "band"),
+        _hardware_acceptance_symbol(
+            get(data, "certificateVerdict", "inconclusive"),
+            _HARDWARE_ACCEPTANCE_CERT_VERDICT_MAP,
+            "certificateVerdict",
+            "inconclusive"),
+        _hardware_acceptance_symbol(
+            get(data, "verdict", "inconclusive"),
+            _HARDWARE_ACCEPTANCE_VERDICT_MAP,
+            "verdict",
+            "inconclusive"),
+        HardwareAcceptanceMismatch[
+            _deserialize_hardware_acceptance_mismatch(item)
+            for item in get(data, "mismatches", Any[])
+        ],
+        Symbol[
+            _hardware_acceptance_symbol(
+                value,
+                _HARDWARE_ACCEPTANCE_CERT_VERDICT_MAP,
+                "acceptedCertificateVerdicts entry",
+                "certified")
+            for value in get(data, "acceptedCertificateVerdicts", Any["certified"])
+        ],
+        _optional_float(get(data, "score", nothing)),
+        items,
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
 const _CHAOS_DESIGN_RESULT_FORMAT = "chaos-design-result-v1"
 
 function _serialize_chaos_design_variable(variable::ChaosDesignVariable)::Dict{String, Any}
@@ -2178,6 +2338,10 @@ const deserialize_tolerance_map_result = _deserialize_tolerance_map_result
 const serialize_mode_sequence_alignment = _serialize_mode_sequence_alignment
 """    deserialize_mode_sequence_alignment(data::AbstractDict) -> ModeSequenceAlignment"""
 const deserialize_mode_sequence_alignment = _deserialize_mode_sequence_alignment
+"""    serialize_hardware_acceptance_result(result::HardwareAcceptanceResult) -> Dict — versioned JSON-plain hardware-acceptance verdict."""
+const serialize_hardware_acceptance_result = _serialize_hardware_acceptance_result
+"""    deserialize_hardware_acceptance_result(data::AbstractDict) -> HardwareAcceptanceResult"""
+const deserialize_hardware_acceptance_result = _deserialize_hardware_acceptance_result
 """    serialize_map_normal_form(normal_form::MapNormalForm) -> Dict — versioned JSON-plain form."""
 const serialize_map_normal_form = _serialize_map_normal_form
 """    deserialize_map_normal_form(data::AbstractDict) -> MapNormalForm"""

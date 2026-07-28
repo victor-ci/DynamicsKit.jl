@@ -1204,3 +1204,37 @@ const _ROBUST_REGION_ALLOWED_MAP_STATUSES = (
     @assert atlas.continuation.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: atlas.continuation.param_index must match slice_axis"
     @assert basins.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: basins.param_index must match slice_axis"
 end
+
+"""
+    HardwareAcceptanceConfig
+
+Configuration for `hardware_acceptance_test`, which checks a measured
+mode-sequence route against a robust-chaos certificate and optional local
+margin evidence.
+
+# Fields
+- `axis_calibration`: how raw measured coordinates are mapped onto the model axis.
+  `:provided` requires an explicit `ModeAssimilationConfig`, `:identity` uses
+  scale 1 and offset 0, and `:transition_affine` estimates an affine map from
+  at least two matching measured/model transition anchors.
+- `min_overall_score`: optional lower bound on the mode-assimilation overall
+  score. Per-observation margin checks remain the primary acceptance gate.
+- `min_transition_f1`: optional lower bound on transition F1; `nothing` disables
+  the aggregate transition gate.
+- `accepted_certificate_verdicts`: certificate verdicts that can support
+  acceptance. The default requires `:certified`.
+- `margin_slack`: nonnegative numerical slack added to local margins when
+  comparing a measured shift with the tolerance/boundary field.
+"""
+@with_kw struct HardwareAcceptanceConfig
+    axis_calibration::Symbol = :provided
+    min_overall_score::Float64 = 0.0
+    min_transition_f1::Union{Nothing, Float64} = nothing
+    accepted_certificate_verdicts::Vector{Symbol} = [:certified]
+    margin_slack::Float64 = 0.0
+    @assert axis_calibration in (:provided, :identity, :transition_affine) "HardwareAcceptanceConfig.axis_calibration must be :provided, :identity, or :transition_affine"
+    @assert isfinite(min_overall_score) && 0.0 <= min_overall_score <= 1.0 "HardwareAcceptanceConfig.min_overall_score must be in [0, 1]"
+    @assert min_transition_f1 === nothing || (isfinite(min_transition_f1) && 0.0 <= min_transition_f1 <= 1.0) "HardwareAcceptanceConfig.min_transition_f1 must be nothing or a value in [0, 1]"
+    @assert !isempty(accepted_certificate_verdicts) "HardwareAcceptanceConfig.accepted_certificate_verdicts must not be empty"
+    @assert isfinite(margin_slack) && margin_slack >= 0.0 "HardwareAcceptanceConfig.margin_slack must be finite and >= 0"
+end
