@@ -226,7 +226,8 @@ result provenance.
 - `continuation`: Secondary-axis continuation settings (`param_index`,
   `p_min`/`p_max`, `ds`/`dsmax`/`dsmin`, `max_steps`, `newton_tol`,
   `newton_max_iter`). `param_index` selects the free secondary parameter.
-- `kind`: `:homoclinic`, `:heteroclinic`, or `:saddle_cycle`.
+- `kind`: `:homoclinic`, `:heteroclinic`, `:saddle_cycle`, or
+  `:cycle_connection`.
 - `n_mesh`: Number of trapezoidal mesh intervals for the truncated orbit.
 - `max_return_time`: Cap on the truncation time `T`.
 - `detect_events`: Evaluate the standard HomCont eigenvalue test functions and
@@ -275,7 +276,7 @@ result provenance.
     bothside::Bool = false
     source_index::Int = 0
     provenance::String = ""
-    @assert kind in (:homoclinic, :heteroclinic, :saddle_cycle) "ConnectingOrbitConfig.kind must be :homoclinic, :heteroclinic, or :saddle_cycle"
+    @assert kind in (:homoclinic, :heteroclinic, :saddle_cycle, :cycle_connection) "ConnectingOrbitConfig.kind must be :homoclinic, :heteroclinic, :saddle_cycle, or :cycle_connection"
     @assert n_mesh >= 10 "ConnectingOrbitConfig.n_mesh must be >= 10"
     @assert isnan(epsilon_start) || (isfinite(epsilon_start) && epsilon_start > 0.0) "ConnectingOrbitConfig.epsilon_start must be a positive finite value or NaN (derive from seed)"
     @assert isnan(epsilon_end) || (isfinite(epsilon_end) && epsilon_end > 0.0) "ConnectingOrbitConfig.epsilon_end must be a positive finite value or NaN (derive from seed)"
@@ -285,6 +286,47 @@ result provenance.
     @assert source_index >= 0 "ConnectingOrbitConfig.source_index must be >= 0 (0 selects the source endpoint)"
     @assert orbit_save_stride >= 1 "ConnectingOrbitConfig.orbit_save_stride must be >= 1"
     @assert max_saved_orbits >= 2 "ConnectingOrbitConfig.max_saved_orbits must be >= 2"
+end
+
+"""
+    CycleConnectionSeedConfig
+
+Configuration for automatic saddle-cycle to saddle-cycle connecting-orbit seed
+discovery. The search samples source-cycle phases and unstable Floquet
+directions, integrates short initial offsets forward, and selects the trajectory
+segment that approaches the target cycle most closely.
+
+# Fields
+- `source_phase_samples` / `target_phase_samples`: Number of cycle phases used
+  for source launches and target-distance checks.
+- `perturbation`: Distance from the source cycle along a normalized unstable
+  Floquet direction.
+- `max_time`: Maximum forward integration time from each source-phase launch.
+- `min_time`: Ignore candidate hits before this elapsed time.
+- `sample_count`: Saved time samples per candidate integration.
+- `distance_tolerance`: Required Euclidean approach distance to the target
+  cycle.
+- `max_directions`: Maximum number of right-unstable Floquet basis directions
+  sampled at each source phase.
+"""
+@with_kw struct CycleConnectionSeedConfig
+    source_phase_samples::Int = 24
+    target_phase_samples::Int = 24
+    perturbation::Float64 = 1e-3
+    max_time::Float64 = 50.0
+    min_time::Float64 = 1e-3
+    sample_count::Int = 1200
+    distance_tolerance::Float64 = 5e-2
+    max_directions::Int = 4
+    @assert source_phase_samples >= 1 "CycleConnectionSeedConfig.source_phase_samples must be >= 1"
+    @assert target_phase_samples >= 1 "CycleConnectionSeedConfig.target_phase_samples must be >= 1"
+    @assert isfinite(perturbation) && perturbation > 0 "CycleConnectionSeedConfig.perturbation must be finite and > 0"
+    @assert isfinite(max_time) && max_time > 0 "CycleConnectionSeedConfig.max_time must be finite and > 0"
+    @assert isfinite(min_time) && min_time >= 0 "CycleConnectionSeedConfig.min_time must be finite and >= 0"
+    @assert min_time < max_time "CycleConnectionSeedConfig.min_time must be less than max_time"
+    @assert sample_count >= 10 "CycleConnectionSeedConfig.sample_count must be >= 10"
+    @assert isfinite(distance_tolerance) && distance_tolerance > 0 "CycleConnectionSeedConfig.distance_tolerance must be finite and > 0"
+    @assert max_directions >= 1 "CycleConnectionSeedConfig.max_directions must be >= 1"
 end
 
 """

@@ -10,6 +10,8 @@ using DynamicsKit: _ode_field, _field_jacobian, _ConnectingProblem, _FrozenBC,
     _detect_special_points, _LocusPoint, _gauss_newton, _ConnectingSeed, _seed_vector,
     _resample_states, _cycle_monodromy, _floquet_split, _validate_saddle_cycle_geometry,
     _refresh_bc, _slot_T, _augmented_residual, _FloquetSplit,
+    _CycleConnectionProblem, _cycle_connection_seed_vector,
+    _refresh_cycle_connection_bc, _validate_cycle_connection_geometry,
     _HOMOCLINIC_BRANCH_FORMAT
 import Dates
 
@@ -83,7 +85,7 @@ function hc_genuine_saddle_cycle_system()
     function f!(du, u, p, t)
         x, y, z = u
         ω, β1 = p
-        r2 = x^2 + y^2
+        r2 = max(x^2 + y^2, eps(Float64))
         s = r2 / 2 - 3
         radial = z / r2
         du[1] = radial * x - ω * y
@@ -120,6 +122,54 @@ function hc_genuine_saddle_cycle_seed(; ω=1.0, half=4π, K=600, L=400)
     return cycle, Tc, orbit, 2half
 end
 
+# Rotating Nagumo front: the transverse (s,z) subsystem has an exact
+# heteroclinic from the saddle cycle at s=1 to the saddle cycle at s=0 when
+# c=(1-2a)/√2. The Cartesian radius encodes s = r²/2 - C while θ̇=ω supplies
+# the cycle phase.
+function hc_cycle_connection_system()
+    function f!(du, u, p, t)
+        x, y, z = u
+        c, a, ω = p
+        C = 2.0
+        r2 = max(x^2 + y^2, eps(Float64))
+        s = r2 / 2 - C
+        radial = z / r2
+        du[1] = radial * x - ω * y
+        du[2] = ω * x + radial * y
+        du[3] = -c * z - s * (1 - s) * (s - a)
+        nothing
+    end
+    section = PoincareSection((u, t, integ) -> u[2]; direction=:up, projection=[1, 3],
+                              template=[sqrt(6.0), 0.0, 0.0])
+    a = 0.25
+    ContinuousODE(f!, 3, section, [:c, :a, :ω], "RotatingNagumo";
+                  default_params=[(1 - 2a) / sqrt(2), a, 1.0])
+end
+
+function hc_cycle_connection_seed(; a=0.25, ω=1.0, half=9.0, K=260, L=120)
+    C = 2.0
+    c = (1 - 2a) / sqrt(2)
+    Tc = 2π / ω
+    θ = range(-ω * half, -ω * half + 2π, length=L + 1)
+    source_radius = sqrt(2 * (C + 1))
+    source = permutedims(hcat(source_radius .* cos.(θ),
+                              source_radius .* sin.(θ),
+                              zeros(length(θ))))
+    θt = range(ω * half, ω * half + 2π, length=L + 1)
+    target_radius = sqrt(2C)
+    target = permutedims(hcat(target_radius .* cos.(θt),
+                              target_radius .* sin.(θt),
+                              zeros(length(θt))))
+    ts = range(-half, half, length=K)
+    s = [1 / (1 + exp(t / sqrt(2))) for t in ts]
+    z = [-(1 / sqrt(2)) * exp(t / sqrt(2)) / (1 + exp(t / sqrt(2)))^2 for t in ts]
+    radius = sqrt.(2 .* (s .+ C))
+    orbit = permutedims(hcat(radius .* cos.(ω .* ts),
+                             radius .* sin.(ω .* ts),
+                             z))
+    return source, target, Tc, orbit, 2half, c
+end
+
 @testset "Config and public API contract" begin
     continuation = ContinuationConfig(p_min=-2.0, p_max=-0.5, ds=0.05, param_index=1)
     config = ConnectingOrbitConfig(continuation=continuation)
@@ -127,9 +177,14 @@ end
     @test config.detect_events
     @test config.orbit_save_stride == 10
     @test config.use_fallback
+    seed_config = CycleConnectionSeedConfig(max_time=12.0, distance_tolerance=0.1)
+    @test seed_config.source_phase_samples == 24
+    @test seed_config.max_time == 12.0
+    @test_throws AssertionError CycleConnectionSeedConfig(perturbation=0.0)
     @test_throws AssertionError ConnectingOrbitConfig(
         continuation=continuation, epsilon_start=0.0)
     @test_throws AssertionError ConnectingOrbitConfig(continuation=continuation, kind=:bogus)
+    @test ConnectingOrbitConfig(continuation=continuation, kind=:cycle_connection).kind == :cycle_connection
 
     @test homoclinic_special_point_label(:sh) == "Shilnikov condition"
     @test homoclinic_special_point_label(:BT) == "Bogdanov-Takens point"
@@ -139,10 +194,100 @@ end
 
     for sym in (:homoclinic_orbit_continuation, :connecting_orbit_continuation,
                 :heteroclinic_orbit_continuation, :saddle_cycle_homoclinic_continuation,
-                :ConnectingOrbitConfig,
+                :cycle_connection_seed, :cycle_connection_continuation,
+                :ConnectingOrbitConfig, :CycleConnectionSeedConfig,
                 :homoclinic_orbit, :homoclinic_special_point_label,
                 :serialize_homoclinic_branch_result, :deserialize_homoclinic_branch_result)
         @test sym in names(DynamicsKit)
+    end
+
+    @testset "Cycle-to-cycle connection continuation" begin
+        sys = hc_cycle_connection_system()
+        source, target, Tc, U0, T0, c_exact = hc_cycle_connection_seed()
+        cont = ContinuationConfig(p_min=0.18, p_max=0.32, ds=0.02, dsmax=0.03,
+                                  param_index=2, newton_tol=2e-6,
+                                  newton_max_iter=10, max_steps=4)
+        cfg = ConnectingOrbitConfig(continuation=cont, kind=:cycle_connection,
+                                    n_mesh=36, bothside=true, orbit_save_stride=1,
+                                    max_saved_orbits=5, fallback_max_iter=30,
+                                    epsilon_start=1e-3, epsilon_end=1e-3)
+        res = cycle_connection_continuation(
+            sys, cfg; primary_param_index=1,
+            source_cycle_states=source, source_cycle_period=Tc,
+            target_cycle_states=target, target_cycle_period=Tc,
+            orbit_guess=U0, truncation_time=T0)
+        @test res.connection_kind == :cycle_connection
+        @test length(res.primary_values) >= 3
+        @test maximum(res.residuals) <= 5e-5
+        errs = [abs(res.primary_values[i] - (1 - 2 * res.secondary_values[i]) / sqrt(2))
+                for i in eachindex(res.primary_values)]
+        @test maximum(errs) < 4e-2
+        @test res.diagnostics["deficiency"] == 1
+        @test res.diagnostics["source_unstable_floquet_dim"] == 1
+        @test res.diagnostics["target_stable_floquet_dim"] == 1
+        @test length(res.orbits) >= 1
+
+        plain = serialize_homoclinic_branch_result(res)
+        @test plain["connectionKind"] == "cycle_connection"
+        restored = deserialize_homoclinic_branch_result(plain)
+        @test restored.connection_kind == :cycle_connection
+        @test restored.primary_values == res.primary_values
+
+        auto_seed_cfg = CycleConnectionSeedConfig(
+            source_phase_samples=8, target_phase_samples=24, max_time=18.0,
+            sample_count=400, distance_tolerance=0.01)
+        seed = cycle_connection_seed(
+            sys; source_cycle_states=source, source_cycle_period=Tc,
+            target_cycle_states=target, target_cycle_period=Tc,
+            seed_config=auto_seed_cfg)
+        @test seed.status == :found
+        @test seed.distance < auto_seed_cfg.distance_tolerance
+        @test size(seed.orbit_guess, 1) == sys.dim
+        @test isfinite(seed.truncation_time) && seed.truncation_time > 0
+
+        auto_cont = ContinuationConfig(p_min=0.18, p_max=0.32, ds=0.02, dsmax=0.03,
+                                       param_index=2, newton_tol=2e-6,
+                                       newton_max_iter=12, max_steps=2)
+        auto_cfg = ConnectingOrbitConfig(continuation=auto_cont, kind=:cycle_connection,
+                                         n_mesh=36, bothside=false, fallback_max_iter=40,
+                                         epsilon_start=1e-3, epsilon_end=1e-3)
+        auto_res = cycle_connection_continuation(
+            sys, auto_cfg; primary_param_index=1,
+            source_cycle_states=source, source_cycle_period=Tc,
+            target_cycle_states=target, target_cycle_period=Tc,
+            seed_config=auto_seed_cfg)
+        @test auto_res.connection_kind == :cycle_connection
+        @test maximum(auto_res.residuals) < 5e-5
+        @test haskey(auto_res.diagnostics, "seed_discovery")
+
+        bad_sys = hc_saddle_cycle_system()
+        θbad = range(0, 2π, length=80)
+        bad_cycle = permutedims(hcat(cos.(θbad), sin.(θbad), zeros(length(θbad))))
+        bad_orbit = permutedims(hcat(cos.(range(0, 2π, length=80)),
+                                     sin.(range(0, 2π, length=80)),
+                                     0.05 .* sin.(range(0, 2π, length=80))))
+        bad_cfg = ConnectingOrbitConfig(
+            continuation=ContinuationConfig(p_min=0.1, p_max=1.0, ds=0.05, param_index=2),
+            kind=:cycle_connection, n_mesh=24)
+        @test_throws ArgumentError cycle_connection_seed(
+            bad_sys; source_cycle_states=bad_cycle, source_cycle_period=2π,
+            target_cycle_states=bad_cycle, target_cycle_period=2π,
+            base_params=[1.0, -0.5])
+        @test_throws ArgumentError cycle_connection_continuation(
+            bad_sys, bad_cfg; primary_param_index=1,
+            source_cycle_states=bad_cycle, source_cycle_period=2π,
+            target_cycle_states=bad_cycle, target_cycle_period=2π,
+            orbit_guess=bad_orbit, truncation_time=2π,
+            base_params=[1.0, -0.5])
+
+        zero_orbit = fill(0.0, 3, 20)
+            @test_throws ErrorException cycle_connection_continuation(
+            sys, cfg; primary_param_index=1,
+            source_cycle_states=source, source_cycle_period=Tc,
+            target_cycle_states=target, target_cycle_period=Tc,
+            orbit_guess=zero_orbit, truncation_time=1.0)
+
+        @test isapprox(c_exact, sys.default_params[1]; atol=0.0)
     end
 end
 

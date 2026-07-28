@@ -832,17 +832,18 @@ end
 """
     HomoclinicBranchResult
 
-Plain-data connecting-orbit continuation result (homoclinic, heteroclinic, or
-homoclinic-to-saddle-cycle). The full two-parameter locus and saddle
-diagnostics are retained columnarly; bounded `orbits` preserve selected
-trajectories for inspection.
+Plain-data connecting-orbit continuation result (homoclinic, heteroclinic,
+homoclinic-to-saddle-cycle, or saddle-cycle-to-saddle-cycle). The full
+two-parameter locus and saddle/cycle-phase diagnostics are retained columnarly;
+bounded `orbits` preserve selected trajectories for inspection.
 
 Numerical provenance is explicit: `residuals` is the converged projection
 boundary-value residual norm at each locus sample, `corrector_paths` records
 whether the primary Newton corrector or the damped-pseudoinverse fallback
-produced each point, `connection_kind` is `:homoclinic`, `:heteroclinic`, or
-`:saddle_cycle`, and `target_saddles` stores the target equilibrium (equal to
-`saddles` for a homoclinic connection). `test_statuses` preserves the
+produced each point, `connection_kind` is `:homoclinic`, `:heteroclinic`,
+`:saddle_cycle`, or `:cycle_connection`, and `target_saddles` stores the target
+equilibrium or target cycle phase point (equal to `saddles` for a homoclinic
+connection). `test_statuses` preserves the
 `:available`, `:unavailable`, or `:degenerate` status of every test function at
 every locus sample. `diagnostics` carries free-form provenance (mesh size,
 epsilon policy, seed origin, fallback counts, warnings). `source_period` and
@@ -873,6 +874,30 @@ struct HomoclinicBranchResult
     secondary_param_index::Int
     system_name::String
     param_names::Tuple{Symbol, Symbol}
+    diagnostics::Dict{String, Any}
+    timestamp::DateTime
+end
+
+"""
+    CycleConnectionSeedResult
+
+Automatic seed-discovery result for a saddle-cycle to saddle-cycle connecting
+orbit. `source_cycle_states` and `target_cycle_states` are rotated so the
+selected source and target phases are the first/last projection reference phases
+used by `cycle_connection_continuation`; `orbit_guess` is the discovered
+connecting trajectory segment and `truncation_time` its elapsed time.
+"""
+struct CycleConnectionSeedResult
+    orbit_guess::Matrix{Float64}
+    truncation_time::Float64
+    source_cycle_states::Matrix{Float64}
+    target_cycle_states::Matrix{Float64}
+    source_phase_index::Int
+    target_phase_index::Int
+    source_direction_index::Int
+    source_direction_sign::Float64
+    distance::Float64
+    status::Symbol
     diagnostics::Dict{String, Any}
     timestamp::DateTime
 end

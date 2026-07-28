@@ -2674,7 +2674,7 @@ const deserialize_codim2_special_point = _deserialize_codim2_special_point
 # ---- Homoclinic continuation serialization --------------------------------
 
 const _HOMOCLINIC_BRANCH_FORMAT = "homoclinic-branch-v1"
-const _HOMOCLINIC_CONNECTION_KINDS = (:homoclinic, :heteroclinic, :saddle_cycle)
+const _HOMOCLINIC_CONNECTION_KINDS = (:homoclinic, :heteroclinic, :saddle_cycle, :cycle_connection)
 const _HOMOCLINIC_POINT_STATUSES = (:available, :unavailable, :degenerate)
 
 function _serialize_homoclinic_special_point(point::HomoclinicSpecialPoint)

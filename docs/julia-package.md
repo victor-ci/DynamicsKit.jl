@@ -531,6 +531,39 @@ result = saddle_cycle_homoclinic_continuation(
 result.diagnostics["floquet_multipliers_re"]   # Floquet data recorded as provenance
 ```
 
+Saddle-cycle to saddle-cycle connections use the same projection idea but solve
+the source cycle mesh, target cycle mesh, and connecting mesh together. The cycle
+phases are not pinned by the caller: the endpoint projection conditions select
+the source/target phases, and a single integral phase condition on the connecting
+orbit removes the global time-shift degeneracy. In two free parameters the
+geometry must leave exactly one free direction; incompatible Floquet dimensions,
+non-hyperbolic cycles, and attracting-only targets are rejected before tracing.
+When an explicit connecting trajectory is not available,
+`cycle_connection_seed` samples source-cycle phases and unstable Floquet launch
+directions, integrates candidate trajectories forward, and returns the segment
+that approaches the target cycle most closely. Passing no `orbit_guess` to
+`cycle_connection_continuation` runs this discovery step automatically and
+records the selected phases/distance in `result.diagnostics["seed_discovery"]`.
+
+```julia
+seed = cycle_connection_seed(
+    sys;
+    source_cycle_states=source_cycle, source_cycle_period=Ts,
+    target_cycle_states=target_cycle, target_cycle_period=Tt,
+    seed_config=CycleConnectionSeedConfig(max_time=40.0, distance_tolerance=1e-2),
+)
+
+result = cycle_connection_continuation(
+    sys, ConnectingOrbitConfig(continuation=cont, kind=:cycle_connection, n_mesh=80);
+    primary_param_index=1,
+    source_cycle_states=source_cycle, source_cycle_period=Ts,
+    target_cycle_states=target_cycle, target_cycle_period=Tt,
+    seed_config=CycleConnectionSeedConfig(max_time=40.0, distance_tolerance=1e-2),
+)
+result.connection_kind == :cycle_connection
+result.diagnostics["phase"]   # phase-condition provenance
+```
+
 ### Test functions and flip classification
 
 At each locus sample the saddle spectrum yields the standard HomCont eigenvalue
@@ -552,7 +585,8 @@ and a bounded `quality` derived from how cleanly the function crossed zero.
 saddle coordinates, return-time and boundary-distance columns, the test-function
 columns and their per-sample `test_statuses`, typed special points, per-sample
 residuals and corrector paths, the
-`connection_kind` (`:homoclinic`, `:heteroclinic`, or `:saddle_cycle`),
+`connection_kind` (`:homoclinic`, `:heteroclinic`, `:saddle_cycle`, or
+`:cycle_connection`),
 free-form `diagnostics` provenance, and a bounded subset of normalized
 trajectories. Serialization is versioned: `serialize_homoclinic_branch_result`
 writes `homoclinic-branch-v1`, and `deserialize_homoclinic_branch_result`

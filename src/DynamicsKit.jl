@@ -84,7 +84,7 @@ include("visualization/plots.jl")
 
 # Exports — types
 export DynamicalSystem, DiscreteMap, ContinuousODE, PoincareSection, SwitchingEvent
-export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, HomoclinicOrbitRecord, HomoclinicSpecialPoint, HomoclinicBranchResult, MapNormalForm, Codim2NormalForm, MapSpecialPoint, Codim2SpecialPoint
+export BifurcationResult, BranchResult, BruteForceResult, LyapunovDiagramResult, BasinsResult, LyapunovFieldResult, LyapunovSpectrumResult, BifurcationMapResult, PhasePortraitResult, PowerSpectrumResult, Codim2CurveResult, OrbitBranchResult, HomoclinicOrbitRecord, HomoclinicSpecialPoint, HomoclinicBranchResult, CycleConnectionSeedResult, MapNormalForm, Codim2NormalForm, MapSpecialPoint, Codim2SpecialPoint
 export StableWindowEvidence, RobustChaosCertificate, RobustChaosEvidence
 export RobustChaosRegion, RobustChaosRegionResult
 export ChaosDesignVariable, ChaosDesignTarget, ChaosDesignCandidate, ChaosDesignResult
@@ -160,6 +160,7 @@ export continuation_orbit_collocation
 export orbit_branch_parameters, orbit_branch_periods, orbit_branch_orbit, orbit_branch_amplitude, orbit_branch_multipliers, orbit_branch_stability
 export homoclinic_orbit_continuation
 export connecting_orbit_continuation, heteroclinic_orbit_continuation, saddle_cycle_homoclinic_continuation
+export cycle_connection_seed, cycle_connection_continuation
 export homoclinic_orbit, homoclinic_special_point_label
 export map_normal_form, codim2_normal_form, map_special_points, codim2_special_points
 export border_collision_classify, border_collision_at_cycle, border_collision_points
@@ -177,7 +178,7 @@ export CombinedBranchResult
 export Codim2ContinuationResult
 
 # Exports — config
-export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, ConnectingOrbitConfig, BasinsConfig, BifurcationMapConfig, AdaptiveMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
+export BruteForceConfig, LyapunovConfig, LyapunovSpectrumConfig, ContinuationConfig, CollocationConfig, ConnectingOrbitConfig, CycleConnectionSeedConfig, BasinsConfig, BifurcationMapConfig, AdaptiveMapConfig, PhasePortraitConfig, PowerSpectrumConfig, Codim2Config, RefinementConfig, AtlasConfig, ReseedConfig
 export RobustChaosConfig, RobustChaosRegionConfig
 export ChaosDesignSignalConfig, ChaosDesignConfig
 export BranchReachabilityConfig

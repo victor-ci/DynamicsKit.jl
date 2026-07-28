@@ -179,6 +179,22 @@ struct _LocusPoint
     U::Matrix{Float64}
 end
 
+struct _CycleConnectionPoint
+    z::Vector{Float64}
+    primary::Float64
+    secondary::Float64
+    T::Float64
+    source_period::Float64
+    target_period::Float64
+    source_phase_point::Vector{Float64}
+    target_phase_point::Vector{Float64}
+    eps_start::Float64
+    eps_end::Float64
+    residual::Float64
+    path::Symbol
+    U::Matrix{Float64}
+end
+
 function _describe_point(prob::_ConnectingProblem, corr::_CorrectorResult, cfg::ConnectingOrbitConfig)
     z = corr.z
     U, xs, xt, T, α, β = _unpack(z, prob)
@@ -209,6 +225,22 @@ function _describe_point(prob::_ConnectingProblem, corr::_CorrectorResult, cfg::
     return _LocusPoint(collect(Float64, z), Float64(α), Float64(β), Float64(T),
                        xsv, xtv, eps_start, eps_end, corr.residual, corr.path,
                        tests, statuses, Umat)
+end
+
+function _describe_cycle_connection_point(prob::_CycleConnectionProblem,
+                                          corr::_CorrectorResult)
+    z = corr.z
+    U, source_cycle, target_cycle, Tconn, Tsource, Ttarget, α, β =
+        _unpack_cycle_connection(z, prob)
+    Umat = Matrix{Float64}(U)
+    src = collect(Float64, view(source_cycle, :, 1))
+    tgt = collect(Float64, view(target_cycle, :, 1))
+    eps_start = norm(Umat[:, 1] .- src)
+    eps_end = norm(Umat[:, end] .- tgt)
+    return _CycleConnectionPoint(
+        collect(Float64, z), Float64(α), Float64(β), Float64(Tconn),
+        Float64(Tsource), Float64(Ttarget), src, tgt, eps_start, eps_end,
+        corr.residual, corr.path, Umat)
 end
 
 # --- continuation sweeps ------------------------------------------------------
@@ -273,6 +305,78 @@ function _sweep!(points::Vector{_LocusPoint}, prob::_ConnectingProblem,
     return
 end
 
+function _valid_cycle_connection_times(prob::_CycleConnectionProblem, z::AbstractVector,
+                                       max_return_time::Real)
+    Tconn = z[_cycle_connection_slot_T(prob)]
+    Tsource = z[_cycle_connection_slot_source_period(prob)]
+    Ttarget = z[_cycle_connection_slot_target_period(prob)]
+    return _valid_return_time(Tconn, max_return_time) &&
+           isfinite(Tsource) && Tsource > 0 &&
+           isfinite(Ttarget) && Ttarget > 0
+end
+
+function _cycle_connection_sweep!(points::Vector{_CycleConnectionPoint},
+                                  prob::_CycleConnectionProblem,
+                                  z1::Vector{Float64}, cfg::ConnectingOrbitConfig,
+                                  ds_sign::Int; max_return_time::Float64=Inf,
+                                  projector_refresh::Int=1)
+    cont = cfg.continuation
+    βslot = _cycle_connection_slot_secondary(prob)
+    tol = cont.newton_tol
+    maxiter = cont.newton_max_iter
+    β1 = z1[βslot]
+    ds0 = ds_sign * abs(cont.ds)
+
+    z_pred = copy(z1)
+    z_pred[βslot] += ds0
+    target = β1 + ds0
+    boot = _correct_cycle_connection(prob, z_pred; extra=z -> [z[βslot] - target],
+                                     tol=tol, maxiter=maxiter,
+                                     use_fallback=cfg.use_fallback,
+                                     fallback_max_iter=cfg.fallback_max_iter,
+                                     projector_refresh=projector_refresh)
+    boot.converged || return
+    _valid_cycle_connection_times(prob, boot.z, max_return_time) || return
+    push!(points, _describe_cycle_connection_point(prob, boot))
+
+    τ = boot.z .- z1
+    nτ = norm(τ)
+    nτ > 0 || return
+    τ ./= nτ
+    z_prev = boot.z
+    ds = ds0
+    failures = 0
+    for _ in 1:cont.max_steps
+        z_pred = z_prev .+ ds .* τ
+        r = _correct_cycle_connection(prob, z_pred;
+                                      extra=z -> [dot(z .- z_prev, τ) - ds],
+                                      tol=tol, maxiter=maxiter,
+                                      use_fallback=cfg.use_fallback,
+                                      fallback_max_iter=cfg.fallback_max_iter,
+                                      projector_refresh=projector_refresh)
+        if !r.converged
+            ds /= 2
+            failures += 1
+            (abs(ds) < cont.dsmin || failures > 40) && break
+            continue
+        end
+        _valid_cycle_connection_times(prob, r.z, max_return_time) || break
+        failures = 0
+        τnew = r.z .- z_prev
+        nn = norm(τnew)
+        nn > 0 || break
+        τnew ./= nn
+        dot(τnew, τ) < 0 && (τnew .*= -1)
+        τ = τnew
+        z_prev = r.z
+        push!(points, _describe_cycle_connection_point(prob, r))
+        β = z_prev[βslot]
+        (β < cont.p_min || β > cont.p_max) && break
+        ds = sign(ds) * min(abs(ds) * 1.1, cont.dsmax)
+    end
+    return
+end
+
 # --- special-point detection --------------------------------------------------
 
 function _detect_special_points(ordered::Vector{_LocusPoint})
@@ -327,6 +431,25 @@ function _retain_orbits(ordered::Vector{_LocusPoint}, cfg::ConnectingOrbitConfig
         push!(records, HomoclinicOrbitRecord(idx, t, copy(pt.U), copy(pt.xs),
                                              pt.primary, pt.secondary, pt.T,
                                              pt.eps_start, pt.eps_end))
+    end
+    return records
+end
+
+function _retain_cycle_connection_orbits(ordered::Vector{_CycleConnectionPoint},
+                                         cfg::ConnectingOrbitConfig)
+    records = HomoclinicOrbitRecord[]
+    isempty(ordered) && return records
+    stride = max(cfg.orbit_save_stride, 1)
+    indices = collect(1:stride:length(ordered))
+    length(indices) > cfg.max_saved_orbits &&
+        (indices = indices[round.(Int, range(1, length(indices), length=cfg.max_saved_orbits))])
+    for idx in indices
+        pt = ordered[idx]
+        M = size(pt.U, 2) - 1
+        t = collect(range(0.0, pt.T, length=M + 1))
+        push!(records, HomoclinicOrbitRecord(
+            idx, t, copy(pt.U), copy(pt.source_phase_point),
+            pt.primary, pt.secondary, pt.T, pt.eps_start, pt.eps_end))
     end
     return records
 end
@@ -464,6 +587,103 @@ function _run_connecting_orbit_continuation(
         residuals, corrector_paths, prob.kind,
         source_period, source_index, seed.primary,
         copy(prob.base_params), primary_index, secondary_index,
+        sys.name, pnames, diagnostics, now())
+end
+
+function _run_cycle_connection_continuation(
+        sys::ContinuousODE, prob::_CycleConnectionProblem,
+        seed_z::Vector{Float64}, cfg::ConnectingOrbitConfig;
+        provenance::String="")
+    max_return_time = cfg.max_return_time
+    projector_refresh = cfg.projector_refresh
+    if !_valid_cycle_connection_times(prob, seed_z, max_return_time)
+        throw(ArgumentError(
+            "Seed cycle-connection times must be finite and positive, and the " *
+            "connecting truncation_time must not exceed max_return_time."))
+    end
+
+    bc0 = _refresh_cycle_connection_bc(prob, seed_z)
+    k = _validate_cycle_connection_geometry(prob, bc0)
+    cont = cfg.continuation
+    bslot = _cycle_connection_slot_secondary(prob)
+    first_corr = _correct_cycle_connection(
+        prob, seed_z; extra=z -> [z[bslot] - seed_z[bslot]],
+        tol=cont.newton_tol, maxiter=cont.newton_max_iter,
+        use_fallback=cfg.use_fallback,
+        fallback_max_iter=cfg.fallback_max_iter,
+        projector_refresh=projector_refresh)
+    if !first_corr.converged
+        throw(ErrorException(
+            "Cycle-connection corrector failed to converge on the seed point " *
+            "(final residual = $(first_corr.residual)). Improve the cycle/orbit " *
+            "guess, refine the mesh, or adjust epsilon_start/epsilon_end."))
+    end
+    _valid_cycle_connection_times(prob, first_corr.z, max_return_time) ||
+        throw(ErrorException(
+            "Cycle-connection corrector converged, but one corrected period is " *
+            "non-positive/non-finite or the connecting time exceeds max_return_time."))
+
+    first_point = _describe_cycle_connection_point(prob, first_corr)
+    forward = _CycleConnectionPoint[]
+    _cycle_connection_sweep!(forward, prob, first_corr.z, cfg, 1;
+                             max_return_time=max_return_time,
+                             projector_refresh=projector_refresh)
+    backward = _CycleConnectionPoint[]
+    if cfg.bothside
+        _cycle_connection_sweep!(backward, prob, first_corr.z, cfg, -1;
+                                 max_return_time=max_return_time,
+                                 projector_refresh=projector_refresh)
+    end
+    ordered = vcat(reverse(backward), [first_point], forward)
+
+    npts = length(ordered)
+    n = prob.n
+    primary_values = [pt.primary for pt in ordered]
+    secondary_values = [pt.secondary for pt in ordered]
+    return_times = [pt.T for pt in ordered]
+    epsilon_start_values = [pt.eps_start for pt in ordered]
+    epsilon_end_values = [pt.eps_end for pt in ordered]
+    residuals = [pt.residual for pt in ordered]
+    corrector_paths = [pt.path for pt in ordered]
+    source_phase_points = Matrix{Float64}(undef, n, npts)
+    target_phase_points = Matrix{Float64}(undef, n, npts)
+    for (j, pt) in enumerate(ordered)
+        source_phase_points[:, j] = pt.source_phase_point
+        target_phase_points[:, j] = pt.target_phase_point
+    end
+    orbits = _retain_cycle_connection_orbits(ordered, cfg)
+    fallback_points = count(==(:fallback), corrector_paths)
+    first_bc = _refresh_cycle_connection_bc(prob, first_corr.z)
+    diagnostics = Dict{String, Any}(
+        "kind" => "cycle_connection",
+        "mesh_intervals" => prob.M,
+        "source_cycle_intervals" => prob.Ls,
+        "target_cycle_intervals" => prob.Lt,
+        "epsilon_start" => prob.eps0,
+        "epsilon_end" => prob.eps1,
+        "deficiency" => k,
+        "n_points" => npts,
+        "fallback_points" => fallback_points,
+        "max_residual" => isempty(residuals) ? 0.0 : maximum(residuals),
+        "source_stable_floquet_dim" => first_bc.source_split.ns,
+        "source_unstable_floquet_dim" => first_bc.source_split.nu,
+        "target_stable_floquet_dim" => first_bc.target_split.ns,
+        "target_unstable_floquet_dim" => first_bc.target_split.nu,
+        "source_cycle_period" => first_point.source_period,
+        "target_cycle_period" => first_point.target_period,
+        "seed_source" => provenance,
+        "phase" => "free source/target cycle phase with an integral connection phase condition",
+    )
+    pnames = _param_name_tuple(sys, prob.primary_index, prob.secondary_index)
+    return HomoclinicBranchResult(
+        primary_values, secondary_values, return_times,
+        epsilon_start_values, epsilon_end_values,
+        source_phase_points, target_phase_points,
+        Dict{Symbol, Vector{Float64}}(), Dict{Symbol, Vector{Symbol}}(),
+        HomoclinicSpecialPoint[], orbits,
+        residuals, corrector_paths, :cycle_connection,
+        0, 0, first_point.primary,
+        copy(prob.base_params), prob.primary_index, prob.secondary_index,
         sys.name, pnames, diagnostics, now())
 end
 

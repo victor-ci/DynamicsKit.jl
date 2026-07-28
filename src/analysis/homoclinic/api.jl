@@ -289,6 +289,41 @@ function heteroclinic_orbit_continuation(sys::ContinuousODE, config::ConnectingO
                                          provenance=provenance)
 end
 
+# --- cycle sample validation --------------------------------------------------
+
+function _validate_cycle_samples(label::AbstractString, states::AbstractMatrix,
+                                 period::Real, n::Int; min_samples::Int=3)
+    stem = isempty(label) ? "cycle" : "$(label)_cycle"
+    size(states, 1) == n ||
+        throw(ArgumentError("$(stem)_states must have $(n) rows (state dimension)."))
+    size(states, 2) >= min_samples ||
+        throw(ArgumentError("$(stem)_states must contain at least $(min_samples) time samples."))
+    all(isfinite, states) ||
+        throw(ArgumentError("$(stem)_states must contain only finite values."))
+    T = Float64(period)
+    (isfinite(T) && T > 0) ||
+        throw(ArgumentError("$(stem)_period must be finite and positive (got $(T))."))
+    first_state = view(states, :, 1)
+    last_state = view(states, :, size(states, 2))
+    closure_scale = max(norm(first_state), norm(last_state), 1.0)
+    closure_error = norm(last_state .- first_state)
+    closure_error <= 1e-4 * closure_scale || throw(ArgumentError(
+        "$(stem)_states must span one closed period with matching first " *
+        "and last samples (relative closure error = $(closure_error / closure_scale))."))
+    return T
+end
+
+function _connection_phase_tangents(field, U::AbstractMatrix, p::AbstractVector)
+    tangents = Matrix{Float64}(undef, size(U, 1), size(U, 2))
+    for j in axes(U, 2)
+        tangents[:, j] = collect(Float64, field(view(U, :, j), p))
+    end
+    norm(tangents) > 0 || throw(ArgumentError(
+        "Connection phase condition is rank deficient: the seed trajectory has " *
+        "zero tangent norm. Provide a non-stationary connecting-orbit guess."))
+    return tangents
+end
+
 # --- saddle-cycle homoclinic --------------------------------------------------
 
 function _assemble_cycle_result(sys::ContinuousODE, prob::_CycleProblem, corr::_CorrectorResult,
@@ -371,18 +406,6 @@ function saddle_cycle_homoclinic_continuation(sys::ContinuousODE, config::Connec
     config.kind == :saddle_cycle || throw(ArgumentError(
         "saddle_cycle_homoclinic_continuation requires config.kind=:saddle_cycle."))
     n = sys.dim
-    size(cycle_states, 1) == n ||
-        throw(ArgumentError("cycle_states must have $(n) rows (state dimension)."))
-    size(cycle_states, 2) >= 2 ||
-        throw(ArgumentError("cycle_states must contain at least two time samples."))
-    all(isfinite, cycle_states) ||
-        throw(ArgumentError("cycle_states must contain only finite values."))
-    cycle_closure_scale = max(
-        norm(cycle_states[:, 1]), norm(cycle_states[:, end]), 1.0)
-    cycle_closure_error = norm(cycle_states[:, end] .- cycle_states[:, 1])
-    cycle_closure_error <= 1e-4 * cycle_closure_scale || throw(ArgumentError(
-        "cycle_states must span one closed period with matching first and last " *
-        "samples (relative closure error = $(cycle_closure_error / cycle_closure_scale))."))
 
     T_seed = Float64(truncation_time)
     (isfinite(T_seed) && T_seed > 0) ||
@@ -393,9 +416,7 @@ function saddle_cycle_homoclinic_continuation(sys::ContinuousODE, config::Connec
             "Seed truncation_time $(T_seed) already exceeds max_return_time " *
             "$(config.max_return_time). Reduce truncation_time or increase max_return_time."))
     end
-    Tc = Float64(cycle_period)
-    (isfinite(Tc) && Tc > 0) ||
-        throw(ArgumentError("cycle_period must be finite and positive (got $(Tc))."))
+    Tc = _validate_cycle_samples("", cycle_states, cycle_period, n; min_samples=2)
 
     field = _ode_field(sys)
     bp = _connecting_base_params(
@@ -461,4 +482,168 @@ function saddle_cycle_homoclinic_continuation(sys::ContinuousODE, config::Connec
     end
 
     return _assemble_cycle_result(sys, prob, corr, config, Tc, provenance)
+end
+
+# --- cycle-to-cycle connection ------------------------------------------------
+
+"""
+    cycle_connection_seed(sys; source_cycle_states, source_cycle_period,
+                          target_cycle_states, target_cycle_period, base_params,
+                          seed_config=CycleConnectionSeedConfig()) -> CycleConnectionSeedResult
+
+Automatically discover a seed trajectory for a saddle-cycle to saddle-cycle
+connection by sampling source-cycle phases and unstable Floquet launch
+directions, then integrating forward until a trajectory approaches the target
+cycle. Returned cycle samples are rotated so the selected source/target phases
+are the reference phases expected by [`cycle_connection_continuation`](@ref).
+"""
+function cycle_connection_seed(sys::ContinuousODE;
+                               source_cycle_states::AbstractMatrix,
+                               source_cycle_period::Real,
+                               target_cycle_states::AbstractMatrix,
+                               target_cycle_period::Real,
+                               base_params::AbstractVector=sys.default_params,
+                               seed_config::CycleConnectionSeedConfig=CycleConnectionSeedConfig(),
+                               solver=Tsit5(),
+                               reltol::Float64=1e-9,
+                               abstol::Float64=1e-9)
+    n = sys.dim
+    _validate_cycle_samples("source", source_cycle_states, source_cycle_period, n)
+    _validate_cycle_samples("target", target_cycle_states, target_cycle_period, n)
+    length(base_params) == length(sys.param_names) || throw(ArgumentError(
+        "base_params must contain exactly $(length(sys.param_names)) values for system '$(sys.name)'."))
+    all(isfinite, base_params) || throw(ArgumentError(
+        "base_params must contain only finite values."))
+    return _discover_cycle_connection_seed(
+        sys, seed_config;
+        source_cycle_states=source_cycle_states,
+        source_cycle_period=source_cycle_period,
+        target_cycle_states=target_cycle_states,
+        target_cycle_period=target_cycle_period,
+        base_params=base_params,
+        solver=solver,
+        reltol=reltol,
+        abstol=abstol)
+end
+
+"""
+    cycle_connection_continuation(sys, config::ConnectingOrbitConfig; kwargs...) -> HomoclinicBranchResult
+
+Continue a saddle-cycle to saddle-cycle connecting orbit. The source and target
+periodic orbits are solved alongside the connecting mesh, so their phases are
+free and determined by the projection boundary conditions. A single integral
+phase condition on the connecting orbit removes the global time-shift
+degeneracy, and pseudo-arclength continuation traces the two-parameter locus.
+
+# Keyword arguments
+- `primary_param_index`: First free parameter; the secondary parameter is
+  `config.continuation.param_index`.
+- `source_cycle_states` / `target_cycle_states`: `dim × L` samples of one
+  period for each saddle cycle, including matching first/last samples.
+- `source_cycle_period` / `target_cycle_period`: Flow periods of those cycles.
+- `orbit_guess`: Seed connecting trajectory (`dim × K` matrix or callable).
+  Omit or pass `nothing` to run automatic seed discovery.
+- `truncation_time`: Seed connecting-orbit truncation time. Required with an
+  explicit `orbit_guess`; ignored for automatic discovery.
+- `base_params`: Base parameter vector (defaults to `sys.default_params`).
+"""
+function cycle_connection_continuation(sys::ContinuousODE, config::ConnectingOrbitConfig;
+                                       primary_param_index::Int,
+                                       source_cycle_states::AbstractMatrix,
+                                       source_cycle_period::Real,
+                                       target_cycle_states::AbstractMatrix,
+                                       target_cycle_period::Real,
+                                       orbit_guess=nothing,
+                                       truncation_time::Real=NaN,
+                                       base_params::AbstractVector=sys.default_params,
+                                       seed_config::CycleConnectionSeedConfig=CycleConnectionSeedConfig(),
+                                       solver=Tsit5(),
+                                       reltol::Float64=1e-9,
+                                       abstol::Float64=1e-9,
+                                       provenance::String=config.provenance)
+    config.kind == :cycle_connection || throw(ArgumentError(
+        "cycle_connection_continuation requires config.kind=:cycle_connection."))
+    secondary_index = config.continuation.param_index
+    primary_param_index != secondary_index ||
+        throw(ArgumentError("primary and secondary parameter indices must differ " *
+                            "(both = $(secondary_index))."))
+    np = length(sys.param_names)
+    1 <= primary_param_index <= np ||
+        throw(ArgumentError("primary_param_index $(primary_param_index) is out of range 1:$(np)."))
+    n = sys.dim
+    Tsource = _validate_cycle_samples("source", source_cycle_states, source_cycle_period, n)
+    Ttarget = _validate_cycle_samples("target", target_cycle_states, target_cycle_period, n)
+    field = _ode_field(sys)
+    bp = _connecting_base_params(sys, base_params, secondary_index)
+    source = Matrix{Float64}(source_cycle_states)
+    target = Matrix{Float64}(target_cycle_states)
+    seed_result = nothing
+    if isnothing(orbit_guess)
+        seed_result = cycle_connection_seed(
+            sys; source_cycle_states=source, source_cycle_period=Tsource,
+            target_cycle_states=target, target_cycle_period=Ttarget,
+            base_params=bp, seed_config=seed_config, solver=solver,
+            reltol=reltol, abstol=abstol)
+        seed_result.status === :found || throw(ErrorException(
+            "Automatic cycle-connection seed discovery did not approach the target " *
+            "cycle within distance_tolerance=$(seed_config.distance_tolerance) " *
+            "(best distance = $(seed_result.distance)). Increase max_time, sample more " *
+            "phases, or provide an explicit orbit_guess."))
+        orbit_guess = seed_result.orbit_guess
+        truncation_time = seed_result.truncation_time
+        source = seed_result.source_cycle_states
+        target = seed_result.target_cycle_states
+        provenance = isempty(provenance) ? "automatic-cycle-connection-seed" :
+                     "$(provenance); automatic-cycle-connection-seed"
+    end
+    Tseed = Float64(truncation_time)
+    (isfinite(Tseed) && Tseed > 0) ||
+        throw(ArgumentError("truncation_time must be finite and positive (got $(Tseed))."))
+    if isfinite(config.max_return_time) && Tseed > config.max_return_time
+        throw(ArgumentError(
+            "Seed truncation_time $(Tseed) already exceeds max_return_time " *
+            "$(config.max_return_time). Reduce truncation_time or increase max_return_time."))
+    end
+
+    U0 = _coerce_orbit_guess(orbit_guess, config.n_mesh)
+    size(U0, 1) == n ||
+        throw(ArgumentError("orbit_guess state dimension $(size(U0, 1)) does not match system dimension $(n)."))
+    d0 = U0[:, 1] .- source[:, 1]
+    d1 = U0[:, end] .- target[:, 1]
+    n0 = norm(d0)
+    n1 = norm(d1)
+    (isfinite(n0) && n0 > 0) ||
+        throw(ArgumentError("Seed connecting-orbit start endpoint coincides with the source cycle phase point."))
+    (isfinite(n1) && n1 > 0) ||
+        throw(ArgumentError("Seed connecting-orbit end endpoint coincides with the target cycle phase point."))
+    eps_start = isnan(config.epsilon_start) ? n0 : config.epsilon_start
+    eps_end = isnan(config.epsilon_end) ? n1 : config.epsilon_end
+    if !isnan(config.epsilon_start)
+        U0[:, 1] = source[:, 1] .+ (eps_start / n0) .* d0
+    end
+    if !isnan(config.epsilon_end)
+        U0[:, end] = target[:, 1] .+ (eps_end / n1) .* d1
+    end
+    tangents = _connection_phase_tangents(field, U0, bp)
+    prob = _CycleConnectionProblem(
+        field, bp, primary_param_index, secondary_index, n, config.n_mesh,
+        size(source, 2) - 1, size(target, 2) - 1, copy(U0), tangents,
+        eps_start, eps_end)
+    seed = _cycle_connection_seed_vector(
+        prob, U0, source, target, Tseed, Tsource, Ttarget,
+        bp[primary_param_index], bp[secondary_index])
+    result = _run_cycle_connection_continuation(sys, prob, seed, config; provenance=provenance)
+    if seed_result !== nothing
+        result.diagnostics["seed_discovery"] = Dict{String, Any}(
+            "status" => String(seed_result.status),
+            "distance" => seed_result.distance,
+            "source_phase_index" => seed_result.source_phase_index,
+            "target_phase_index" => seed_result.target_phase_index,
+            "source_direction_index" => seed_result.source_direction_index,
+            "source_direction_sign" => seed_result.source_direction_sign,
+            "truncation_time" => seed_result.truncation_time,
+            "diagnostics" => seed_result.diagnostics,
+        )
+    end
+    return result
 end
