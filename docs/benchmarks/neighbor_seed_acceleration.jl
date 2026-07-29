@@ -1,7 +1,8 @@
 using DynamicsKit
 using Dates
-using JSON3
 using Printf
+
+include(joinpath(@__DIR__, "json_pretty.jl"))
 
 function _env_int(name::AbstractString, default::Int)
     value = get(ENV, name, nothing)
@@ -64,7 +65,7 @@ function _benchmark_case(name::AbstractString)
             max_period=4,
             precision=1e-3,
             iterations=26,
-            solver=DynamicsKit._workbench_solver(sys, "auto", base_params),
+            solver=select_ode_solver("auto"),
             reltol=1e-7,
             abstol=1e-7
         )
@@ -85,7 +86,7 @@ function _benchmark_case(name::AbstractString)
             max_period=6,
             precision=1e-3,
             iterations=80,
-            solver=DynamicsKit._workbench_solver(sys, "auto", base_params),
+            solver=select_ode_solver("auto"),
             reltol=1e-8,
             abstol=1e-8
         )
@@ -96,6 +97,10 @@ end
 
 function _run_map(case, cfg::BifurcationMapConfig)
     started = time_ns()
+    # `_bifurcation_map` (private) is used here because this benchmark reports
+    # cache/neighbor-seed diagnostics from the returned diagnostics dict, which
+    # the public `bifurcation_map` entry point intentionally discards (it
+    # returns only the plain-data `BifurcationMapResult`).
     result, diagnostics = if case.sys isa ContinuousODE
         DynamicsKit._bifurcation_map(
             case.sys,
@@ -191,12 +196,12 @@ function _write_summary(rows, case)
     save_results = _env_bool("SAVE_RESULTS", false) || !isempty(output_dir)
     save_results || return nothing
 
-    dir = isempty(output_dir) ? joinpath(@__DIR__, "..", "var", "output", "benchmarks") : output_dir
+    dir = isempty(output_dir) ? joinpath(@__DIR__, "..", "..", "var", "output", "benchmarks") : output_dir
     mkpath(dir)
     stamp = Dates.format(now(), dateformat"yyyymmdd_HHMMSS")
     file_path = joinpath(dir, "neighbor_seed_acceleration_$(case.key)_$(stamp).json")
     open(file_path, "w") do io
-        JSON3.pretty(io, Dict(
+        json_pretty_print(io, Dict(
             "generatedAt" => string(now()),
             "threads" => Threads.nthreads(),
             "system" => case.label,

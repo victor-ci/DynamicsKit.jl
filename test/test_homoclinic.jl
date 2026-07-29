@@ -12,7 +12,7 @@ using DynamicsKit: _ode_field, _field_jacobian, _ConnectingProblem, _FrozenBC,
     _refresh_bc, _slot_T, _augmented_residual, _FloquetSplit,
     _CycleConnectionProblem, _cycle_connection_seed_vector,
     _refresh_cycle_connection_bc, _validate_cycle_connection_geometry,
-    _HOMOCLINIC_BRANCH_FORMAT
+    _HOMOCLINIC_BRANCH_FORMAT, _validate_orbit_guess_variation
 import Dates
 
 # --- analytic fixtures --------------------------------------------------------
@@ -280,14 +280,55 @@ end
             orbit_guess=bad_orbit, truncation_time=2π,
             base_params=[1.0, -0.5])
 
+        # A constant (all-zero) orbit guess is degenerate: it has zero mesh-to-mesh
+        # variation regardless of what the vector field evaluates to at that single
+        # repeated point (this system's field is actually nonzero at the origin
+        # because of the r^2 -> eps floor, so a field-based check alone would miss
+        # this case). Rejected at the API boundary, not deferred to a doomed corrector.
         zero_orbit = fill(0.0, 3, 20)
-            @test_throws ErrorException cycle_connection_continuation(
+        @test_throws ArgumentError cycle_connection_continuation(
             sys, cfg; primary_param_index=1,
             source_cycle_states=source, source_cycle_period=Tc,
             target_cycle_states=target, target_cycle_period=Tc,
             orbit_guess=zero_orbit, truncation_time=1.0)
 
         @test isapprox(c_exact, sys.default_params[1]; atol=0.0)
+    end
+end
+
+@testset "_validate_orbit_guess_variation edge cases" begin
+    # Minimum mesh size: exactly 2 points with real spread is accepted.
+    @test _validate_orbit_guess_variation([1.0 2.0; 0.0 0.0], "orbit_guess") === nothing
+
+    # Fewer than 2 mesh points is always rejected, regardless of content.
+    @test_throws ArgumentError _validate_orbit_guess_variation(reshape([1.0, 2.0, 3.0], 3, 1), "orbit_guess")
+
+    # All-identical columns (any dimension, any repeat count) is degenerate.
+    @test_throws ArgumentError _validate_orbit_guess_variation(
+        repeat([1.0, 2.0, 3.0], 1, 5), "orbit_guess")
+    @test_throws ArgumentError _validate_orbit_guess_variation(zeros(3, 20), "orbit_guess")
+
+    # Near the tolerance boundary: scale = max(norm([1,0,0]), 1) = 1, so the
+    # degeneracy tolerance is exactly sqrt(eps(Float64)). A spread comfortably
+    # above it is accepted; a spread comfortably below it is rejected.
+    tol = sqrt(eps(Float64))
+    above = [1.0 (1.0 + 4tol); 0.0 0.0; 0.0 0.0]
+    below = [1.0 (1.0 + 0.25tol); 0.0 0.0; 0.0 0.0]
+    @test _validate_orbit_guess_variation(above, "orbit_guess") === nothing
+    @test_throws ArgumentError _validate_orbit_guess_variation(below, "orbit_guess")
+
+    # Non-finite entries are rejected with a specific, distinct message rather
+    # than silently propagating NaN/Inf into the degeneracy comparison.
+    nan_guess = [1.0 NaN; 0.0 0.0]
+    inf_guess = [1.0 2.0; 0.0 Inf]
+    @test_throws ArgumentError _validate_orbit_guess_variation(nan_guess, "orbit_guess")
+    @test_throws ArgumentError _validate_orbit_guess_variation(inf_guess, "orbit_guess")
+    try
+        _validate_orbit_guess_variation(nan_guess, "orbit_guess")
+        @test false  # unreachable
+    catch err
+        @test err isa ArgumentError
+        @test occursin("finite", err.msg)
     end
 end
 
@@ -888,11 +929,16 @@ end
     L = 200
     θ = range(0, 2π, length=L)
     cyc = permutedims(hcat(cos.(θ), sin.(θ), zeros(L)))
-    # A deliberately bad orbit guess (all zeros) cannot converge; set an extremely
-    # tight tolerance so the corrector is forced to fail.
+    # A deliberately bad orbit guess (near-constant, far from the true connecting
+    # orbit) cannot converge; set an extremely tight tolerance so the corrector is
+    # forced to fail. It carries genuine (if nonsensical) mesh-to-mesh variation —
+    # not a literally repeated point — so this exercises unconverged-correction
+    # rejection specifically, distinct from the degenerate-seed-guess rejection at
+    # the API boundary (see the zero_orbit case in the "Cycle-to-cycle connection
+    # continuation" testset).
     K = 120
     U_bad = zeros(3, K)
-    U_bad[1, :] .= 0.01  # nonzero but far from the homoclinic orbit
+    U_bad[1, :] .= 0.01 .+ 0.001 .* sin.(range(0.0, 2π, length=K))  # nonzero but far from the homoclinic orbit
     cfg_strict = ConnectingOrbitConfig(
         continuation=ContinuationConfig(p_min=0.1, p_max=1.0, ds=0.05, param_index=2,
                                         newton_tol=1e-15, max_steps=1),

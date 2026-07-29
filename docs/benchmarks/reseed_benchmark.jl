@@ -13,7 +13,7 @@
 # Plain `@elapsed` (min-of-N) is used deliberately — no BenchmarkTools dependency.
 #
 # Run from the project root (threads help the bidirectional + atlas paths):
-#   julia --threads auto --project=. bench/reseed_benchmark.jl
+#   julia --threads auto --project=. docs/benchmarks/reseed_benchmark.jl
 
 using DynamicsKit
 using DifferentialEquations: Tsit5, AutoTsit5, Rosenbrock23
@@ -37,7 +37,7 @@ end
 
 """Coverage fraction of [p_min, p_max] spanned by a branch's recorded points."""
 function coverage_fraction(branch, p_min, p_max)
-    pts = DynamicsKit._branch_points(branch)
+    pts = branch_points(branch)
     isempty(pts) && return 0.0
     params = Float64[p.param for p in pts]
     span = max(p_max - p_min, eps(Float64))
@@ -67,7 +67,7 @@ function measure_continuation(sys, cfg; params, period = 1, reseed = ReseedConfi
         best = min(best, t)
     end
 
-    pts = DynamicsKit._branch_points(result)
+    pts = branch_points(result)
     return (time = best,
             points = length(pts),
             coverage = coverage_fraction(result, cfg.p_min, cfg.p_max),

@@ -1,42 +1,43 @@
 # Examples and cookbook workflows
 
-The `examples/` directory contains executable Julia scripts. This guide shows smaller snippets and points to the longer scripts when a workflow deserves a full file.
+The `docs/examples/` directory contains executable Julia scripts, one per key analysis capability or
+system reference. This guide shows smaller snippets and points to the longer scripts when a workflow
+deserves a full file.
 
 ## Example scripts
 
 | Script | Purpose |
 | --- | --- |
-| `examples/henon_complete.jl` | End-to-end Henon map analysis |
-| `examples/vilnius_oscillator_reference_figures.jl` | Vilnius oscillator reference figures from Ipatovs et al. (2023) |
-| `examples/colpitts_oscillator_parameter_studies.jl` | Colpitts oscillator parameter sweeps, maps, phase portraits, and continuation overlays |
-| `examples/colpitts_simple_beta_overlay.jl` | Simple Colpitts beta overlay |
-| `examples/colpitts_simple_beta_period_scan.jl` | Simple Colpitts beta period scan |
-| `examples/colpitts_exponential_voltage_cascade.jl` | Exponential Colpitts voltage cascade |
-| `examples/colpitts_dynamic_beta_voltage_cascade.jl` | Dynamic-beta Colpitts voltage cascade |
-| `examples/scientific_diagnostics_suite.jl` | Compact scientific diagnostics across discrete maps, ODE continuation, switching guards, and multistability maps |
+| `docs/examples/henon_complete.jl` | Discrete map: brute-force diagram, period-1/2 continuation, and a periodic-skeleton search (periods 1-10) |
+| `docs/examples/colpitts_simple_continuation.jl` | Continuous system: full continuation workflow (brute-force diagram, seed sampling, skeleton refinement, continuation, overlay) |
+| `docs/examples/colpitts_map_and_phase_portrait.jl` | Continuous system: 2D bifurcation map and a phase portrait |
+| `docs/examples/atlas_continuation.jl` | Automatic continuation atlas: recovers every periodic branch across a parameter window without hand-picked seeds |
+| `docs/examples/lyapunov_diagnostics.jl` | Lyapunov diagnostics: a 1D diagram (discrete map) and a full spectrum (continuous flow) |
+| `docs/examples/scientific_diagnostics_suite.jl` | Compact scientific diagnostics across discrete maps, ODE continuation, switching guards, and multistability maps |
+| `docs/examples/vilnius_oscillator_reference_figures.jl` | Vilnius oscillator reference figures from Ipatovs et al. (2023) |
 
 Run scripts from the repository root:
 
 ```sh
-julia --project=. examples/henon_complete.jl
+julia --project=. docs/examples/henon_complete.jl
 ```
 
-The table above lists executable scripts that already exist in the repository. The snippets below are compact cookbook starting points; promote a workflow into `examples/` when it needs to be run as a maintained example.
+The table above lists executable scripts that already exist in the repository. The snippets below are compact cookbook starting points; promote a workflow into `docs/examples/` when it needs to be run as a maintained example.
 
 ## Scientific diagnostics suite
 
 ```sh
-julia --project=. examples/scientific_diagnostics_suite.jl
+julia --project=. docs/examples/scientific_diagnostics_suite.jl
 ```
 
 This executable example runs compact diagnostic cases for Henon period doubling/window detection, Ikeda multistability plus Lyapunov diagnostics, Rossler continuation multipliers, boost converter switching guards, and the memristive diode bridge multistability map. It prints a JSON summary after asserting each case's expected diagnostic behavior.
 
-## Reference figure and parameter studies
+## Reference figures
 
 Vilnius oscillator reference figures:
 
 ```sh
-julia --project=. examples/vilnius_oscillator_reference_figures.jl
+julia --project=. docs/examples/vilnius_oscillator_reference_figures.jl
 ```
 
 The Vilnius script recreates reference-style brute-force and continuation overlays for Figures 11 and 13 from:
@@ -45,15 +46,25 @@ The Vilnius script recreates reference-style brute-force and continuation overla
 
 Use `VILNIUS_FIGURES=11`, `VILNIUS_FIGURES=13`, or `VILNIUS_FIGURES=11,13` to choose which figures to generate. Outputs are written under `var/output/vilnius_oscillator_reference_figures/`.
 
-Colpitts oscillator parameter studies:
+## Colpitts continuation workflow and 2D map
 
 ```sh
-julia --project=. examples/colpitts_oscillator_parameter_studies.jl
+julia --project=. docs/examples/colpitts_simple_continuation.jl
+julia --project=. docs/examples/colpitts_map_and_phase_portrait.jl
 ```
 
-The Colpitts script generates a coordinated set of parameter sweeps, 2D maps, phase portraits, and continuation overlays for the simple, exponential, and dynamic-beta transistor models. By default it runs a small smoke configuration; use `COLPITTS_STUDY_MODE=final` for denser grids and longer trajectories.
+The first script walks through a complete continuation workflow on the simple (piecewise-linear) Colpitts model: a brute-force diagram, a seed sampled from a settled trajectory, skeleton refinement of that seed, continuation of the period-1 branch, and an overlay plot. The second computes a 2D bifurcation map and a phase portrait on the exponential Colpitts model. `docs/systems-catalog.md` documents all three Colpitts variants (simple, exponential, dynamic-beta).
 
-## Henon period doubling and hidden windows
+## Automatic continuation atlas
+
+```sh
+julia --project=. docs/examples/atlas_continuation.jl
+```
+
+`continuation_atlas` combines a reconnaissance brute-force sweep with automatic seed discovery and
+continuation to recover every periodic branch across a parameter window, rather than hand-picking a
+seed for each one. The example runs it on the boost converter's current-mode subharmonic cascade.
+The same tool works on the Henon map too:
 
 ```julia
 using DynamicsKit
@@ -124,22 +135,20 @@ plot_bifurcation_map(map)
 For richer diagnostics, enable `multistability_initial_points` and `lyapunov_enabled` on the
 `BifurcationMapConfig`; the returned diagnostics dict surfaces multistability and Lyapunov summaries.
 
-## Lyapunov, codim-2, and ODE spectrum snippets
+## Lyapunov diagnostics
+
+```sh
+julia --project=. docs/examples/lyapunov_diagnostics.jl
+```
+
+A 1D Lyapunov diagram on the Hénon map (largest exponent vs. parameter, classifying each point
+periodic/neutral/chaotic) and the full Lyapunov spectrum of the Rössler oscillator at a chaotic
+operating point (recovering the classic `(+, 0, -)` signature). For a codim-2 curve and an ODE power
+spectrum:
 
 ```julia
 using DynamicsKit
 using StaticArrays
-
-henon_lyap = lyapunov_diagram(henon_map(), LyapunovConfig(
-    param_min=0.9,
-    param_max=1.3,
-    param_steps=120,
-    iterations=120,
-    transient=40,
-    fixed_params=[1.0, 0.3],
-))
-
-plot_lyapunov_diagram(henon_lyap)
 
 affine = DiscreteMap(
     (x, p) -> SVector(p[1] * x[1] + p[2]),
@@ -177,7 +186,7 @@ rossler_spec = power_spectrum(rossler_oscillator(), PowerSpectrumConfig(
 plot_power_spectrum(rossler_spec)
 ```
 
-Use the Lyapunov sweep for a compact route-to-chaos diagnostic, `codim2_curve` when you need a traced period-doubling/fold/NS boundary in a two-parameter plane, and the ODE spectrum when you need to distinguish narrowband periodic behavior from broadband candidate chaos at one representative parameter value.
+Use `codim2_curve` when you need a traced period-doubling/fold/NS boundary in a two-parameter plane, and the ODE spectrum when you need to distinguish narrowband periodic behavior from broadband candidate chaos at one representative parameter value.
 
 ## Rossler phase portrait and continuation
 
@@ -239,7 +248,7 @@ diag = continuation_branch_diagnostics(sys, branch, base;
 )
 ```
 
-Use `bench/reseed_benchmark.jl` to compare conservative and aggressive PALC settings on this real stiff Poincare-map system.
+Use `docs/benchmarks/reseed_benchmark.jl` to compare conservative and aggressive PALC settings on this real stiff Poincare-map system.
 
 ## Buck/boost switching behavior
 

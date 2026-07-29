@@ -56,12 +56,61 @@ function _coerce_orbit_guess(guess, M::Int)
     return reduce(hcat, cols)
 end
 
+"""
+    _validate_orbit_guess_variation(U0, label)
+
+Reject a connecting-orbit guess whose mesh points all coincide (to within
+numerical tolerance) — e.g. a constant array repeated across the mesh. Such a
+seed cannot support a meaningful collocation residual or phase condition
+regardless of what the vector field happens to evaluate to at that single
+point: evaluating the field at a state does not certify that the *seed
+trajectory* spans anything, since a system's field can be nonzero even at a
+degenerate/repeated point (for example, near a coordinate-singularity guard
+like `max(r^2, eps)`) without the supplied orbit describing real dynamics.
+
+The degeneracy tolerance is relative to `eltype(U0)`'s working precision
+(`sqrt(eps)` of the real/underlying float type) rather than a fixed `Float64`
+constant, so this remains meaningful if a caller ever supplies a guess in a
+different real float type; orbit guesses are physical state samples, so no
+`Complex`/dual element type is expected here, but the check stays type-generic
+rather than assuming `Float64`. Allocation-free: computes the pairwise spread
+with explicit loops instead of broadcasting temporaries, since this runs on
+every connecting-orbit continuation call.
+"""
+function _validate_orbit_guess_variation(U0::AbstractMatrix, label::AbstractString)
+    K = size(U0, 2)
+    K >= 2 || throw(ArgumentError("$label must contain at least 2 mesh points; got $K."))
+    all(isfinite, U0) || throw(ArgumentError("$label must contain only finite values."))
+    T = float(real(eltype(U0)))
+    n = size(U0, 1)
+    scale_sq = zero(T)
+    @inbounds for i in 1:n
+        scale_sq += abs2(U0[i, 1])
+    end
+    scale = max(sqrt(scale_sq), one(T))
+    spread = zero(T)
+    @inbounds for j in 1:K
+        d_sq = zero(T)
+        for i in 1:n
+            d_sq += abs2(U0[i, j] - U0[i, 1])
+        end
+        spread = max(spread, sqrt(d_sq))
+    end
+    tol = sqrt(eps(T))
+    spread > tol * scale || throw(ArgumentError(
+        "$label is degenerate: all mesh points coincide to within numerical " *
+        "tolerance (spread=$(spread), scale=$(scale), tol=$(tol)). Provide a " *
+        "genuinely time-varying connecting-orbit guess."))
+    return nothing
+end
+
 function _build_seed(field, kind::Symbol, base_params::Vector{Float64}, primary_index::Int,
                      secondary_index::Int, M::Int, orbit_guess, saddle_guess,
                      target_guess, T0::Float64)
     primary0 = base_params[primary_index]
     secondary0 = base_params[secondary_index]
     U0 = _coerce_orbit_guess(orbit_guess, M)
+    _validate_orbit_guess_variation(U0, "orbit_guess")
     source_guess = if isnothing(saddle_guess)
         kind == :homoclinic || throw(ArgumentError(
             "A $(kind) connection requires a source saddle guess."))
@@ -429,6 +478,7 @@ function saddle_cycle_homoclinic_continuation(sys::ContinuousODE, config::Connec
         throw(ArgumentError("reference_index out of range."))
     x0 = collect(Float64, cycle_states[:, reference_index])
     U0 = _coerce_orbit_guess(orbit_guess, config.n_mesh)
+    _validate_orbit_guess_variation(U0, "orbit_guess")
 
     # Validate seed endpoint displacements from the reference phase point and resolve
     # epsilon values. NaN in the config means "derive from the seed's natural distance";
@@ -608,6 +658,7 @@ function cycle_connection_continuation(sys::ContinuousODE, config::ConnectingOrb
     U0 = _coerce_orbit_guess(orbit_guess, config.n_mesh)
     size(U0, 1) == n ||
         throw(ArgumentError("orbit_guess state dimension $(size(U0, 1)) does not match system dimension $(n)."))
+    _validate_orbit_guess_variation(U0, "orbit_guess")
     d0 = U0[:, 1] .- source[:, 1]
     d1 = U0[:, end] .- target[:, 1]
     n0 = norm(d0)

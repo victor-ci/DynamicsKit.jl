@@ -35,7 +35,7 @@ Julia fixes the thread count at process startup. To let analyses use multiple th
 with more than one thread:
 
 ```sh
-julia --threads auto,2 --project=. examples/henon_complete.jl
+julia --threads auto,2 --project=. docs/examples/henon_complete.jl
 ```
 
 or:

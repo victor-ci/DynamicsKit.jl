@@ -1,5 +1,22 @@
 #!/usr/bin/env julia
 
+"""
+Vilnius oscillator reference-figure reproduction: recovers the operating-map
+figures (bifurcation diagram + continuation branches) from the source paper
+below, with auto-refinement across parameter gaps.
+
+Reference:
+  A. Ipatovs, C. Iheanacho, D. Pikuļins, S. Tjukovs, A. Litviņenko,
+  "Complete Bifurcation Analysis of the Vilnius Chaotic Oscillator",
+  Electronics 12(13), Article 2861 (2023). doi:10.3390/electronics12132861
+
+Run:
+
+    julia --project=. examples/vilnius_oscillator_reference_figures.jl
+
+See the `VILNIUS_*` environment variables below for resolution/figure controls.
+"""
+
 import Logging
 Logging.disable_logging(Logging.Warn)
 
@@ -8,13 +25,7 @@ using DifferentialEquations
 using Plots
 using Dates
 
-# Reference:
-#   A. Ipatovs, C. Iheanacho, D. Pikuļins, S. Tjukovs, A. Litviņenko,
-#   "Complete Bifurcation Analysis of the Vilnius Chaotic Oscillator",
-#   Electronics 12(13), Article 2861 (2023).
-#   doi:10.3390/electronics12132861
-
-const OUTPUT_DIR = joinpath(@__DIR__, "..", "var", "output", "vilnius_oscillator_reference_figures")
+const OUTPUT_DIR = joinpath(@__DIR__, "..", "..", "var", "output", "vilnius_oscillator_reference_figures")
 mkpath(OUTPUT_DIR)
 
 env_bool(name, default=false) = lowercase(get(ENV, name, default ? "true" : "false")) in ("1", "true", "yes", "on")

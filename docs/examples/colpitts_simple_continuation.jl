@@ -1,34 +1,56 @@
 #!/usr/bin/env julia
 
+"""
+Colpitts (simple model): brute-force beta diagram, a period-1 seed sampled
+from a settled trajectory, skeleton refinement of that seed, continuation of
+the period-1 branch across the beta window, and an overlay plot of the
+brute-force diagram with the continued branch.
+
+Environment variables:
+
+    COLPITTS_SIMPLE_OVERLAY_BETA_MIN     beta sweep lower bound (default 100.0)
+    COLPITTS_SIMPLE_OVERLAY_BETA_MAX     beta sweep upper bound (default 135.0)
+    COLPITTS_SIMPLE_OVERLAY_BETA_SEED    continuation seed beta (default 120.0)
+    COLPITTS_SIMPLE_OVERLAY_BF_STEPS     brute-force parameter steps (default 80)
+    COLPITTS_SIMPLE_OVERLAY_BF_ITER      brute-force iterations per step (default 180)
+    COLPITTS_SIMPLE_OVERLAY_BF_TRANSIENT brute-force transient per step (default 120)
+
+Run:
+
+    julia --project=. examples/colpitts_simple_continuation.jl
+"""
+
 using DynamicsKit
 using DifferentialEquations
 using Plots
 
-const OUTPUT_DIR = joinpath(@__DIR__, "..", "var", "output", "colpitts_simple_beta_overlay")
+const OUTPUT_DIR = joinpath(@__DIR__, "..", "..", "var", "output", "colpitts_simple_continuation")
 mkpath(OUTPUT_DIR)
 
-const BETA_MIN = parse(Float64, get(ENV, "COLPITTS_BETA_MIN", "100.0"))
-const BETA_MAX = parse(Float64, get(ENV, "COLPITTS_BETA_MAX", "135.0"))
-const BETA_SEED = parse(Float64, get(ENV, "COLPITTS_BETA_SEED", "120.0"))
-const BF_STEPS = parse(Int, get(ENV, "COLPITTS_BF_STEPS", "80"))
-const BF_ITER = parse(Int, get(ENV, "COLPITTS_BF_ITER", "180"))
-const BF_TRANSIENT = parse(Int, get(ENV, "COLPITTS_BF_TRANSIENT", "120"))
+const BETA_MIN = parse(Float64, get(ENV, "COLPITTS_SIMPLE_OVERLAY_BETA_MIN", "100.0"))
+const BETA_MAX = parse(Float64, get(ENV, "COLPITTS_SIMPLE_OVERLAY_BETA_MAX", "135.0"))
+const BETA_SEED = parse(Float64, get(ENV, "COLPITTS_SIMPLE_OVERLAY_BETA_SEED", "120.0"))
+const BF_STEPS = parse(Int, get(ENV, "COLPITTS_SIMPLE_OVERLAY_BF_STEPS", "80"))
+const BF_ITER = parse(Int, get(ENV, "COLPITTS_SIMPLE_OVERLAY_BF_ITER", "180"))
+const BF_TRANSIENT = parse(Int, get(ENV, "COLPITTS_SIMPLE_OVERLAY_BF_TRANSIENT", "120"))
 const SEARCH_MIN = [4.6, -0.95]
 const SEARCH_MAX = [5.8, -0.4]
+const BETA_PARAM_INDEX = 3   # [C1, C2, beta, V1, V2]
 
 function seed_point_from_bruteforce(sys, params)
-    seed_points = DynamicsKit._collect_poincare_points(
+    seed_points = collect_trajectory_seed_points(
         sys,
-        params;
+        params[BETA_PARAM_INDEX],
+        params,
+        BETA_PARAM_INDEX;
         initial_point=copy(sys.default_initial_state),
         crossings=4,
         transient=BF_TRANSIENT,
         solver=Tsit5(),
         reltol=1e-7,
         abstol=1e-7,
-        projected=true
     )
-    isempty(seed_points) && error("No Poincaré crossings were recorded at β=$(params[3]).")
+    isempty(seed_points) && error("No Poincaré crossings were recorded at β=$(params[BETA_PARAM_INDEX]).")
     return collect(first(seed_points))
 end
 
@@ -52,7 +74,7 @@ bf = brute_force_diagram(
         param_steps=BF_STEPS,
         iterations=BF_ITER,
         transient=BF_TRANSIENT,
-        param_index=3,
+        param_index=BETA_PARAM_INDEX,
         fixed_params=copy(params)
     );
     initial_point=copy(sys.default_initial_state),
@@ -76,7 +98,7 @@ skeleton = find_periodic_skeleton(
     search_max=SEARCH_MAX,
     n_initial=6,
     params=copy(params),
-    param_index=3,
+    param_index=BETA_PARAM_INDEX,
     tol=1e-5,
     max_iter=80,
     fd_step=1e-6,
@@ -101,7 +123,7 @@ branch = continuation_branch(
         newton_tol=1e-4,
         newton_max_iter=50,
         detect_bifurcation=1,
-        param_index=3
+        param_index=BETA_PARAM_INDEX
     ),
     1;
     initial_point=seed,
@@ -133,12 +155,11 @@ overlay_plot = plot_overlay(
     min_crossing_time=1e-6
 )
 
-bf_path = joinpath(OUTPUT_DIR, "colpitts_simple_beta_bruteforce.png")
-overlay_path = joinpath(OUTPUT_DIR, "colpitts_simple_beta_overlay.png")
+bf_path = joinpath(OUTPUT_DIR, "colpitts_simple_bruteforce.png")
+overlay_path = joinpath(OUTPUT_DIR, "colpitts_simple_continuation.png")
 savefig(bf_plot, bf_path)
 savefig(overlay_plot, overlay_path)
 println("   → $(bf_path)")
 println("   → $(overlay_path)")
 
 println("\nDone.")
-

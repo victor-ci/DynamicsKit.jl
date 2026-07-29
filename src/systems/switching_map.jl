@@ -193,49 +193,41 @@ function _sw_eye_like(A::AbstractMatrix)
     return Matrix{T}(I, n, n)
 end
 
+_sw_eye_like(A::SMatrix{N,N,T}) where {N,T} = SMatrix{N,N,T}(I)
+
 function _sw_coeffs(A::AbstractMatrix, values)
     one_a = one(eltype(A))
     return map(v -> v * one_a, values)
 end
 
-"""
-    _sw_matrix_exp(A)
+const _SW_MATRIX_EXP_PADE13_COEFFS = (
+    64764752532480000.0,
+    32382376266240000.0,
+    7771770303897600.0,
+    1187353796428800.0,
+    129060195264000.0,
+    10559470521600.0,
+    670442572800.0,
+    33522128640.0,
+    1323241920.0,
+    40840800.0,
+    960960.0,
+    16380.0,
+    182.0,
+    1.0,
+)
 
-Dense matrix exponential using the Higham scaling-and-squaring Padé(13)
-algorithm. Branching uses primal values so ForwardDiff dual payloads flow
-through the linear algebra operations.
-"""
-function _sw_matrix_exp(A::AbstractMatrix)
-    size(A, 1) == size(A, 2) ||
-        throw(ArgumentError("_sw_matrix_exp requires a square matrix; got size $(size(A))."))
-    n = size(A, 1)
-    n == 0 && return Matrix{eltype(A)}(undef, 0, 0)
-
-    B = Matrix(A)
-    norm_B = _sw_one_norm(B)
-    theta13 = 5.371920351148152
-    s = norm_B <= theta13 ? 0 : max(0, ceil(Int, log2(norm_B / theta13)))
-    if s > 0
-        scale = (one(eltype(B)) + one(eltype(B)))^s
-        B = B / scale
-    end
-
-    c = _sw_coeffs(B, (
-        64764752532480000.0,
-        32382376266240000.0,
-        7771770303897600.0,
-        1187353796428800.0,
-        129060195264000.0,
-        10559470521600.0,
-        670442572800.0,
-        33522128640.0,
-        1323241920.0,
-        40840800.0,
-        960960.0,
-        16380.0,
-        182.0,
-        1.0,
-    ))
+# Shared Padé(13) rational-approximant + scaling-and-squaring core, given an
+# already norm-scaled matrix `B` (norm(B) <= theta13) and its squaring count
+# `s`. This is the single source of truth for the algorithm body: both
+# `_sw_matrix_exp` methods below differ only in how they obtain `B` and `s`
+# (a defensive heap copy for a general `AbstractMatrix`, vs. a direct
+# zero-copy pass-through for an immutable `SMatrix`) and delegate the actual
+# numerics — coefficient application, U/V construction, and squaring — here,
+# so a future coefficient/order change or bugfix cannot update one backend
+# and silently miss the other.
+function _sw_matrix_exp_pade13(B, s::Int)
+    c = _sw_coeffs(B, _SW_MATRIX_EXP_PADE13_COEFFS)
     I_n = _sw_eye_like(B)
     B2 = B * B
     B4 = B2 * B2
@@ -252,6 +244,56 @@ function _sw_matrix_exp(A::AbstractMatrix)
     return R
 end
 
+# Norm-based scaling exponent `s` and scaled matrix `B` shared by both
+# `_sw_matrix_exp` methods (Higham scaling-and-squaring: reduce ||B|| below
+# theta13 by repeated halving, undone by `s` squarings in `_sw_matrix_exp_pade13`).
+function _sw_matrix_exp_scale(A)
+    norm_A = _sw_one_norm(A)
+    theta13 = 5.371920351148152
+    s = norm_A <= theta13 ? 0 : max(0, ceil(Int, log2(norm_A / theta13)))
+    B = A
+    if s > 0
+        scale = (one(eltype(A)) + one(eltype(A)))^s
+        B = B / scale
+    end
+    return B, s
+end
+
+"""
+    _sw_matrix_exp(A)
+
+Dense matrix exponential using the Higham scaling-and-squaring Padé(13)
+algorithm. Branching uses primal values so ForwardDiff dual payloads flow
+through the linear algebra operations.
+"""
+function _sw_matrix_exp(A::AbstractMatrix)
+    size(A, 1) == size(A, 2) ||
+        throw(ArgumentError("_sw_matrix_exp requires a square matrix; got size $(size(A))."))
+    n = size(A, 1)
+    n == 0 && return Matrix{eltype(A)}(undef, 0, 0)
+
+    B, s = _sw_matrix_exp_scale(Matrix(A))
+    return _sw_matrix_exp_pade13(B, s)
+end
+
+"""
+    _sw_matrix_exp(A::SMatrix)
+
+Stack-allocated specialization of the Higham scaling-and-squaring Padé(13)
+algorithm above, used for the fixed-size augmented Duhamel matrices built by
+`_affine_flow_nd`. Shares its algorithm body (`_sw_matrix_exp_pade13`) with the
+`AbstractMatrix` method above — only the scale/copy setup and the array
+backend differ — so every switching map (including the n-dimensional
+generator's runtime-sized modes lifted to a compile-time-known augmented
+dimension) gets identical numerics without the heap `Matrix` allocation and
+BLAS dispatch overhead that dominates cost when this runs inside a
+per-map-iteration bisection loop (e.g. peak-current-mode converters).
+"""
+function _sw_matrix_exp(A::SMatrix{N,N}) where {N}
+    B, s = _sw_matrix_exp_scale(A)
+    return _sw_matrix_exp_pade13(B, s)
+end
+
 # ─── n-D affine flow ─────────────────────────────────────────────────────────
 
 """
@@ -263,19 +305,17 @@ defective matrices without solving for an equilibrium.
 """
 function _affine_flow_nd(x::SVector{N}, A::SMatrix{N,N}, b::SVector{N}, tau) where {N}
     T = promote_type(eltype(x), eltype(A), eltype(b), typeof(tau))
-    M = zeros(T, N + 1, N + 1)
-    for j in 1:N, i in 1:N
-        M[i, j] = A[i, j] * tau
-    end
-    for i in 1:N
-        M[i, N + 1] = b[i] * tau
-    end
+    M = SMatrix{N + 1, N + 1, T}(ntuple(k -> begin
+        i = ((k - 1) % (N + 1)) + 1
+        j = ((k - 1) ÷ (N + 1)) + 1
+        if j <= N
+            i <= N ? A[i, j] * tau : zero(T)
+        else
+            i <= N ? b[i] * tau : zero(T)
+        end
+    end, Val((N + 1) * (N + 1))))
+    y0 = SVector{N + 1, T}(ntuple(i -> i <= N ? T(x[i]) : one(T), N + 1))
     E = _sw_matrix_exp(M)
-    y0 = Vector{T}(undef, N + 1)
-    for i in 1:N
-        y0[i] = x[i]
-    end
-    y0[N + 1] = one(T)
     y = E * y0
     return SVector{N}(ntuple(i -> y[i], N))
 end

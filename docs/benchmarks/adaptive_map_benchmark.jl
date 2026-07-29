@@ -7,8 +7,8 @@
 # measurement).
 #
 # Run:
-#   julia --project=bench bench/adaptive_map_benchmark.jl
-#   HENONSIZE=501 julia --project=bench bench/adaptive_map_benchmark.jl
+#   julia --project=docs/benchmarks docs/benchmarks/adaptive_map_benchmark.jl
+#   HENONSIZE=501 julia --project=docs/benchmarks docs/benchmarks/adaptive_map_benchmark.jl
 #
 # Requires the bench/ environment (bench/Project.toml links this DynamicsKit
 # checkout and adds BenchmarkTools + JLD2).

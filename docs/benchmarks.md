@@ -21,8 +21,8 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 For threaded comparisons, explicitly choose the thread count:
 
 ```sh
-JULIA_NUM_THREADS=1 julia --project=. bench/grid_cache_benchmark.jl
-JULIA_NUM_THREADS=4 julia --project=. bench/grid_cache_benchmark.jl
+JULIA_NUM_THREADS=1 julia --project=. docs/benchmarks/neighbor_seed_acceleration.jl
+JULIA_NUM_THREADS=4 julia --project=. docs/benchmarks/neighbor_seed_acceleration.jl
 ```
 
 Recommended practice:
@@ -37,8 +37,8 @@ Recommended practice:
 Script:
 
 ```sh
-julia --project=bench -e 'using Pkg; Pkg.instantiate()'
-JULIA_NUM_THREADS=4 julia --project=bench bench/gpu_operating_maps.jl
+julia --project=docs/benchmarks -e 'using Pkg; Pkg.instantiate()'
+JULIA_NUM_THREADS=4 julia --project=docs/benchmarks docs/benchmarks/gpu_operating_maps.jl
 ```
 
 This benchmark requires a functional NVIDIA CUDA device. It warms up both backends, requires CPU/CUDA
@@ -100,59 +100,18 @@ finding, branch divergence, and the augmented 17-scalar MDB detector state compo
 disadvantage. Continuous CUDA is validated for correctness here, but the four-thread CPU path remains
 faster for the measured MDB grids.
 
-## Cache benchmarks
-
-Script:
-
-```sh
-julia --project=. bench/grid_cache_benchmark.jl
-```
-
-What it compares:
-
-| Case | Meaning |
-| --- | --- |
-| Coarse run | Populate cache at a smaller grid |
-| Fine after coarse cache | Reuse compatible samples/cells where possible |
-| Fresh fine | Disable grid cache and compute the fine grid |
-| Coarse after fine cache | Reuse fine-grid samples to satisfy a coarser request |
-
-Covered analyses:
-
-- 1D brute-force sample cache;
-- 2D bifurcation-map grid cache;
-- basins grid cache.
-
-Metrics printed:
-
-| Metric | Meaning |
-| --- | --- |
-| `runtime_ms` | End-to-end analysis runtime |
-| `reused` | Reused samples/cells |
-| `computed` | Newly computed samples/cells |
-| `requested` | Total requested samples/cells |
-| `disabledReason` | Why cache reuse was disabled, if applicable |
-| `equalToFresh` | Whether cached result matches the fresh comparison |
-
-Interpretation:
-
-- A valid cache speedup must preserve equality with the fresh result.
-- Exact pointwise grid cache is valid for fixed-seed maps.
-- Path-dependent neighbor maps and multiseed maps disable grid-cache reuse by design.
-- Whole-session result cache is separate from pointwise grid cache.
-
 ## Continuation reseed and PALC tuning benchmark
 
 Script:
 
 ```sh
-julia --threads auto --project=. bench/reseed_benchmark.jl
+julia --threads auto --project=. docs/benchmarks/reseed_benchmark.jl
 ```
 
 Fast-only mode:
 
 ```sh
-BENCH_SKIP_COLPITTS=1 julia --project=. bench/reseed_benchmark.jl
+BENCH_SKIP_COLPITTS=1 julia --project=. docs/benchmarks/reseed_benchmark.jl
 ```
 
 What it compares:
@@ -179,7 +138,7 @@ Use this benchmark before changing continuation defaults, reseeding logic, or at
 Script:
 
 ```sh
-julia --threads auto --project=. bench/neighbor_seed_acceleration.jl
+julia --threads auto --project=. docs/benchmarks/neighbor_seed_acceleration.jl
 ```
 
 Environment controls:
@@ -198,7 +157,7 @@ Example:
 
 ```sh
 SYSTEM=ikeda GRID_STEPS=80 NEIGHBOR_TRANSIENTS=0,5,20 \
-JULIA_NUM_THREADS=8 julia --project=. bench/neighbor_seed_acceleration.jl
+JULIA_NUM_THREADS=8 julia --project=. docs/benchmarks/neighbor_seed_acceleration.jl
 ```
 
 What it compares:
@@ -232,7 +191,7 @@ Interpretation:
 Script:
 
 ```sh
-julia --project=. bench/scientific_diagnostics_benchmark.jl
+julia --project=. docs/benchmarks/scientific_diagnostics_benchmark.jl
 ```
 
 Environment controls:
@@ -262,8 +221,8 @@ Threading benefits are workload-dependent.
 Use a paired command pattern:
 
 ```sh
-JULIA_NUM_THREADS=1 julia --project=. bench/grid_cache_benchmark.jl
-JULIA_NUM_THREADS=4 julia --project=. bench/grid_cache_benchmark.jl
+JULIA_NUM_THREADS=1 julia --project=. docs/benchmarks/neighbor_seed_acceleration.jl
+JULIA_NUM_THREADS=4 julia --project=. docs/benchmarks/neighbor_seed_acceleration.jl
 ```
 
 Analyses most likely to benefit:

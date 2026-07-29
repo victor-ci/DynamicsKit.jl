@@ -78,6 +78,58 @@ using StaticArrays
         end
     end
 
+    @testset "_sw_matrix_exp — SMatrix/AbstractMatrix backend parity" begin
+        # Locks in the docstring's claim that the SMatrix and AbstractMatrix
+        # `_sw_matrix_exp` methods share one algorithmic core
+        # (`_sw_matrix_exp_pade13`/`_sw_matrix_exp_scale`) and therefore agree
+        # to floating-point precision, across sizes, both scaling-and-squaring
+        # regimes (s=0 and s>0), and `ForwardDiff.Dual` element types (used
+        # elsewhere in the library for AD Jacobians of switching maps).
+        theta13 = 5.371920351148152
+        raw_fixtures = (
+            SMatrix{1,1}(-2.0),
+            SMatrix{3,3}(-1.0, 0.0, 0.0, 2.0, -2.0, 0.0, 0.0, 3.0, -3.0),
+            SMatrix{4,4}(0.0, 0.0, 0.0, 0.0,
+                         1.0, 0.0, 0.0, 0.0,
+                         0.0, 1.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0),
+            SMatrix{6,6}(-0.2, -1.0, 0.0, 0.0, 0.0, 0.0,
+                          1.0, -0.2, 0.0, 0.0, 0.0, 0.0,
+                          0.0, 0.0, -0.5, 0.0, 0.0, 0.0,
+                          0.0, 0.0, 0.0, -1.0, 0.0, 0.0,
+                          0.0, 0.0, 0.0, 1.0, -1.0, 0.0,
+                          0.0, 0.0, 0.0, 0.0, 1.0, -1.0),
+        )
+        saw_s0 = false
+        saw_spos = false
+        for A0 in raw_fixtures
+            for scale in (1.0, 20.0)  # scale=1 -> s=0 regime; scale=20 -> s>0 regime
+                A = A0 .* scale
+                s_positive = DynamicsKit._sw_one_norm(A) > theta13
+                s_positive ? (saw_spos = true) : (saw_s0 = true)
+
+                E_static = DynamicsKit._sw_matrix_exp(A)
+                E_heap = DynamicsKit._sw_matrix_exp(Matrix(A))
+                @test isapprox(collect(E_static), E_heap; atol=1e-10, rtol=1e-10)
+
+                # ForwardDiff.Dual element type (the AD path used for switching-map
+                # Jacobians elsewhere): confirm both backends still agree once
+                # elements carry a derivative, not just for plain Float64.
+                Adual = ForwardDiff.Dual.(A, 1.0)
+                E_static_dual = DynamicsKit._sw_matrix_exp(Adual)
+                E_heap_dual = DynamicsKit._sw_matrix_exp(Matrix(Adual))
+                @test isapprox(ForwardDiff.value.(collect(E_static_dual)),
+                              ForwardDiff.value.(E_heap_dual); atol=1e-10, rtol=1e-10)
+                @test isapprox(ForwardDiff.partials.(collect(E_static_dual), 1),
+                              ForwardDiff.partials.(E_heap_dual, 1); atol=1e-8, rtol=1e-8)
+            end
+        end
+        # Sanity: the scale choices above actually exercised both branches of
+        # the scaling-and-squaring algorithm, not just s=0 for every fixture.
+        @test saw_s0
+        @test saw_spos
+    end
+
     @testset "_affine_flow_2d — over-damped (diagonal A)" begin
         # A = diag(-1, -2), b = [1, 2]
         # Equilibrium: xeq = -A⁻¹ b = [1, 1]
