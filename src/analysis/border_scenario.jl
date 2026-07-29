@@ -271,6 +271,11 @@ period-adding predictions compare the observed positive-period sequence against
 `expected_periods` or the prediction's symbolic order. BCNF robust-chaos
 candidates use a finite-time screen: high-period/aperiodic samples and positive
 largest Lyapunov estimates across the requested fraction of the sweep.
+
+Predictions with `predicted_cascade === :none` (a 2-D BCNF verdict outside both
+the Glendinning and BYG robust-chaos wedges) carry no scenario to verify; this
+returns `status=:refused` with `verification_kind=:not_applicable` rather than
+running a sweep that could never actually falsify anything.
 """
 function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPrediction;
                                 param_index::Integer,
@@ -298,6 +303,13 @@ function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPred
     lyapunov_iterations >= 1 || throw(ArgumentError("lyapunov_iterations must be >= 1; got $lyapunov_iterations."))
     0 <= required_chaotic_fraction <= 1 || throw(ArgumentError(
         "required_chaotic_fraction must be in [0, 1]; got $required_chaotic_fraction."))
+    if prediction.predicted_cascade === :none
+        return BorderScenarioVerification(status=:refused, prediction_status=prediction.status,
+            verification_kind=:not_applicable, param_values=Float64[], observed_periods=Int[],
+            positive_lyapunov_fraction=NaN, aperiodic_fraction=NaN,
+            matched_prefix_length=0, required_prefix_length=0, consistency_passed=false,
+            inference="No scenario was predicted (predicted_cascade = :none); there is nothing to verify.")
+    end
     pvals = param_steps == 1 ? [Float64(param_min)] :
             collect(range(Float64(param_min), Float64(param_max), length=Int(param_steps)))
     periods = Int[]

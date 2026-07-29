@@ -608,11 +608,14 @@ Scope and limitations: the two-parameter continuation traces codimension-one
 connecting curves (`k = 1`); higher-codimension geometries are rejected
 explicitly. The saddle-cycle solver owns the monodromy/Floquet numerics, strict
 geometry validation, and a single phase-pinned projection correction with the
-Floquet data recorded in `diagnostics`; full two-parameter continuation of
-cycle-to-cycle homoclinics and automatic phase-condition continuation are not
-claimed. Inclination-flip test functions are computed and classified where the
-spectrum supports them and reported unavailable otherwise; they are not forced to
-produce a number when the geometry is degenerate.
+Floquet data recorded in `diagnostics`. Automatic seed discovery and full
+two-parameter continuation for cycle-to-cycle connections (`:cycle_connection`)
+are implemented via `cycle_connection_seed`/`cycle_connection_continuation`;
+however, `:cycle_connection` results do not yet populate HomCont test functions,
+`test_statuses`, or `special_points` — those remain `:homoclinic`/`:heteroclinic`/
+`:saddle_cycle`-only. Inclination-flip test functions are computed and classified
+where the spectrum supports them and reported unavailable otherwise; they are not
+forced to produce a number when the geometry is degenerate.
 
 ## Branch diagnostics
 

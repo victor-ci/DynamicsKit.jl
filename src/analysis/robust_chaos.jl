@@ -777,18 +777,6 @@ function _rc_region_leaf_candidate(
     return cell.si_center == 0 || adaptive.samples[cell.si_center].status_code in candidate_codes
 end
 
-function _rc_region_cells_adjacent(lhs::AdaptiveMapLeafCell, rhs::AdaptiveMapLeafCell)
-    tol = 16 * eps(Float64) * max(
-        abs(lhs.a0), abs(lhs.a1), abs(lhs.b0), abs(lhs.b1),
-        abs(rhs.a0), abs(rhs.a1), abs(rhs.b0), abs(rhs.b1), 1.0,
-    )
-    b_overlap = min(lhs.b1, rhs.b1) - max(lhs.b0, rhs.b0) > tol
-    a_touch = abs(lhs.a1 - rhs.a0) <= tol || abs(rhs.a1 - lhs.a0) <= tol
-    a_overlap = min(lhs.a1, rhs.a1) - max(lhs.a0, rhs.a0) > tol
-    b_touch = abs(lhs.b1 - rhs.b0) <= tol || abs(rhs.b1 - lhs.b0) <= tol
-    return (a_touch && b_overlap) || (b_touch && a_overlap)
-end
-
 @inline _rc_lattice_intervals_overlap(lo1::Int, hi1::Int, lo2::Int, hi2::Int) =
     min(hi1, hi2) > max(lo1, lo2)
 
@@ -862,10 +850,6 @@ function _rc_region_bbox(cells::Vector{AdaptiveMapLeafCell})
         b_min = minimum(cell.b0 for cell in cells),
         b_max = maximum(cell.b1 for cell in cells),
     )
-end
-
-function _rc_region_contains(cells::Vector{AdaptiveMapLeafCell}, a::Float64, b::Float64)
-    return any(cell -> cell.a0 <= a <= cell.a1 && cell.b0 <= b <= cell.b1, cells)
 end
 
 function _rc_region_grid_indices(cells::Vector{AdaptiveMapLeafCell}, a_grid, b_grid)

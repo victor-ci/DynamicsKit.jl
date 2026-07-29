@@ -373,6 +373,16 @@ Interpret the slice-tracking output in two layers:
 
 The slice-tracking fallback for `:pd` uses branch-stability flips when BifurcationKit does not emit explicit period-doubling special points on a slice, so `candidate_sources` and `slice_statuses` matter when assessing trustworthiness. The defining-system engine instead verifies its seed against the actual multiplier gap (a flip that is really a fold/Neimark-Sacker crossing is rejected) and records per-sample multipliers so every returned point can be checked against the defining condition.
 
+## Filippov grazing and sliding for flows
+
+For `ContinuousODE` systems with scalar `SwitchingEvent` guards, `filippov_guard_diagnostic(sys, event_name, state, params)` evaluates the flow-side nonsmooth test functions at a state: the guard value `h(x,p)`, guard normal `∇h`, normal velocity `∇h⋅f`, and second normal derivative along the flow. Generic grazing requires `h = 0`, `∇h⋅f = 0`, and a nonzero second normal derivative; degenerate tangencies (where the second derivative also vanishes) are reported explicitly rather than promoted to a spurious grazing classification.
+
+`filippov_grazing_points(sys, FilippovGrazingConfig(...); params, initial_point)` locates isolated grazing points along a single trajectory via dense-output refinement, returning a `FilippovGrazingResult` with a `status` (`:grazing`, `:degenerate`, `:not_found`, or `:warning`) and the located `FilippovGrazingPoint`s. `filippov_grazing_locus(sys, FilippovGrazingLocusConfig(...))` extends this to a two-parameter grazing locus by solving a signed guard-margin root on repeated secondary-parameter slices — a compact flow-grazing locus tool, not a full hybrid-segment continuation engine (the niche boundary relative to tools like COCO's `hspo` is stated explicitly, not implied).
+
+Sliding classification is separate because it needs the two one-sided vector fields rather than a single trajectory: `filippov_sliding_segments(event, states, params, f_minus, f_plus)` classifies sampled guard-surface segments as `:attracting`, `:repelling`, `:crossing`, or `:degenerate` from the signs of the two one-sided normal velocities (`f_minus` on `h < 0`, `f_plus` on `h > 0`).
+
+`FilippovGrazingResult`, `FilippovGrazingLocusResult`, and `FilippovSlidingResult` are plain data with versioned serializers (`serialize_filippov_grazing_result`/`deserialize_filippov_grazing_result` and the locus/sliding equivalents). See `docs/julia-package.md` for full config field references and a worked example.
+
 ## Reseeding
 
 `ReseedConfig` controls targeted recovery when a continuation direction dies in the parameter interior. The branch tail is extrapolated, a local skeleton search is attempted, and a same-period seed resumes continuation if it makes progress.

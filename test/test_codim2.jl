@@ -991,6 +991,27 @@ end
     @test ch.criticality === :supercritical
     @test ch.coefficient_names == [:second_lyapunov]
     @test ch.coefficients[1] ≈ -0.4 rtol=1e-8
+
+    # Regression: the amplitude-ratio fit must normalize by the *actual*
+    # critical-multiplier modulus, not an idealized 1. A point located by real
+    # continuation/bisection is never exactly on the unit circle; perturbing
+    # rho by an amount well inside critical_tol (default 1e-4) must not flip
+    # the sign or magnitude of the reported second-Lyapunov coefficient.
+    for rho in (1.0 + 1e-6, 1.0 - 1e-6, 1.0 + 1e-7, 1.0 + 5e-7)
+        ch_pert = codim2_normal_form(
+            bautin, :bautin, [0.0, 0.0], [rho, 0.0, -0.4];
+            normal_form_fd_step=0.02)
+        @test ch_pert.status === :ok
+        @test ch_pert.criticality === :supercritical
+        @test ch_pert.coefficients[1] ≈ -0.4 rtol=1e-3
+    end
+    ch_sub = codim2_normal_form(
+        bautin, :bautin, [0.0, 0.0], [1.0 + 5e-7, 0.0, 0.05];
+        normal_form_fd_step=0.02)
+    @test ch_sub.status === :ok
+    @test ch_sub.criticality === :subcritical
+    @test ch_sub.coefficients[1] ≈ 0.05 rtol=1e-3
+
     strong_ns = DiscreteMap(
         (x, p) -> begin
             Rstrong = [0.0 -1.0; 1.0 0.0]

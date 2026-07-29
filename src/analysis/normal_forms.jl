@@ -589,7 +589,7 @@ function _codim2_generalized_flip_normal_form(sys::DynamicalSystem, x, params, p
                                       criticality, status, convention)
 end
 
-function _codim2_bautin_quantity(G, x, q, step::Float64)
+function _codim2_bautin_quantity(G, x, q, step::Float64, lambda_modulus::Float64)
     qr = real.(q)
     qi = imag.(q)
     norm(qr) > 0 && (qr = qr ./ norm(qr))
@@ -606,8 +606,12 @@ function _codim2_bautin_quantity(G, x, q, step::Float64)
             y = G(x .+ r .* direction) .- gx
             all(isfinite, y) || continue
             amplitude_ratio = norm(y) / r
-            # Estimate and subtract the residual cubic amplitude term before the r^4 term.
-            push!(estimates, (amplitude_ratio - 1) / r^2)
+            # Subtract the *actual* critical-multiplier modulus (not the idealized 1)
+            # before extracting the r^2 term: lambda_modulus deviates from 1 by up to
+            # critical_tol at a numerically-located point, and that deviation would
+            # otherwise be amplified by 1/r^2 into a spurious (and sign-flipping)
+            # leading-order term.
+            push!(estimates, (amplitude_ratio - lambda_modulus) / r^2)
         end
         length(estimates) == length(radii) || return nothing
         X = hcat(ones(length(radii)), collect(radii .^ 2))
@@ -645,7 +649,7 @@ function _codim2_bautin_normal_form(sys::DynamicalSystem, x, params, period::Int
         resonance_tol=resonance_tol, eigenvector_tol=eigenvector_tol, kwargs...)
     codim1.coefficient !== nothing && abs(codim1.coefficient) <= coefficient_tol ||
         return _codim2_unavailable(:bautin, :not_codim2, convention)
-    e = _codim2_bautin_quantity(G, x, q, normal_form_fd_step)
+    e = _codim2_bautin_quantity(G, x, q, normal_form_fd_step, abs(lambda))
     e !== nothing && isfinite(e) ||
         return _codim2_unavailable(:bautin, :reduction_unavailable, convention)
     status = abs(e) <= coefficient_tol ? :degenerate : :ok

@@ -480,4 +480,27 @@ _bcnf(τ, δ) = [τ 1.0; -δ 0.0]
         bad_verification["warnings"] = "not an array"
         @test_throws ErrorException deserialize_border_scenario_verification(bad_verification)
     end
+
+    @testset "Verification refuses a :none-cascade prediction rather than trivially passing" begin
+        # A verdict strictly inside the BCNF robust-chaos wedge boundary predicts
+        # neither a period-adding order nor a robust-chaos candidate: there is
+        # nothing for border_scenario_verify to falsify, and it must say so
+        # instead of reporting "passed" whenever the sweep observes any
+        # periodic point at all (regression for a prior silent-pass bug).
+        no_scenario = border_scenario_predict(_bcnf(1.8, 0.5), _bcnf(-1.8, 0.5);
+            switching_normal=[1.0, 0.0])
+        @test no_scenario.status == :ok
+        @test no_scenario.predicted_cascade == :none
+
+        unrelated = DiscreteMap(
+            (x, p) -> SVector(p[1] * x[1] + p[2] * x[2], p[3] * x[2]),
+            2, [:a, :b, :c], "Unrelated contracting fixture")
+        result = border_scenario_verify(unrelated, no_scenario;
+            param_index=1, base_params=[0.3, 0.1, 0.3], param_min=0.3, param_max=0.3,
+            param_steps=1, initial_point=[0.5, 0.2])
+        @test result.status == :refused
+        @test result.verification_kind == :not_applicable
+        @test !result.consistency_passed
+        @test isempty(result.observed_periods)
+    end
 end
