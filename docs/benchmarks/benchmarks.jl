@@ -1,20 +1,21 @@
 #
 # PkgBenchmark-compatible benchmark suite for DynamicsKit.
 #
-# This lives in the isolated `bench/` environment (bench/Project.toml), which
-# path-links this working copy of DynamicsKit and adds BenchmarkTools +
-# PkgBenchmark — kept out of the package's own [deps] so the dependency set and
-# the Aqua quality pass stay clean.
+# This lives in the isolated `docs/benchmarks/` environment
+# (docs/benchmarks/Project.toml), which path-links this working copy of
+# DynamicsKit and adds BenchmarkTools + PkgBenchmark — kept out of the
+# package's own [deps] so the dependency set and the Aqua quality pass stay
+# clean.
 #
 # Run the raw suite directly (fastest inner loop):
-#   julia --project=bench bench/benchmarks.jl
+#   julia --project=docs/benchmarks docs/benchmarks/benchmarks.jl
 #
-# Run via PkgBenchmark (pass script= because the suite lives in bench/, not the
-# PkgBenchmark-default benchmark/):
-#   julia --project=bench -e 'using PkgBenchmark; r = benchmarkpkg("DynamicsKit"; script="bench/benchmarks.jl"); export_markdown("bench/result.md", r)'
+# Run via PkgBenchmark (pass script= because the suite lives in
+# docs/benchmarks/, not the PkgBenchmark-default benchmark/):
+#   julia --project=docs/benchmarks -e 'using PkgBenchmark; r = benchmarkpkg("DynamicsKit"; script="docs/benchmarks/benchmarks.jl"); export_markdown("docs/benchmarks/result.md", r)'
 #
 # Compare the working copy against a git ref for regression tracking:
-#   julia --project=bench -e 'using PkgBenchmark; judge("DynamicsKit", "v0.1.5"; script="bench/benchmarks.jl") |> export_markdown'
+#   julia --project=docs/benchmarks -e 'using PkgBenchmark; judge("DynamicsKit", "v0.1.5"; script="docs/benchmarks/benchmarks.jl") |> export_markdown'
 #
 # All cases use the Hénon map: discrete, cheap, deterministic — fast enough for
 # repeated sampling while still exercising the brute-force, continuation, and

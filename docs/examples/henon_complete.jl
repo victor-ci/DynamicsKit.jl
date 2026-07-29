@@ -1,10 +1,21 @@
+#!/usr/bin/env julia
+
 """
-Complete Hénon map analysis: brute-force diagram + continuation branches (periods 1–10).
+End-to-end Hénon map analysis: a brute-force bifurcation diagram, period-1
+and period-2 continuation branches, and a periodic-skeleton search across
+periods 1-10, overlaid into two saved figures.
+
+Run:
+
+    julia --project=. examples/henon_complete.jl
 """
 
 using DynamicsKit
 using StaticArrays
 using Plots
+
+const OUTPUT_DIR = joinpath(@__DIR__, "..", "..", "var", "output", "henon_complete")
+mkpath(OUTPUT_DIR)
 
 println("═══ Hénon Map — Complete Bifurcation Analysis ═══\n")
 
@@ -49,13 +60,16 @@ println()
 
 # ── 3. Period-2 continuation branch ──
 println("3. Computing period-2 continuation branch...")
-F2 = x -> begin
-    sv = SVector{2}(x)
-    sv = sys.f(sv, [1.0])
-    sv = sys.f(sv, [1.0])
-    Array(sv) .- x
-end
-x0_p2, _ = DynamicsKit._newton_ad(F2, [-0.5, 0.3], 1e-12, 50)
+# Seed the period-2 point with the public periodic-skeleton search (the same
+# tool used for the period 1-10 sweep in step 4) rather than a hand-rolled
+# Newton solve, so this script only exercises the public API.
+p2_skeleton = find_periodic_skeleton(sys, [2], 1.0;
+                                     n_initial=15,
+                                     search_min=[-2.0, -1.0],
+                                     search_max=[2.0, 1.0],
+                                     params=[1.0])
+isempty(p2_skeleton) && error("Could not seed a period-2 point at a=1.0.")
+x0_p2 = p2_skeleton[1].point
 
 cont_config_p2 = ContinuationConfig(
     p_min = 0.0, p_max = 1.4,
@@ -89,14 +103,15 @@ println("5. Generating plots...")
 
 # Brute-force diagram
 p1 = plot_brute_force(bf_result)
-savefig(p1, "henon_brute_force.png")
-println("   → henon_brute_force.png")
+bf_path = joinpath(OUTPUT_DIR, "henon_brute_force.png")
+savefig(p1, bf_path)
+println("   → $(bf_path)")
 
 # Branches overlay
 branches = [br1, br2]
 p2 = plot_overlay(bf_result, branches)
-savefig(p2, "henon_overlay.png")
-println("   → henon_overlay.png")
+overlay_path = joinpath(OUTPUT_DIR, "henon_overlay.png")
+savefig(p2, overlay_path)
+println("   → $(overlay_path)")
 
 println("\n═══ Done! ═══")
-

@@ -226,7 +226,8 @@ result provenance.
 - `continuation`: Secondary-axis continuation settings (`param_index`,
   `p_min`/`p_max`, `ds`/`dsmax`/`dsmin`, `max_steps`, `newton_tol`,
   `newton_max_iter`). `param_index` selects the free secondary parameter.
-- `kind`: `:homoclinic`, `:heteroclinic`, or `:saddle_cycle`.
+- `kind`: `:homoclinic`, `:heteroclinic`, `:saddle_cycle`, or
+  `:cycle_connection`.
 - `n_mesh`: Number of trapezoidal mesh intervals for the truncated orbit.
 - `max_return_time`: Cap on the truncation time `T`.
 - `detect_events`: Evaluate the standard HomCont eigenvalue test functions and
@@ -275,7 +276,7 @@ result provenance.
     bothside::Bool = false
     source_index::Int = 0
     provenance::String = ""
-    @assert kind in (:homoclinic, :heteroclinic, :saddle_cycle) "ConnectingOrbitConfig.kind must be :homoclinic, :heteroclinic, or :saddle_cycle"
+    @assert kind in (:homoclinic, :heteroclinic, :saddle_cycle, :cycle_connection) "ConnectingOrbitConfig.kind must be :homoclinic, :heteroclinic, :saddle_cycle, or :cycle_connection"
     @assert n_mesh >= 10 "ConnectingOrbitConfig.n_mesh must be >= 10"
     @assert isnan(epsilon_start) || (isfinite(epsilon_start) && epsilon_start > 0.0) "ConnectingOrbitConfig.epsilon_start must be a positive finite value or NaN (derive from seed)"
     @assert isnan(epsilon_end) || (isfinite(epsilon_end) && epsilon_end > 0.0) "ConnectingOrbitConfig.epsilon_end must be a positive finite value or NaN (derive from seed)"
@@ -285,6 +286,109 @@ result provenance.
     @assert source_index >= 0 "ConnectingOrbitConfig.source_index must be >= 0 (0 selects the source endpoint)"
     @assert orbit_save_stride >= 1 "ConnectingOrbitConfig.orbit_save_stride must be >= 1"
     @assert max_saved_orbits >= 2 "ConnectingOrbitConfig.max_saved_orbits must be >= 2"
+end
+
+"""
+    CycleConnectionSeedConfig
+
+Configuration for automatic saddle-cycle to saddle-cycle connecting-orbit seed
+discovery. The search samples source-cycle phases and unstable Floquet
+directions, integrates short initial offsets forward, and selects the trajectory
+segment that approaches the target cycle most closely.
+
+# Fields
+- `source_phase_samples` / `target_phase_samples`: Number of cycle phases used
+  for source launches and target-distance checks.
+- `perturbation`: Distance from the source cycle along a normalized unstable
+  Floquet direction.
+- `max_time`: Maximum forward integration time from each source-phase launch.
+- `min_time`: Ignore candidate hits before this elapsed time.
+- `sample_count`: Saved time samples per candidate integration.
+- `distance_tolerance`: Required Euclidean approach distance to the target
+  cycle.
+- `max_directions`: Maximum number of right-unstable Floquet basis directions
+  sampled at each source phase.
+"""
+@with_kw struct CycleConnectionSeedConfig
+    source_phase_samples::Int = 24
+    target_phase_samples::Int = 24
+    perturbation::Float64 = 1e-3
+    max_time::Float64 = 50.0
+    min_time::Float64 = 1e-3
+    sample_count::Int = 1200
+    distance_tolerance::Float64 = 5e-2
+    max_directions::Int = 4
+    @assert source_phase_samples >= 1 "CycleConnectionSeedConfig.source_phase_samples must be >= 1"
+    @assert target_phase_samples >= 1 "CycleConnectionSeedConfig.target_phase_samples must be >= 1"
+    @assert isfinite(perturbation) && perturbation > 0 "CycleConnectionSeedConfig.perturbation must be finite and > 0"
+    @assert isfinite(max_time) && max_time > 0 "CycleConnectionSeedConfig.max_time must be finite and > 0"
+    @assert isfinite(min_time) && min_time >= 0 "CycleConnectionSeedConfig.min_time must be finite and >= 0"
+    @assert min_time < max_time "CycleConnectionSeedConfig.min_time must be less than max_time"
+    @assert sample_count >= 10 "CycleConnectionSeedConfig.sample_count must be >= 10"
+    @assert isfinite(distance_tolerance) && distance_tolerance > 0 "CycleConnectionSeedConfig.distance_tolerance must be finite and > 0"
+    @assert max_directions >= 1 "CycleConnectionSeedConfig.max_directions must be >= 1"
+end
+
+"""
+    FilippovGrazingConfig
+
+Configuration for detecting orbit tangencies with a continuous-flow
+`SwitchingEvent` guard. A grazing point satisfies `h = 0`, `∇h⋅f = 0`, and a
+nonzero second normal derivative.
+"""
+@with_kw struct FilippovGrazingConfig
+    event_name::Union{Nothing, String} = nothing
+    t_start::Float64 = 0.0
+    t_stop::Float64
+    sample_count::Int = 800
+    guard_tolerance::Float64 = 1e-8
+    velocity_tolerance::Float64 = 1e-8
+    acceleration_tolerance::Float64 = 1e-8
+    derivative_step::Float64 = 1e-5
+    refine_iterations::Int = 64
+    min_event_separation::Float64 = 1e-5
+    maxiters::Int = 10_000_000
+    @assert isfinite(t_start) "FilippovGrazingConfig.t_start must be finite"
+    @assert isfinite(t_stop) && t_stop > t_start "FilippovGrazingConfig.t_stop must be finite and greater than t_start"
+    @assert sample_count >= 5 "FilippovGrazingConfig.sample_count must be >= 5"
+    @assert isfinite(guard_tolerance) && guard_tolerance >= 0 "FilippovGrazingConfig.guard_tolerance must be finite and >= 0"
+    @assert isfinite(velocity_tolerance) && velocity_tolerance >= 0 "FilippovGrazingConfig.velocity_tolerance must be finite and >= 0"
+    @assert isfinite(acceleration_tolerance) && acceleration_tolerance >= 0 "FilippovGrazingConfig.acceleration_tolerance must be finite and >= 0"
+    @assert isfinite(derivative_step) && derivative_step > 0 "FilippovGrazingConfig.derivative_step must be finite and > 0"
+    @assert refine_iterations >= 1 "FilippovGrazingConfig.refine_iterations must be >= 1"
+    @assert isfinite(min_event_separation) && min_event_separation >= 0 "FilippovGrazingConfig.min_event_separation must be finite and >= 0"
+    @assert maxiters >= 1 "FilippovGrazingConfig.maxiters must be >= 1"
+end
+
+"""
+    FilippovGrazingLocusConfig
+
+Slice-based two-parameter grazing-locus configuration. On each secondary
+parameter value, the primary parameter is solved so the selected guard's
+minimum or maximum orbit margin reaches zero.
+"""
+@with_kw struct FilippovGrazingLocusConfig
+    grazing::FilippovGrazingConfig
+    primary_index::Int = 1
+    secondary_index::Int = 2
+    primary_min::Float64
+    primary_max::Float64
+    secondary_min::Float64
+    secondary_max::Float64
+    secondary_steps::Int = 20
+    fixed_params::Vector{Float64} = Float64[]
+    margin::Symbol = :minimum
+    root_tolerance::Float64 = 1e-8
+    max_bisection_iterations::Int = 60
+    @assert primary_index >= 1 "FilippovGrazingLocusConfig.primary_index must be >= 1"
+    @assert secondary_index >= 1 "FilippovGrazingLocusConfig.secondary_index must be >= 1"
+    @assert primary_index != secondary_index "FilippovGrazingLocusConfig primary and secondary indices must differ"
+    @assert isfinite(primary_min) && isfinite(primary_max) && primary_max > primary_min "FilippovGrazingLocusConfig requires finite primary bounds with max > min"
+    @assert isfinite(secondary_min) && isfinite(secondary_max) && secondary_max >= secondary_min "FilippovGrazingLocusConfig requires finite secondary bounds with max >= min"
+    @assert secondary_steps >= 1 "FilippovGrazingLocusConfig.secondary_steps must be >= 1"
+    @assert margin in (:minimum, :maximum) "FilippovGrazingLocusConfig.margin must be :minimum or :maximum"
+    @assert isfinite(root_tolerance) && root_tolerance > 0 "FilippovGrazingLocusConfig.root_tolerance must be finite and > 0"
+    @assert max_bisection_iterations >= 1 "FilippovGrazingLocusConfig.max_bisection_iterations must be >= 1"
 end
 
 """
@@ -391,8 +495,12 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
  - `lyapunov_enabled`: Compute optional largest-Lyapunov diagnostics for each map cell
  - `lyapunov_iterations`: Renormalized steps used for Lyapunov estimation; `0` selects an internal default
  - `lyapunov_transient`: Extra post-classification transient before Lyapunov estimation; `nothing` uses `0`
- - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation
+ - `lyapunov_perturbation`: Initial perturbation size for two-trajectory Lyapunov estimation (`:two_trajectory` method)
  - `lyapunov_neutral_tolerance`: Absolute exponent threshold for neutral/quasiperiodic candidates
+ - `lyapunov_method`: Lyapunov estimation method — `:auto` (default), `:variational`, or `:two_trajectory`.
+   `:auto` resolves to `:variational` for `ContinuousODE` (tangent-space, normalized by flow time,
+   GPU-eligible when the system has a constant section normal) and `:two_trajectory` for `DiscreteMap`.
+   `:two_trajectory` keeps the coupled two-trajectory Poincaré estimator as an explicit cheap screen.
  - `min_crossing_time`: Ignore section crossings before this time for continuous-time maps and Lyapunov-field runs
 """
 @with_kw struct BifurcationMapConfig
@@ -421,6 +529,7 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     lyapunov_transient::Union{Nothing, Int} = nothing
     lyapunov_perturbation::Float64 = 1e-8
     lyapunov_neutral_tolerance::Float64 = 1e-3
+    lyapunov_method::Symbol = :auto
     min_crossing_time::Float64 = 1e-6
     @assert isnothing(neighbor_transient) || neighbor_transient >= 0 "BifurcationMapConfig.neighbor_transient must be nothing or >= 0"
     @assert neighbor_tile_size_a >= 0 "BifurcationMapConfig.neighbor_tile_size_a must be >= 0"
@@ -431,6 +540,7 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
     @assert isnothing(lyapunov_transient) || lyapunov_transient >= 0 "BifurcationMapConfig.lyapunov_transient must be nothing or >= 0"
     @assert isfinite(lyapunov_perturbation) && lyapunov_perturbation > 0.0 "BifurcationMapConfig.lyapunov_perturbation must be finite and > 0"
     @assert isfinite(lyapunov_neutral_tolerance) && lyapunov_neutral_tolerance >= 0.0 "BifurcationMapConfig.lyapunov_neutral_tolerance must be finite and >= 0"
+    @assert lyapunov_method in (:auto, :variational, :two_trajectory) "BifurcationMapConfig.lyapunov_method must be :auto, :variational, or :two_trajectory"
     @assert isfinite(min_crossing_time) && min_crossing_time >= 0.0 "BifurcationMapConfig.min_crossing_time must be finite and >= 0"
 end
 
@@ -574,6 +684,12 @@ Configuration scaffold for the automatic continuation atlas workflow.
 - `continuation`: Optional continuation settings override
 - `recon_steps`: Number of reconnaissance samples across the parameter window
 - `recon_precision`: Period-classification tolerance used during reconnaissance
+- `recon_calibration`: `:fixed` keeps `recon_precision`; `:auto` estimates a closure threshold from reconnaissance evidence
+- `recon_calibration_min_separation`: Required recurrence/noise scale separation for `:auto`
+- `recon_calibration_max_periodic_anchors`: Maximum Newton-verified periodic anchors used to estimate the noise floor
+- `recon_calibration_max_aperiodic_anchors`: Maximum confirmed aperiodic samples used to estimate the recurrence scale
+- `recon_calibration_transient_multiplier`: Extra-transient multiplier for aperiodic confirmation
+- `recon_calibration_newton_tol`: Newton tolerance used when verifying periodic anchors
 - `adaptive_recon`: Whether to insert extra reconnaissance samples before continuation
 - `adaptive_recon_max_samples`: Maximum number of extra reconnaissance samples
 - `adaptive_recon_max_depth`: Maximum midpoint-refinement passes
@@ -612,6 +728,12 @@ Configuration scaffold for the automatic continuation atlas workflow.
     continuation::Union{Nothing, ContinuationConfig} = nothing
     recon_steps::Int = 80
     recon_precision::Float64 = 1e-3
+    recon_calibration::Symbol = :fixed
+    recon_calibration_min_separation::Float64 = 3.0
+    recon_calibration_max_periodic_anchors::Int = 6
+    recon_calibration_max_aperiodic_anchors::Int = 8
+    recon_calibration_transient_multiplier::Int = 4
+    recon_calibration_newton_tol::Float64 = 1e-8
     adaptive_recon::Bool = false
     adaptive_recon_max_samples::Int = 24
     adaptive_recon_max_depth::Int = 1
@@ -644,6 +766,12 @@ Configuration scaffold for the automatic continuation atlas workflow.
     cache_enabled::Bool = true
     time_budget_s::Union{Nothing, Float64} = nothing
     reseed::ReseedConfig = ReseedConfig(enabled=true)
+    @assert recon_calibration in (:fixed, :auto) "AtlasConfig.recon_calibration must be :fixed or :auto"
+    @assert isfinite(recon_calibration_min_separation) && recon_calibration_min_separation > 1.0 "AtlasConfig.recon_calibration_min_separation must be finite and > 1"
+    @assert recon_calibration_max_periodic_anchors >= 0 "AtlasConfig.recon_calibration_max_periodic_anchors must be >= 0"
+    @assert recon_calibration_max_aperiodic_anchors >= 1 "AtlasConfig.recon_calibration_max_aperiodic_anchors must be >= 1"
+    @assert recon_calibration_transient_multiplier >= 1 "AtlasConfig.recon_calibration_transient_multiplier must be >= 1"
+    @assert isfinite(recon_calibration_newton_tol) && recon_calibration_newton_tol > 0.0 "AtlasConfig.recon_calibration_newton_tol must be finite and > 0"
     @assert auto_refine_max_passes >= 0 "AtlasConfig.auto_refine_max_passes must be >= 0"
 end
 
@@ -1101,4 +1229,116 @@ const _ADAPTIVE_MAP_MAX_DEPTH = 30
     @assert isfinite(min_confidence) && min_confidence >= 0.0 && min_confidence <= 1.0 "AdaptiveMapConfig.min_confidence must be in [0, 1]"
     @assert isfinite(confidence_delta) && confidence_delta >= 0.0 && confidence_delta <= 1.0 "AdaptiveMapConfig.confidence_delta must be in [0, 1]"
     @assert refine_on_period_disagreement || refine_on_status_disagreement || min_confidence > 0.0 || confidence_delta > 0.0 "AdaptiveMapConfig: at least one refinement trigger must be active"
+end
+
+"""
+    RobustChaosRegionConfig
+
+Configuration for `robust_chaos_region_certificate`, a two-parameter extension of
+the robust-chaos certificate. The adaptive map proposes candidate high-period /
+aperiodic regions, the Lyapunov field scores their interiors, atlas slices search
+for stable low-period counter-evidence, basin knots test attractor dominance, and
+regime-boundary distances attach finite-grid margin evidence.
+
+# Fields
+- `map`: Coarse operating-map configuration used by `adaptive_bifurcation_map`.
+- `adaptive`: Quadtree refinement controls for candidate-region discovery.
+- `lyapunov_field`: Direct 2D Lyapunov-field configuration over the same parameter
+  plane as `map`.
+- `atlas`: Template atlas configuration. Its swept parameter must match the
+  configured `slice_axis`; slice intervals and fixed secondary parameter values
+  are filled in per region.
+- `basins`: Template basin configuration. Its `param_index` must match the
+  primary slice parameter; both parameter coordinates are filled in per knot.
+- `slice_axis`: `:a` (default) certifies slices along the map's a-axis at
+  deterministic b-values; `:b` swaps the roles.
+- `candidate_statuses`: Map statuses eligible for robust-chaos candidates.
+- `min_region_area`: Reject smaller connected candidate components.
+- `min_*_fraction`: Conservative pass thresholds for Lyapunov, atlas, and basin layers.
+- `max_atlas_slices_per_region`, `max_basin_knots_per_region`: Deterministic
+  per-region effort caps. Budget caps are reported in the result.
+- `boundary_edge_policy`: Edge policy passed to `regime_boundary_distances`.
+"""
+const _ROBUST_REGION_ALLOWED_MAP_STATUSES = (
+    :unknown,
+    :periodic,
+    :aperiodic_or_high_period,
+    :diverged,
+    :insufficient_crossings,
+    :integration_failed,
+    :invalid_state,
+)
+
+@with_kw struct RobustChaosRegionConfig
+    map::BifurcationMapConfig
+    adaptive::AdaptiveMapConfig
+    lyapunov_field::BifurcationMapConfig
+    atlas::AtlasConfig
+    basins::BasinsConfig
+    slice_axis::Symbol = :a
+    candidate_statuses::Vector{Symbol} = [:aperiodic_or_high_period]
+    min_region_area::Float64 = 0.0
+    min_lyapunov_positive_fraction::Float64 = 1.0
+    min_lyapunov_resolved_fraction::Float64 = 1.0
+    min_atlas_slice_fraction::Float64 = 1.0
+    min_chaotic_basin_fraction::Float64 = 1.0
+    min_basin_resolved_fraction::Float64 = 1.0
+    max_atlas_slices_per_region::Int = 3
+    max_basin_knots_per_region::Int = 3
+    boundary_edge_policy::Symbol = :censored
+    @assert slice_axis in (:a, :b) "RobustChaosRegionConfig.slice_axis must be :a or :b"
+    @assert !isempty(candidate_statuses) "RobustChaosRegionConfig.candidate_statuses must not be empty"
+    @assert isempty(setdiff(candidate_statuses, _ROBUST_REGION_ALLOWED_MAP_STATUSES)) "RobustChaosRegionConfig.candidate_statuses contains unknown map status(es): $(join(string.(setdiff(candidate_statuses, _ROBUST_REGION_ALLOWED_MAP_STATUSES)), ", ")). Allowed: $(join(string.(_ROBUST_REGION_ALLOWED_MAP_STATUSES), ", "))"
+    @assert isfinite(min_region_area) && min_region_area >= 0.0 "RobustChaosRegionConfig.min_region_area must be finite and >= 0"
+    @assert 0.0 <= min_lyapunov_positive_fraction <= 1.0 "RobustChaosRegionConfig.min_lyapunov_positive_fraction must be in [0, 1]"
+    @assert 0.0 <= min_lyapunov_resolved_fraction <= 1.0 "RobustChaosRegionConfig.min_lyapunov_resolved_fraction must be in [0, 1]"
+    @assert 0.0 <= min_atlas_slice_fraction <= 1.0 "RobustChaosRegionConfig.min_atlas_slice_fraction must be in [0, 1]"
+    @assert 0.0 <= min_chaotic_basin_fraction <= 1.0 "RobustChaosRegionConfig.min_chaotic_basin_fraction must be in [0, 1]"
+    @assert 0.0 <= min_basin_resolved_fraction <= 1.0 "RobustChaosRegionConfig.min_basin_resolved_fraction must be in [0, 1]"
+    @assert max_atlas_slices_per_region >= 1 "RobustChaosRegionConfig.max_atlas_slices_per_region must be >= 1"
+    @assert max_basin_knots_per_region >= 1 "RobustChaosRegionConfig.max_basin_knots_per_region must be >= 1"
+    @assert boundary_edge_policy in (:censored, :boundary, :ignore) "RobustChaosRegionConfig.boundary_edge_policy must be :censored, :boundary, or :ignore"
+    @assert map.a_index == lyapunov_field.a_index && map.b_index == lyapunov_field.b_index "RobustChaosRegionConfig: map and lyapunov_field parameter axes must match"
+    @assert map.a_linked_param_indices == lyapunov_field.a_linked_param_indices && map.b_linked_param_indices == lyapunov_field.b_linked_param_indices "RobustChaosRegionConfig: map and lyapunov_field linked parameter axes must match"
+    @assert map.a_min == lyapunov_field.a_min && map.a_max == lyapunov_field.a_max && map.b_min == lyapunov_field.b_min && map.b_max == lyapunov_field.b_max "RobustChaosRegionConfig: lyapunov_field must cover the same parameter rectangle as map"
+    @assert _robust_config_base_params_match(map.base_params, lyapunov_field.base_params, unique(vcat([map.a_index, map.b_index], map.a_linked_param_indices, map.b_linked_param_indices))) "RobustChaosRegionConfig: map and lyapunov_field base parameters must match outside swept axes"
+    @assert !isnothing(atlas.brute_force) "RobustChaosRegionConfig: atlas must carry a non-nothing brute_force template"
+    @assert !isnothing(atlas.continuation) "RobustChaosRegionConfig: atlas must carry a non-nothing continuation template"
+    @assert atlas.brute_force.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: atlas.brute_force.param_index must match slice_axis"
+    @assert atlas.continuation.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: atlas.continuation.param_index must match slice_axis"
+    @assert basins.param_index == (slice_axis == :a ? map.a_index : map.b_index) "RobustChaosRegionConfig: basins.param_index must match slice_axis"
+end
+
+"""
+    HardwareAcceptanceConfig
+
+Configuration for `hardware_acceptance_test`, which checks a measured
+mode-sequence route against a robust-chaos certificate and optional local
+margin evidence.
+
+# Fields
+- `axis_calibration`: how raw measured coordinates are mapped onto the model axis.
+  `:provided` requires an explicit `ModeAssimilationConfig`, `:identity` uses
+  scale 1 and offset 0, and `:transition_affine` estimates an affine map from
+  at least two matching measured/model transition anchors.
+- `min_overall_score`: optional lower bound on the mode-assimilation overall
+  score. Per-observation margin checks remain the primary acceptance gate.
+- `min_transition_f1`: optional lower bound on transition F1; `nothing` disables
+  the aggregate transition gate.
+- `accepted_certificate_verdicts`: certificate verdicts that can support
+  acceptance. The default requires `:certified`.
+- `margin_slack`: nonnegative numerical slack added to local margins when
+  comparing a measured shift with the tolerance/boundary field.
+"""
+@with_kw struct HardwareAcceptanceConfig
+    axis_calibration::Symbol = :provided
+    min_overall_score::Float64 = 0.0
+    min_transition_f1::Union{Nothing, Float64} = nothing
+    accepted_certificate_verdicts::Vector{Symbol} = [:certified]
+    margin_slack::Float64 = 0.0
+    @assert axis_calibration in (:provided, :identity, :transition_affine) "HardwareAcceptanceConfig.axis_calibration must be :provided, :identity, or :transition_affine"
+    @assert isfinite(min_overall_score) && 0.0 <= min_overall_score <= 1.0 "HardwareAcceptanceConfig.min_overall_score must be in [0, 1]"
+    @assert min_transition_f1 === nothing || (isfinite(min_transition_f1) && 0.0 <= min_transition_f1 <= 1.0) "HardwareAcceptanceConfig.min_transition_f1 must be nothing or a value in [0, 1]"
+    @assert !isempty(accepted_certificate_verdicts) "HardwareAcceptanceConfig.accepted_certificate_verdicts must not be empty"
+    @assert isfinite(margin_slack) && margin_slack >= 0.0 "HardwareAcceptanceConfig.margin_slack must be finite and >= 0"
 end

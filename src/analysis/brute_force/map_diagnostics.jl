@@ -316,6 +316,7 @@ const _LYAPUNOV_ESTIMATION_STATUS_INVALID_STATE = 4
 const _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_CROSSINGS = 5
 const _LYAPUNOV_ESTIMATION_STATUS_INTEGRATION_FAILED = 6
 const _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES = 7
+const _LYAPUNOV_ESTIMATION_STATUS_DEGENERATE_SECTION = 8
 
 # As with `_MAP_STATUS_*` above, these named constants are the single compile-time source of truth for
 # the Lyapunov classification / estimation-status code spaces: the Dicts below, both Dict-free GPU
@@ -343,7 +344,8 @@ const _MAP_LYAPUNOV_ESTIMATION_STATUS_CODE_BY_SYMBOL = Dict{Symbol, Int}(
     :invalid_state => _LYAPUNOV_ESTIMATION_STATUS_INVALID_STATE,
     :insufficient_crossings => _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_CROSSINGS,
     :integration_failed => _LYAPUNOV_ESTIMATION_STATUS_INTEGRATION_FAILED,
-    :insufficient_samples => _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES
+    :insufficient_samples => _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES,
+    :degenerate_section => _LYAPUNOV_ESTIMATION_STATUS_DEGENERATE_SECTION
 )
 
 const _MAP_LYAPUNOV_ESTIMATION_STATUS_LABEL_BY_CODE = Dict{Int, String}(
@@ -380,6 +382,7 @@ end
     status === :insufficient_crossings && return _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_CROSSINGS
     status === :integration_failed && return _LYAPUNOV_ESTIMATION_STATUS_INTEGRATION_FAILED
     status === :insufficient_samples && return _LYAPUNOV_ESTIMATION_STATUS_INSUFFICIENT_SAMPLES
+    status === :degenerate_section && return _LYAPUNOV_ESTIMATION_STATUS_DEGENERATE_SECTION
     return _LYAPUNOV_ESTIMATION_STATUS_NOT_REQUESTED
 end
 
@@ -688,6 +691,228 @@ function _estimate_continuous_poincare_largest_lyapunov(sys::ContinuousODE,
     return _lyapunov_estimate_result(log_sum / sample_count, :ok, sample_count)
 end
 
+"""
+Inline single-tangent variational RHS for `[u; v]` augmented state where `u` is the physical state
+(dim-dimensional) and `v` is one tangent vector. `dv/dt = J(u, t) * v` is computed via ForwardDiff.
+Duplicates the k=1 case of `_flow_variational_rhs` (in `lyapunov_spectrum.jl`) so that
+`map_diagnostics.jl` has no include-order dependency on the spectrum analysis.
+"""
+function _make_variational_rhs_1tangent(sys::ContinuousODE, pv::Vector{Float64})
+    dim = sys.dim
+    state_buf = zeros(Float64, dim)
+    field_buf = zeros(Float64, dim)
+    jac_buf   = zeros(Float64, dim, dim)
+    time_ref  = Ref(0.0)
+    f_field!  = (out, x) -> (sys.f(out, x, pv, time_ref[]); nothing)
+    jac_cfg   = ForwardDiff.JacobianConfig(f_field!, field_buf, state_buf)
+    return function (dz, z, p, t)
+        T = promote_type(eltype(z), eltype(dz), typeof(t))
+        if T === Float64
+            time_ref[] = t
+            copyto!(state_buf, 1, z, 1, dim)
+            ForwardDiff.jacobian!(jac_buf, f_field!, field_buf, state_buf, jac_cfg)
+            copyto!(dz, 1, field_buf, 1, dim)
+            mul!(@view(dz[dim+1:2dim]), jac_buf, @view(z[dim+1:2dim]))
+        else
+            u  = collect(T, @view z[1:dim])
+            du = Vector{T}(undef, dim)
+            sys.f(du, u, pv, t)
+            copyto!(dz, 1, du, 1, dim)
+            f_ad = x -> (out = similar(x); sys.f(out, x, pv, t); out)
+            J = ForwardDiff.jacobian(f_ad, u)
+            mul!(@view(dz[dim+1:2dim]), J, @view(z[dim+1:2dim]))
+        end
+        return nothing
+    end
+end
+
+"""
+Tangent-space largest transverse Lyapunov exponent estimator for continuous flows. Integrates one
+augmented trajectory `[u; v]` through the first variational equation. At each accepted Poincaré
+section return the return-time correction
+
+    v_new = v - f_event * (n'v) / (n'f_event)
+
+projects out the along-flow component (the neutral zero exponent), where `f_event` is the vector field
+at the crossing state and `n` is the section normal. The corrected stretch `||v_new||` accumulates as a
+log sum; the exponent is normalized by total accumulated physical flow time so values are directly
+comparable to `lyapunov_spectrum`'s leading transverse exponent.
+
+`n` is resolved from `sys.section.constant_normal` when provided (required for the GPU path and for
+systems with non-differentiable conditions), or via automatic differentiation of the section condition.
+"""
+function _estimate_variational_continuous_lyapunov(sys::ContinuousODE,
+                                                   params::AbstractVector,
+                                                   initial_state::AbstractVector,
+                                                   transient::Int,
+                                                   steps::Int,
+                                                   divergence_cutoff::Float64;
+                                                   solver,
+                                                   reltol::Float64,
+                                                   abstol::Float64,
+                                                   min_crossing_time::Float64=1e-6)
+    steps > 0 || return _lyapunov_estimate_result(NaN, :insufficient_samples, 0)
+
+    state = collect(Float64, initial_state)
+    status = _map_state_status(state, divergence_cutoff)
+    status != :ok && return _lyapunov_estimate_result(NaN, status, 0)
+
+    dim = length(state)
+    dim >= 1 || return _lyapunov_estimate_result(NaN, :insufficient_samples, 0)
+
+    # Resolve the initial section normal. Nonconstant normals are differentiated again at each return.
+    has_constant_normal = !isempty(sys.section.constant_normal)
+    n_initial = if has_constant_normal
+        collect(Float64, sys.section.constant_normal)
+    else
+        u0f = collect(Float64, state)
+        cond = u -> sys.section.condition(u, 0.0, nothing)
+        g = try
+            ForwardDiff.gradient(cond, u0f)
+        catch
+            return _lyapunov_estimate_result(NaN, :degenerate_section, 0)
+        end
+        all(isfinite, g) || return _lyapunov_estimate_result(NaN, :degenerate_section, 0)
+        g
+    end
+    length(n_initial) == dim || return _lyapunov_estimate_result(NaN, :degenerate_section, 0)
+    nn = dot(n_initial, n_initial)
+    nn > 0 || return _lyapunov_estimate_result(NaN, :degenerate_section, 0)
+
+    # Initial tangent: first unit vector in the section tangent plane (projected off n).
+    v0 = zeros(Float64, dim)
+    for k in 1:dim
+        v0[k] = 1.0
+        nv = dot(n_initial, v0)
+        v0 .-= (nv / nn) .* n_initial
+        vn = norm(v0)
+        if vn > sqrt(eps(Float64))
+            v0 ./= vn
+            break
+        end
+        fill!(v0, 0.0)
+    end
+    all(iszero, v0) && return _lyapunov_estimate_result(NaN, :degenerate_section, 0)
+
+    pv = collect(Float64, params)
+    rhs! = _make_variational_rhs_1tangent(sys, pv)
+    z0 = vcat(state, v0)
+
+    # Running accumulators — all captured by the callback closure.
+    log_sum          = Ref(0.0)
+    accumulated_time = Ref(0.0)
+    sample_count     = Ref(0)
+    crossing_count   = Ref(0)
+    last_t           = Ref(0.0)
+    early_status     = Ref{Union{Nothing, Symbol}}(nothing)
+    total_crossings  = transient + steps + 1
+
+    on_crossing! = function(integrator)
+        integrator.t <= min_crossing_time && return
+        early_status[] !== nothing && return
+        cc = crossing_count[] + 1
+        crossing_count[] = cc
+
+        t = integrator.t
+        u_view = @view integrator.u[1:dim]
+        v_view = @view integrator.u[dim+1:2dim]
+        u_f64  = collect(Float64, u_view)
+        v_f64  = collect(Float64, v_view)
+        n_cross = if has_constant_normal
+            n_initial
+        else
+            try
+                _section_condition_gradient(sys, u_f64, t)
+            catch err
+                err isa InterruptException && rethrow()
+                early_status[] = :degenerate_section
+                terminate!(integrator)
+                return
+            end
+        end
+        length(n_cross) == dim && all(isfinite, n_cross) || begin
+            early_status[] = :degenerate_section
+            terminate!(integrator)
+            return
+        end
+
+        f_cross = zeros(Float64, dim)
+        sys.f(f_cross, u_f64, pv, t)
+        nf = dot(n_cross, f_cross)
+        scale_nf = max(norm(n_cross) * norm(f_cross), 1.0)
+        if abs(nf) <= 100eps(Float64) * scale_nf
+            early_status[] = :degenerate_section
+            terminate!(integrator)
+            return
+        end
+
+        nv     = dot(n_cross, v_f64)
+        v_corr = v_f64 .- f_cross .* (nv / nf)
+        stretch = norm(v_corr)
+        !isfinite(stretch) && (early_status[] = :invalid_state; terminate!(integrator); return)
+        collapse_floor = eps(Float64) * max(norm(u_f64), 1.0)
+        if stretch <= collapse_floor
+            early_status[] = :collapsed
+            terminate!(integrator)
+            return
+        end
+
+        if cc == 1
+            last_t[] = t
+        else
+            if cc > transient + 1
+                log_sum[]          += log(stretch)
+                accumulated_time[] += (t - last_t[])
+                sample_count[]     += 1
+            end
+            last_t[] = t
+        end
+
+        # Transient returns are renormalized but excluded from the accumulated exponent.
+        @view(integrator.u[dim+1:2dim]) .= v_corr ./ stretch
+        cc >= total_crossings && terminate!(integrator)
+    end
+
+    section_cb = _make_poincare_callback(sys.section, on_crossing!; min_crossing_time=min_crossing_time)
+    local_tmax = sys.tspan_hint * max(total_crossings + 2, 4) * 4
+    initial_dt = _default_poincare_initial_dt(min_crossing_time)
+    prob = ODEProblem(rhs!, z0, (0.0, local_tmax), pv)
+
+    # State-divergence callback: detect non-finite/out-of-bounds state between crossings.
+    div_status = Ref{Union{Nothing, Symbol}}(nothing)
+    div_cb = let cutoff = divergence_cutoff, ds = div_status, d = dim
+        DiscreteCallback(
+            (u, t, i) -> _map_state_status(@view(u[1:d]), cutoff) != :ok,
+            (integrator) -> begin
+                ds[] = _map_state_status(@view(integrator.u[1:dim]), cutoff)
+                terminate!(integrator)
+            end;
+            save_positions=(false, false)
+        )
+    end
+    cb = CallbackSet(section_cb, div_cb)
+
+    sol = solve(prob, solver; reltol=reltol, abstol=abstol, callback=cb,
+                save_everystep=false, save_start=false, save_end=true,
+                maxiters=10_000_000, dt=initial_dt)
+
+    # Helper: partial time-normalized exponent for error returns.
+    partial_exp = accumulated_time[] > 0.0 ? log_sum[] / accumulated_time[] : NaN
+
+    if early_status[] === :collapsed
+        return _lyapunov_estimate_result(-Inf, :collapsed, sample_count[] + 1)
+    end
+    early_status[] !== nothing && return _lyapunov_estimate_result(partial_exp, early_status[], sample_count[])
+    div_status[]   !== nothing && return _lyapunov_estimate_result(partial_exp, div_status[],   sample_count[])
+    if !SciMLBase.successful_retcode(sol.retcode) && sol.retcode != SciMLBase.ReturnCode.Terminated
+        return _lyapunov_estimate_result(partial_exp, :integration_failed, sample_count[])
+    end
+    crossing_count[] <= transient && return _lyapunov_estimate_result(NaN, :insufficient_crossings, 0)
+    sample_count[] == steps || return _lyapunov_estimate_result(partial_exp, :insufficient_crossings, sample_count[])
+    accumulated_time[] > 0.0 || return _lyapunov_estimate_result(NaN, :insufficient_samples, 0)
+    return _lyapunov_estimate_result(log_sum[] / accumulated_time[], :ok, sample_count[])
+end
+
 function _record_map_lyapunov!(storage,
                                i::Int,
                                j::Int,
@@ -784,7 +1009,8 @@ function _map_lyapunov_result(storage,
                               system_name::String,
                               param_names::Tuple{Symbol, Symbol},
                               timestamp::DateTime;
-                              compute_backend::Symbol=:cpu)
+                              compute_backend::Symbol=:cpu,
+                              normalization::Symbol=:unspecified)
     isnothing(storage) && return nothing
     return LyapunovFieldResult(
         a_grid,
@@ -797,7 +1023,9 @@ function _map_lyapunov_result(storage,
         system_name,
         param_names,
         timestamp;
-        compute_backend=compute_backend
+        compute_backend=compute_backend,
+        lyapunov_method=:two_trajectory,
+        normalization=normalization
     )
 end
 
@@ -1082,4 +1310,3 @@ function _poincare_crossing_diagnostics_summary(storage)
         "stateCallbackCount" => count(identity, storage.state_callback_activated)
     )
 end
-

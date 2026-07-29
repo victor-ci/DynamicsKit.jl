@@ -9,9 +9,15 @@ _serialize_timestamp(dt::DateTime) = Dates.format(dt, dateformat"yyyy-mm-ddTHH:M
 _deserialize_timestamp(value) = DateTime(String(value))
 
 const _MAP_NORMAL_FORM_FORMAT = "map-normal-form-v1"
+const _CODIM2_NORMAL_FORM_FORMAT = "codim2-normal-form-v1"
 const _MAP_SPECIAL_POINT_FORMAT = "map-special-point-v1"
 const _BORDER_COLLISION_CLASSIFICATION_FORMAT = "border-collision-classification-v1"
 const _BORDER_COLLISION_POINT_FORMAT = "border-collision-point-v1"
+const _BORDER_SCENARIO_PREDICTION_FORMAT = "border-scenario-prediction-v1"
+const _BORDER_SCENARIO_VERIFICATION_FORMAT = "border-scenario-verification-v1"
+const _FILIPPOV_GRAZING_RESULT_FORMAT = "filippov-grazing-result-v1"
+const _FILIPPOV_GRAZING_LOCUS_RESULT_FORMAT = "filippov-grazing-locus-result-v1"
+const _FILIPPOV_SLIDING_RESULT_FORMAT = "filippov-sliding-result-v1"
 
 function _require_serialized_fields(data::AbstractDict, fields, label::AbstractString)
     missing = filter(field -> !haskey(data, field), fields)
@@ -92,6 +98,74 @@ function _deserialize_map_normal_form(data::AbstractDict)
         kind,
         coefficient_name,
         value,
+        Symbol(_as_string(get(data, "criticality", "unclassified"), "unclassified")),
+        Symbol(_as_string(get(data, "status", ""), "")),
+        _as_string(get(data, "convention", ""), ""),
+    ))
+end
+
+_codim2_normal_form_argerror(message::AbstractString) = throw(ArgumentError(message))
+
+function _validate_codim2_normal_form(normal_form::Codim2NormalForm)
+    normal_form.kind in _CODIM2_SPECIAL_POINT_KINDS || _codim2_normal_form_argerror(
+        "Codim-2 normal-form kind must be one of $(join(_CODIM2_SPECIAL_POINT_KINDS, ", ")).")
+    length(normal_form.coefficient_names) == length(normal_form.coefficients) || _codim2_normal_form_argerror(
+        "Codim-2 normal-form coefficient_names and coefficients must have the same length.")
+    all(isfinite, normal_form.coefficients) || _codim2_normal_form_argerror(
+        "Codim-2 normal-form coefficients must be finite.")
+    allowed_statuses = (
+        :ok, :degenerate, :derivative_failed, :near_singular, :not_critical,
+        :critical_eigenvector_unavailable, :strong_resonance,
+        :multipliers_unavailable, :not_codim2, :reduction_unavailable,
+    )
+    normal_form.status in allowed_statuses || _codim2_normal_form_argerror(
+        "Unknown codim-2 normal-form status $(repr(normal_form.status)).")
+    if normal_form.status === :ok
+        !isempty(normal_form.coefficients) || _codim2_normal_form_argerror(
+            "A codim-2 normal form with status :ok requires coefficients.")
+        normal_form.criticality !== :unclassified || _codim2_normal_form_argerror(
+            "A codim-2 normal form with status :ok requires a classified criticality.")
+    elseif normal_form.status === :degenerate
+        normal_form.criticality === :degenerate || _codim2_normal_form_argerror(
+            "A degenerate codim-2 normal form requires criticality :degenerate.")
+    else
+        isempty(normal_form.coefficients) || _codim2_normal_form_argerror(
+            "Unavailable codim-2 normal forms must not carry coefficients.")
+        normal_form.criticality === :unclassified || _codim2_normal_form_argerror(
+            "Unavailable codim-2 normal forms require criticality :unclassified.")
+    end
+    return normal_form
+end
+
+function _serialize_codim2_normal_form(normal_form::Codim2NormalForm)
+    _validate_codim2_normal_form(normal_form)
+    return Dict{String, Any}(
+        "format" => _CODIM2_NORMAL_FORM_FORMAT,
+        "kind" => String(normal_form.kind),
+        "coefficientNames" => String.(normal_form.coefficient_names),
+        "coefficients" => copy(normal_form.coefficients),
+        "criticality" => String(normal_form.criticality),
+        "status" => String(normal_form.status),
+        "convention" => normal_form.convention,
+    )
+end
+
+function _deserialize_codim2_normal_form(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "kind", "coefficientNames", "coefficients", "criticality",
+         "status", "convention"),
+        "codim-2 normal form")
+    format = _as_string(get(data, "format", ""), "")
+    format == _CODIM2_NORMAL_FORM_FORMAT || error(
+        "Unsupported codim-2 normal-form serialization format '$format'.")
+    kind = Symbol(_as_string(get(data, "kind", ""), ""))
+    coefficient_names = Symbol[Symbol(_as_string(name, "")) for name in get(data, "coefficientNames", Any[])]
+    coefficients = collect(Float64, get(data, "coefficients", Float64[]))
+    return _validate_codim2_normal_form(Codim2NormalForm(
+        kind,
+        coefficient_names,
+        coefficients,
         Symbol(_as_string(get(data, "criticality", "unclassified"), "unclassified")),
         Symbol(_as_string(get(data, "status", ""), "")),
         _as_string(get(data, "convention", ""), ""),
@@ -223,6 +297,17 @@ end
 _bcb_opt_bool(value) = value === nothing ? nothing : _as_bool(value, false)
 _bcb_opt_int(value) = value === nothing ? nothing : _as_int(value, 0)
 _bcb_opt_float(value) = value === nothing ? nothing : _as_float(value, NaN)
+function _bsp_optional_string(value, field::AbstractString)
+    value === nothing && return nothing
+    value isa AbstractString || error("Serialized border-scenario $field must be a string or null.")
+    return _as_string(value, "")
+end
+
+function _bsp_string_vector(data::AbstractDict, field::AbstractString)
+    value = get(data, field, Any[])
+    value isa AbstractVector || error("Serialized border-scenario $field must be an array.")
+    return String[_as_string(item, "") for item in value]
+end
 
 function _serialize_border_collision_classification(c::BorderCollisionClassification)
     return Dict{String, Any}(
@@ -373,6 +458,336 @@ function _deserialize_border_collision_point(data::AbstractDict)
         period,
         classification,
         data["converged"],
+    )
+end
+
+function _serialize_border_scenario_rung(rung::BorderScenarioRung)
+    return Dict{String, Any}(
+        "word" => rung.word,
+        "rotationNumerator" => rung.rotation_numerator,
+        "period" => rung.period,
+        "leftParent" => rung.left_parent,
+        "rightParent" => rung.right_parent,
+    )
+end
+
+function _deserialize_border_scenario_rung(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("word", "rotationNumerator", "period", "leftParent", "rightParent"),
+        "border scenario rung")
+    return BorderScenarioRung(
+        _as_string(data["word"], ""),
+        _as_int(data["rotationNumerator"], 0),
+        _as_int(data["period"], 0),
+        _bsp_optional_string(get(data, "leftParent", nothing), "leftParent"),
+        _bsp_optional_string(get(data, "rightParent", nothing), "rightParent"),
+    )
+end
+
+function _serialize_border_scenario_prediction(prediction::BorderScenarioPrediction)
+    return Dict{String, Any}(
+        "format" => _BORDER_SCENARIO_PREDICTION_FORMAT,
+        "status" => String(prediction.status),
+        "model" => String(prediction.model),
+        "classification" => _serialize_border_collision_classification(prediction.classification),
+        "bcnfParameters" => copy(prediction.bcnf_parameters),
+        "predictedCascade" => String(prediction.predicted_cascade),
+        "robustChaosVerdict" => String(prediction.robust_chaos_verdict),
+        "robustChaosConditions" => copy(prediction.robust_chaos_conditions),
+        "periodAddingRungs" => [_serialize_border_scenario_rung(r) for r in prediction.period_adding_rungs],
+        "validityRegion" => copy(prediction.validity_region),
+        "inference" => prediction.inference,
+        "warnings" => copy(prediction.warnings),
+        "convention" => prediction.convention,
+    )
+end
+
+function _deserialize_border_scenario_prediction(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "status", "model", "classification", "bcnfParameters",
+         "predictedCascade", "robustChaosVerdict", "robustChaosConditions",
+         "periodAddingRungs", "validityRegion", "inference", "warnings", "convention"),
+        "border scenario prediction")
+    format = _as_string(get(data, "format", ""), "")
+    format == _BORDER_SCENARIO_PREDICTION_FORMAT || error(
+        "Unsupported border-scenario prediction format '$format'.")
+    params_raw = get(data, "bcnfParameters", Dict{String, Any}())
+    params_raw isa AbstractDict || error("Serialized border-scenario bcnfParameters must be a dictionary.")
+    params = Dict{String, Float64}(String(k) => _as_float(v, NaN) for (k, v) in params_raw)
+    conditions_raw = get(data, "robustChaosConditions", Dict{String, Any}())
+    conditions_raw isa AbstractDict || error("Serialized border-scenario robustChaosConditions must be a dictionary.")
+    region_raw = get(data, "validityRegion", Dict{String, Any}())
+    region_raw isa AbstractDict || error("Serialized border-scenario validityRegion must be a dictionary.")
+    rungs_raw = get(data, "periodAddingRungs", Any[])
+    rungs_raw isa AbstractVector || error("Serialized border-scenario periodAddingRungs must be an array.")
+    warnings = _bsp_string_vector(data, "warnings")
+    return BorderScenarioPrediction(
+        status = Symbol(_as_string(data["status"], "")),
+        model = Symbol(_as_string(data["model"], "")),
+        classification = _deserialize_border_collision_classification(data["classification"]),
+        bcnf_parameters = params,
+        predicted_cascade = Symbol(_as_string(data["predictedCascade"], "")),
+        robust_chaos_verdict = Symbol(_as_string(data["robustChaosVerdict"], "")),
+        robust_chaos_conditions = Dict{String, Any}(String(k) => v for (k, v) in conditions_raw),
+        period_adding_rungs = BorderScenarioRung[
+            _deserialize_border_scenario_rung(r) for r in rungs_raw],
+        validity_region = Dict{String, Any}(String(k) => v for (k, v) in region_raw),
+        inference = _as_string(data["inference"], ""),
+        warnings = warnings,
+        convention = _as_string(data["convention"], ""),
+    )
+end
+
+function _serialize_border_scenario_verification(result::BorderScenarioVerification)
+    return Dict{String, Any}(
+        "format" => _BORDER_SCENARIO_VERIFICATION_FORMAT,
+        "status" => String(result.status),
+        "predictionStatus" => String(result.prediction_status),
+        "verificationKind" => String(result.verification_kind),
+        "paramValues" => copy(result.param_values),
+        "observedPeriods" => copy(result.observed_periods),
+        "observedRuns" => copy(result.observed_runs),
+        "lyapunovExponents" => copy(result.lyapunov_exponents),
+        "lyapunovStatuses" => String.(result.lyapunov_statuses),
+        "positiveLyapunovFraction" => result.positive_lyapunov_fraction,
+        "aperiodicFraction" => result.aperiodic_fraction,
+        "matchedPrefixLength" => result.matched_prefix_length,
+        "requiredPrefixLength" => result.required_prefix_length,
+        "consistencyPassed" => result.consistency_passed,
+        "inference" => result.inference,
+        "warnings" => copy(result.warnings),
+    )
+end
+
+function _deserialize_border_scenario_verification(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "status", "predictionStatus", "paramValues", "observedPeriods",
+         "observedRuns", "matchedPrefixLength", "requiredPrefixLength",
+         "consistencyPassed", "inference", "warnings"),
+        "border scenario verification")
+    format = _as_string(get(data, "format", ""), "")
+    format == _BORDER_SCENARIO_VERIFICATION_FORMAT || error(
+        "Unsupported border-scenario verification format '$format'.")
+    runs_raw = get(data, "observedRuns", Any[])
+    runs_raw isa AbstractVector || error("Serialized border-scenario observedRuns must be an array.")
+    param_values_raw = get(data, "paramValues", Any[])
+    param_values_raw isa AbstractVector || error("Serialized border-scenario paramValues must be an array.")
+    periods_raw = get(data, "observedPeriods", Any[])
+    periods_raw isa AbstractVector || error("Serialized border-scenario observedPeriods must be an array.")
+    lyaps_raw = get(data, "lyapunovExponents", Any[])
+    lyaps_raw isa AbstractVector || error("Serialized border-scenario lyapunovExponents must be an array.")
+    lyap_statuses_raw = get(data, "lyapunovStatuses", Any[])
+    lyap_statuses_raw isa AbstractVector || error("Serialized border-scenario lyapunovStatuses must be an array.")
+    warnings = _bsp_string_vector(data, "warnings")
+    runs = Dict{String, Any}[]
+    for run in runs_raw
+        run isa AbstractDict || error("Serialized border-scenario observedRuns entries must be dictionaries.")
+        push!(runs, Dict{String, Any}(String(k) => v for (k, v) in run))
+    end
+    return BorderScenarioVerification(
+        status = Symbol(_as_string(data["status"], "")),
+        prediction_status = Symbol(_as_string(data["predictionStatus"], "")),
+        verification_kind = Symbol(_as_string(get(data, "verificationKind", "period_sequence"), "period_sequence")),
+        param_values = Float64[_as_float(v, NaN) for v in param_values_raw],
+        observed_periods = Int[_as_int(v, 0) for v in periods_raw],
+        observed_runs = runs,
+        lyapunov_exponents = Float64[_as_float(v, NaN) for v in lyaps_raw],
+        lyapunov_statuses = Symbol[Symbol(_as_string(v, "unavailable")) for v in lyap_statuses_raw],
+        positive_lyapunov_fraction = _as_float(get(data, "positiveLyapunovFraction", NaN), NaN),
+        aperiodic_fraction = _as_float(get(data, "aperiodicFraction", NaN), NaN),
+        matched_prefix_length = _as_int(data["matchedPrefixLength"], 0),
+        required_prefix_length = _as_int(data["requiredPrefixLength"], 0),
+        consistency_passed = _as_bool(data["consistencyPassed"], false),
+        inference = _as_string(data["inference"], ""),
+        warnings = warnings,
+    )
+end
+
+function _serialize_filippov_grazing_point(point::FilippovGrazingPoint)
+    return Dict{String, Any}(
+        "eventName" => point.event_name,
+        "time" => point.time,
+        "state" => copy(point.state),
+        "params" => copy(point.params),
+        "guardValue" => point.guard_value,
+        "normalVelocity" => point.normal_velocity,
+        "normalAcceleration" => point.normal_acceleration,
+        "status" => String(point.status),
+        "converged" => point.converged,
+    )
+end
+
+function _deserialize_filippov_grazing_point(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("eventName", "time", "state", "params", "guardValue", "normalVelocity",
+         "normalAcceleration", "status", "converged"),
+        "Filippov grazing point")
+    return FilippovGrazingPoint(
+        _as_string(data["eventName"], ""),
+        _as_float(data["time"], NaN),
+        _as_float_vector(data["state"], Float64[]),
+        _as_float_vector(data["params"], Float64[]),
+        _as_float(data["guardValue"], NaN),
+        _as_float(data["normalVelocity"], NaN),
+        _as_float(data["normalAcceleration"], NaN),
+        Symbol(_as_string(data["status"], "")),
+        _as_bool(data["converged"], false),
+    )
+end
+
+function _serialize_filippov_grazing_result(result::FilippovGrazingResult)
+    return Dict{String, Any}(
+        "format" => _FILIPPOV_GRAZING_RESULT_FORMAT,
+        "points" => [_serialize_filippov_grazing_point(point) for point in result.points],
+        "systemName" => result.system_name,
+        "eventName" => result.event_name,
+        "params" => copy(result.params),
+        "tspan" => [result.tspan[1], result.tspan[2]],
+        "status" => String(result.status),
+        "warnings" => copy(result.warnings),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_filippov_grazing_result(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "points", "systemName", "eventName", "params", "tspan",
+         "status", "warnings", "timestamp"),
+        "Filippov grazing result")
+    format = _as_string(data["format"], "")
+    format == _FILIPPOV_GRAZING_RESULT_FORMAT || error(
+        "Unsupported Filippov grazing result format '$format'.")
+    tspan = collect(get(data, "tspan", Any[]))
+    length(tspan) == 2 || error("Serialized Filippov grazing result requires a two-value tspan.")
+    points_raw = get(data, "points", Any[])
+    points_raw isa AbstractVector || error("Serialized Filippov grazing points must be an array.")
+    return FilippovGrazingResult(
+        FilippovGrazingPoint[_deserialize_filippov_grazing_point(point) for point in points_raw],
+        _as_string(data["systemName"], ""),
+        _as_string(data["eventName"], ""),
+        _as_float_vector(data["params"], Float64[]),
+        (_as_float(tspan[1], NaN), _as_float(tspan[2], NaN)),
+        Symbol(_as_string(data["status"], "")),
+        String[_as_string(w, "") for w in get(data, "warnings", Any[])],
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
+function _filippov_state_columns(matrix::AbstractMatrix)
+    return [collect(Float64, view(matrix, :, j)) for j in 1:size(matrix, 2)]
+end
+
+function _serialize_filippov_grazing_locus_result(result::FilippovGrazingLocusResult)
+    return Dict{String, Any}(
+        "format" => _FILIPPOV_GRAZING_LOCUS_RESULT_FORMAT,
+        "primaryValues" => copy(result.primary_values),
+        "secondaryValues" => copy(result.secondary_values),
+        "states" => _filippov_state_columns(result.states),
+        "guardValues" => copy(result.guard_values),
+        "normalVelocities" => copy(result.normal_velocities),
+        "normalAccelerations" => copy(result.normal_accelerations),
+        "statuses" => String.(result.statuses),
+        "systemName" => result.system_name,
+        "eventName" => result.event_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_filippov_grazing_locus_result(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "primaryValues", "secondaryValues", "states", "guardValues",
+         "normalVelocities", "normalAccelerations", "statuses", "systemName",
+         "eventName", "paramNames", "timestamp"),
+        "Filippov grazing locus result")
+    format = _as_string(data["format"], "")
+    format == _FILIPPOV_GRAZING_LOCUS_RESULT_FORMAT || error(
+        "Unsupported Filippov grazing locus result format '$format'.")
+    param_names = collect(get(data, "paramNames", Any[]))
+    length(param_names) == 2 || error("Serialized Filippov grazing locus requires exactly two paramNames.")
+    return FilippovGrazingLocusResult(
+        _as_float_vector(data["primaryValues"], Float64[]),
+        _as_float_vector(data["secondaryValues"], Float64[]),
+        _codim2_columns_to_matrix(get(data, "states", Any[])),
+        _as_float_vector(data["guardValues"], Float64[]),
+        _as_float_vector(data["normalVelocities"], Float64[]),
+        _as_float_vector(data["normalAccelerations"], Float64[]),
+        Symbol[Symbol(_as_string(status, "")) for status in get(data, "statuses", Any[])],
+        _as_string(data["systemName"], ""),
+        _as_string(data["eventName"], ""),
+        (Symbol(_as_string(param_names[1], "")), Symbol(_as_string(param_names[2], ""))),
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
+function _serialize_filippov_sliding_segment(segment::FilippovSlidingSegment)
+    return Dict{String, Any}(
+        "eventName" => segment.event_name,
+        "startIndex" => segment.start_index,
+        "endIndex" => segment.end_index,
+        "startState" => copy(segment.start_state),
+        "endState" => copy(segment.end_state),
+        "normalVelocityMinus" => segment.normal_velocity_minus,
+        "normalVelocityPlus" => segment.normal_velocity_plus,
+        "kind" => String(segment.kind),
+        "status" => String(segment.status),
+    )
+end
+
+function _deserialize_filippov_sliding_segment(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("eventName", "startIndex", "endIndex", "startState", "endState",
+         "normalVelocityMinus", "normalVelocityPlus", "kind", "status"),
+        "Filippov sliding segment")
+    return FilippovSlidingSegment(
+        _as_string(data["eventName"], ""),
+        _as_int(data["startIndex"], 0),
+        _as_int(data["endIndex"], 0),
+        _as_float_vector(data["startState"], Float64[]),
+        _as_float_vector(data["endState"], Float64[]),
+        _as_float(data["normalVelocityMinus"], NaN),
+        _as_float(data["normalVelocityPlus"], NaN),
+        Symbol(_as_string(data["kind"], "")),
+        Symbol(_as_string(data["status"], "")),
+    )
+end
+
+function _serialize_filippov_sliding_result(result::FilippovSlidingResult)
+    return Dict{String, Any}(
+        "format" => _FILIPPOV_SLIDING_RESULT_FORMAT,
+        "segments" => [_serialize_filippov_sliding_segment(segment) for segment in result.segments],
+        "eventName" => result.event_name,
+        "sampleCount" => result.sample_count,
+        "status" => String(result.status),
+        "warnings" => copy(result.warnings),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_filippov_sliding_result(data::AbstractDict)
+    _require_serialized_fields(
+        data,
+        ("format", "segments", "eventName", "sampleCount", "status", "warnings", "timestamp"),
+        "Filippov sliding result")
+    format = _as_string(data["format"], "")
+    format == _FILIPPOV_SLIDING_RESULT_FORMAT || error(
+        "Unsupported Filippov sliding result format '$format'.")
+    segments_raw = get(data, "segments", Any[])
+    segments_raw isa AbstractVector || error("Serialized Filippov sliding segments must be an array.")
+    return FilippovSlidingResult(
+        FilippovSlidingSegment[_deserialize_filippov_sliding_segment(segment) for segment in segments_raw],
+        _as_string(data["eventName"], ""),
+        _as_int(data["sampleCount"], 0),
+        Symbol(_as_string(data["status"], "")),
+        String[_as_string(w, "") for w in get(data, "warnings", Any[])],
+        _deserialize_timestamp(data["timestamp"]),
     )
 end
 
@@ -992,6 +1407,160 @@ function _deserialize_robust_chaos_evidence(data::AbstractDict)::RobustChaosEvid
     )
 end
 
+const _ROBUST_CHAOS_REGION_FORMAT = "robust-chaos-region-result-v1"
+
+function _serialize_robust_chaos_region(region::RobustChaosRegion)
+    return Dict{String, Any}(
+        "id" => region.id,
+        "verdict" => String(region.verdict),
+        "robustnessScore" => _encode_special_float(region.robustness_score),
+        "bounds" => Dict{String, Any}(
+            "aMin" => _encode_special_float(region.a_min),
+            "aMax" => _encode_special_float(region.a_max),
+            "bMin" => _encode_special_float(region.b_min),
+            "bMax" => _encode_special_float(region.b_max),
+        ),
+        "area" => _encode_special_float(region.area),
+        "leafCellCount" => region.leaf_cell_count,
+        "finestDepth" => region.finest_depth,
+        "coarsestDepth" => region.coarsest_depth,
+        "lyapunov" => Dict{String, Any}(
+            "verdict" => String(region.lyapunov_verdict),
+            "positiveFraction" => _encode_special_float(region.lyapunov_positive_fraction),
+            "resolvedFraction" => _encode_special_float(region.lyapunov_resolved_fraction),
+            "minResolvedExponent" => _encode_special_float(region.lyapunov_min_resolved_exponent),
+            "nTotal" => region.lyapunov_n_total,
+            "nResolved" => region.lyapunov_n_resolved,
+            "nPositive" => region.lyapunov_n_positive,
+        ),
+        "atlas" => Dict{String, Any}(
+            "verdict" => String(region.atlas_verdict),
+            "sliceCount" => region.atlas_slice_count,
+            "passedSlices" => region.atlas_passed_slices,
+            "coverageEffort" => _encode_special_float(region.atlas_coverage_effort),
+            "stableEvidenceCount" => region.atlas_stable_evidence_count,
+        ),
+        "basins" => Dict{String, Any}(
+            "verdict" => String(region.basin_verdict),
+            "knotCount" => region.basin_knot_count,
+            "chaoticFraction" => _encode_special_float(region.basin_chaotic_fraction),
+            "resolvedFraction" => _encode_special_float(region.basin_resolved_fraction),
+            "nTotal" => region.basin_n_total,
+            "nResolved" => region.basin_n_resolved,
+            "nChaotic" => region.basin_n_chaotic,
+        ),
+        "boundary" => Dict{String, Any}(
+            "margin" => _encode_special_float(region.boundary_margin),
+            "edgeCensored" => region.boundary_edge_censored,
+        ),
+        "counterEvidence" => copy(region.counter_evidence),
+        "certificateItems" => _plain(region.certificate_items),
+    )
+end
+
+function _deserialize_robust_chaos_region(data::AbstractDict)::RobustChaosRegion
+    bounds = _jsonish_dict(get(data, "bounds", Dict{String, Any}()))
+    lya = _jsonish_dict(get(data, "lyapunov", Dict{String, Any}()))
+    atlas = _jsonish_dict(get(data, "atlas", Dict{String, Any}()))
+    basins = _jsonish_dict(get(data, "basins", Dict{String, Any}()))
+    boundary = _jsonish_dict(get(data, "boundary", Dict{String, Any}()))
+    items = Dict{String, Any}[
+        Dict{String, Any}(String(k) => v for (k, v) in _jsonish_dict(item))
+        for item in get(data, "certificateItems", Any[])
+    ]
+    return RobustChaosRegion(
+        _as_int(get(data, "id", 0), 0),
+        Symbol(_as_string(get(data, "verdict", "inconclusive"), "inconclusive")),
+        _decode_special_float(get(data, "robustnessScore", 0.0)),
+        _decode_special_float(get(bounds, "aMin", NaN)),
+        _decode_special_float(get(bounds, "aMax", NaN)),
+        _decode_special_float(get(bounds, "bMin", NaN)),
+        _decode_special_float(get(bounds, "bMax", NaN)),
+        _decode_special_float(get(data, "area", 0.0)),
+        _as_int(get(data, "leafCellCount", 0), 0),
+        _as_int(get(data, "finestDepth", 0), 0),
+        _as_int(get(data, "coarsestDepth", 0), 0),
+        Symbol(_as_string(get(lya, "verdict", "inconclusive"), "inconclusive")),
+        _decode_special_float(get(lya, "positiveFraction", 0.0)),
+        _decode_special_float(get(lya, "resolvedFraction", 0.0)),
+        _decode_special_float(get(lya, "minResolvedExponent", NaN)),
+        _as_int(get(lya, "nTotal", 0), 0),
+        _as_int(get(lya, "nResolved", 0), 0),
+        _as_int(get(lya, "nPositive", 0), 0),
+        Symbol(_as_string(get(atlas, "verdict", "inconclusive"), "inconclusive")),
+        _as_int(get(atlas, "sliceCount", 0), 0),
+        _as_int(get(atlas, "passedSlices", 0), 0),
+        _decode_special_float(get(atlas, "coverageEffort", 0.0)),
+        _as_int(get(atlas, "stableEvidenceCount", 0), 0),
+        Symbol(_as_string(get(basins, "verdict", "inconclusive"), "inconclusive")),
+        _as_int(get(basins, "knotCount", 0), 0),
+        _decode_special_float(get(basins, "chaoticFraction", 0.0)),
+        _decode_special_float(get(basins, "resolvedFraction", 0.0)),
+        _as_int(get(basins, "nTotal", 0), 0),
+        _as_int(get(basins, "nResolved", 0), 0),
+        _as_int(get(basins, "nChaotic", 0), 0),
+        _decode_special_float(get(boundary, "margin", NaN)),
+        _as_bool(get(boundary, "edgeCensored", false), false),
+        String[_as_string(value, "") for value in get(data, "counterEvidence", Any[])],
+        items,
+    )
+end
+
+function _serialize_robust_chaos_region_result(result::RobustChaosRegionResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _ROBUST_CHAOS_REGION_FORMAT,
+        "systemName" => result.system_name,
+        "paramNames" => [String(result.param_names[1]), String(result.param_names[2])],
+        "regions" => [_serialize_robust_chaos_region(region) for region in result.regions],
+        "candidateLeafCount" => result.candidate_leaf_count,
+        "rejectedLeafCount" => result.rejected_leaf_count,
+        "adaptiveBudgetUsed" => result.adaptive_budget_used,
+        "adaptiveTotalBudget" => result.adaptive_total_budget,
+        "adaptiveBudgetExhausted" => result.adaptive_budget_exhausted,
+        "adaptiveUninspectedCellCount" => result.adaptive_uninspected_cell_count,
+        "adaptiveMaxDepthReached" => result.adaptive_max_depth_reached,
+        "adaptiveMaxDepthAllowed" => result.adaptive_max_depth_allowed,
+        "lyapunovMethod" => String(result.lyapunov_method),
+        "lyapunovNormalization" => String(result.lyapunov_normalization),
+        "boundaryEdgePolicy" => String(result.boundary_edge_policy),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+        "certificateItems" => _plain(result.certificate_items),
+    )
+end
+
+function _deserialize_robust_chaos_region_result(data::AbstractDict)::RobustChaosRegionResult
+    format = _as_string(get(data, "format", ""), "")
+    format == _ROBUST_CHAOS_REGION_FORMAT || error(
+        "Unsupported robust-chaos region result format '$format'; expected '$(_ROBUST_CHAOS_REGION_FORMAT)'.")
+    param_names = get(data, "paramNames", Any["a", "b"])
+    length(param_names) == 2 || error("Serialized robust-chaos region paramNames must have two entries.")
+    items = Dict{String, Any}[
+        Dict{String, Any}(String(k) => v for (k, v) in _jsonish_dict(item))
+        for item in get(data, "certificateItems", Any[])
+    ]
+    return RobustChaosRegionResult(
+        RobustChaosRegion[
+            _deserialize_robust_chaos_region(_jsonish_dict(region))
+            for region in get(data, "regions", Any[])
+        ],
+        _as_string(get(data, "systemName", ""), ""),
+        (Symbol(_as_string(param_names[1], "a")), Symbol(_as_string(param_names[2], "b"))),
+        _as_int(get(data, "candidateLeafCount", 0), 0),
+        _as_int(get(data, "rejectedLeafCount", 0), 0),
+        _as_int(get(data, "adaptiveBudgetUsed", 0), 0),
+        _as_int(get(data, "adaptiveTotalBudget", 0), 0),
+        _as_bool(get(data, "adaptiveBudgetExhausted", false), false),
+        _as_int(get(data, "adaptiveUninspectedCellCount", 0), 0),
+        _as_int(get(data, "adaptiveMaxDepthReached", 0), 0),
+        _as_int(get(data, "adaptiveMaxDepthAllowed", 0), 0),
+        Symbol(_as_string(get(data, "lyapunovMethod", "two_trajectory"), "two_trajectory")),
+        Symbol(_as_string(get(data, "lyapunovNormalization", "unspecified"), "unspecified")),
+        Symbol(_as_string(get(data, "boundaryEdgePolicy", "censored"), "censored")),
+        _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+        items,
+    )
+end
+
 const _BRANCH_REACHABILITY_FORMAT = "branch-reachability-v1"
 
 _serialize_reach_int_matrix(m::AbstractMatrix{<:Integer}) =
@@ -1132,6 +1701,7 @@ end
 const _REGIME_BOUNDARY_FORMAT = "regime-boundary-v1"
 const _TOLERANCE_MAP_FORMAT = "tolerance-map-v1"
 const _MODE_SEQUENCE_ALIGNMENT_FORMAT = "mode-sequence-alignment-v1"
+const _HARDWARE_ACCEPTANCE_FORMAT = "hardware-acceptance-v1"
 
 # Special-float aware matrix (de)serialization: unlike the reachability helpers, margin fields
 # distinguish Inf (no boundary on this line) from NaN (invalid cell), so non-finite values are
@@ -1486,6 +2056,165 @@ function _deserialize_mode_sequence_alignment(raw)::ModeSequenceAlignment
     )
 end
 
+const _HARDWARE_ACCEPTANCE_OBSERVATION_STATUS_MAP = Dict(
+    "matched" => :matched,
+    "mismatched" => :mismatched,
+    "unresolved_prediction" => :unresolved_prediction,
+    "outside_coverage" => :outside_coverage,
+)
+const _HARDWARE_ACCEPTANCE_MARGIN_STATUS_MAP = Dict(
+    "inside_margin" => :inside_margin,
+    "outside_margin" => :outside_margin,
+    "margin_unavailable" => :margin_unavailable,
+    "unresolved_margin" => :unresolved_margin,
+    "outside_margin_domain" => :outside_margin_domain,
+    "no_compatible_mode" => :no_compatible_mode,
+)
+const _HARDWARE_ACCEPTANCE_AXIS_MAP = Dict("a" => :a, "b" => :b)
+const _HARDWARE_ACCEPTANCE_KIND_MAP = Dict(
+    "band" => :band,
+    "region_result" => :region_result,
+)
+const _HARDWARE_ACCEPTANCE_VERDICT_MAP = Dict(
+    "accepted" => :accepted,
+    "rejected" => :rejected,
+    "inconclusive" => :inconclusive,
+    "refused" => :refused,
+    "certified" => :certified,
+    "fragile" => :fragile,
+    "pass" => :pass,
+    "fail" => :fail,
+)
+const _HARDWARE_ACCEPTANCE_CERT_VERDICT_MAP = Dict(
+    "certified" => :certified,
+    "fragile" => :fragile,
+    "inconclusive" => :inconclusive,
+    "pass" => :pass,
+    "fail" => :fail,
+)
+
+function _hardware_acceptance_symbol(value, mapping::AbstractDict{String, Symbol},
+                                     label::AbstractString, default::AbstractString)
+    key = _as_string(value, default)
+    symbol = get(mapping, key, nothing)
+    symbol === nothing && throw(ArgumentError(
+        "Serialized hardware-acceptance $label must be one of " *
+        "$(join(sort(collect(keys(mapping))), ", ")); got $(repr(key))."))
+    return symbol
+end
+
+function _serialize_hardware_acceptance_mismatch(mismatch::HardwareAcceptanceMismatch)::Dict{String, Any}
+    return Dict{String, Any}(
+        "observationIndex" => mismatch.observation_index,
+        "measuredParameter" => mismatch.measured_parameter,
+        "alignedParameter" => mismatch.aligned_parameter,
+        "measuredMode" => mismatch.measured_mode,
+        "predictedMode" => mismatch.predicted_mode,
+        "observationStatus" => String(mismatch.observation_status),
+        "requiredShift" => mismatch.required_shift,
+        "margin" => mismatch.margin,
+        "marginAxis" => mismatch.margin_axis === nothing ? nothing : String(mismatch.margin_axis),
+        "toleranceProbability" => mismatch.tolerance_probability,
+        "marginStatus" => String(mismatch.margin_status),
+        "message" => mismatch.message,
+    )
+end
+
+function _deserialize_hardware_acceptance_mismatch(raw)::HardwareAcceptanceMismatch
+    data = _jsonish_dict(raw)
+    margin_axis = get(data, "marginAxis", nothing)
+    return HardwareAcceptanceMismatch(
+        _as_int(get(data, "observationIndex", 0), 0),
+        _as_float(get(data, "measuredParameter", 0.0), 0.0),
+        _as_float(get(data, "alignedParameter", 0.0), 0.0),
+        _as_string(get(data, "measuredMode", ""), ""),
+        get(data, "predictedMode", nothing) === nothing ? nothing :
+            _as_string(get(data, "predictedMode", ""), ""),
+        _hardware_acceptance_symbol(
+            get(data, "observationStatus", "mismatched"),
+            _HARDWARE_ACCEPTANCE_OBSERVATION_STATUS_MAP,
+            "observationStatus",
+            "mismatched"),
+        _optional_float(get(data, "requiredShift", nothing)),
+        _optional_float(get(data, "margin", nothing)),
+        margin_axis === nothing ? nothing :
+            _hardware_acceptance_symbol(
+                margin_axis,
+                _HARDWARE_ACCEPTANCE_AXIS_MAP,
+                "marginAxis",
+                "a"),
+        _optional_float(get(data, "toleranceProbability", nothing)),
+        _hardware_acceptance_symbol(
+            get(data, "marginStatus", "margin_unavailable"),
+            _HARDWARE_ACCEPTANCE_MARGIN_STATUS_MAP,
+            "marginStatus",
+            "margin_unavailable"),
+        _as_string(get(data, "message", ""), ""),
+    )
+end
+
+function _serialize_hardware_acceptance_result(result::HardwareAcceptanceResult)::Dict{String, Any}
+    return Dict{String, Any}(
+        "format" => _HARDWARE_ACCEPTANCE_FORMAT,
+        "alignment" => result.alignment === nothing ? nothing :
+            _serialize_mode_sequence_alignment(result.alignment),
+        "certificateKind" => String(result.certificate_kind),
+        "certificateVerdict" => String(result.certificate_verdict),
+        "verdict" => String(result.verdict),
+        "mismatches" => _serialize_hardware_acceptance_mismatch.(result.mismatches),
+        "acceptedCertificateVerdicts" => String.(result.accepted_certificate_verdicts),
+        "score" => result.score,
+        "certificateItems" => _plain(result.certificate_items),
+        "timestamp" => _serialize_timestamp(result.timestamp),
+    )
+end
+
+function _deserialize_hardware_acceptance_result(raw)::HardwareAcceptanceResult
+    data = _jsonish_dict(raw)
+    format = _as_string(get(data, "format", ""), "")
+    format == _HARDWARE_ACCEPTANCE_FORMAT || throw(ArgumentError(
+        "Unsupported hardware-acceptance format '$format'; expected '$(_HARDWARE_ACCEPTANCE_FORMAT)'."))
+    _require_serialized_fields(data, ("timestamp",), "hardware-acceptance result")
+    alignment_raw = get(data, "alignment", nothing)
+    items = Dict{String, Any}[
+        Dict{String, Any}(String(k) => v for (k, v) in _jsonish_dict(item))
+        for item in get(data, "certificateItems", Any[])
+    ]
+    return HardwareAcceptanceResult(
+        alignment_raw === nothing ? nothing : _deserialize_mode_sequence_alignment(alignment_raw),
+        _hardware_acceptance_symbol(
+            get(data, "certificateKind", "band"),
+            _HARDWARE_ACCEPTANCE_KIND_MAP,
+            "certificateKind",
+            "band"),
+        _hardware_acceptance_symbol(
+            get(data, "certificateVerdict", "inconclusive"),
+            _HARDWARE_ACCEPTANCE_CERT_VERDICT_MAP,
+            "certificateVerdict",
+            "inconclusive"),
+        _hardware_acceptance_symbol(
+            get(data, "verdict", "inconclusive"),
+            _HARDWARE_ACCEPTANCE_VERDICT_MAP,
+            "verdict",
+            "inconclusive"),
+        HardwareAcceptanceMismatch[
+            _deserialize_hardware_acceptance_mismatch(item)
+            for item in get(data, "mismatches", Any[])
+        ],
+        Symbol[
+            _hardware_acceptance_symbol(
+                value,
+                _HARDWARE_ACCEPTANCE_CERT_VERDICT_MAP,
+                "acceptedCertificateVerdicts entry",
+                "certified")
+            for value in get(data, "acceptedCertificateVerdicts", Any["certified"])
+        ],
+        _optional_float(get(data, "score", nothing)),
+        items,
+        _deserialize_timestamp(data["timestamp"]),
+    )
+end
+
 const _CHAOS_DESIGN_RESULT_FORMAT = "chaos-design-result-v1"
 
 function _serialize_chaos_design_variable(variable::ChaosDesignVariable)::Dict{String, Any}
@@ -1773,6 +2502,10 @@ const deserialize_robust_chaos_certificate = _deserialize_robust_chaos_certifica
 const serialize_robust_chaos_evidence = _serialize_robust_chaos_evidence
 """    deserialize_robust_chaos_evidence(data::AbstractDict) -> RobustChaosEvidence"""
 const deserialize_robust_chaos_evidence = _deserialize_robust_chaos_evidence
+"""    serialize_robust_chaos_region_result(result::RobustChaosRegionResult) -> Dict — versioned JSON-plain two-parameter certificate summary."""
+const serialize_robust_chaos_region_result = _serialize_robust_chaos_region_result
+"""    deserialize_robust_chaos_region_result(data::AbstractDict) -> RobustChaosRegionResult"""
+const deserialize_robust_chaos_region_result = _deserialize_robust_chaos_region_result
 """    serialize_chaos_design_result(result::ChaosDesignResult) -> Dict — versioned JSON-plain form."""
 const serialize_chaos_design_result = _serialize_chaos_design_result
 """    deserialize_chaos_design_result(data::AbstractDict) -> ChaosDesignResult"""
@@ -1793,6 +2526,10 @@ const deserialize_tolerance_map_result = _deserialize_tolerance_map_result
 const serialize_mode_sequence_alignment = _serialize_mode_sequence_alignment
 """    deserialize_mode_sequence_alignment(data::AbstractDict) -> ModeSequenceAlignment"""
 const deserialize_mode_sequence_alignment = _deserialize_mode_sequence_alignment
+"""    serialize_hardware_acceptance_result(result::HardwareAcceptanceResult) -> Dict — versioned JSON-plain hardware-acceptance verdict."""
+const serialize_hardware_acceptance_result = _serialize_hardware_acceptance_result
+"""    deserialize_hardware_acceptance_result(data::AbstractDict) -> HardwareAcceptanceResult"""
+const deserialize_hardware_acceptance_result = _deserialize_hardware_acceptance_result
 """    serialize_map_normal_form(normal_form::MapNormalForm) -> Dict — versioned JSON-plain form."""
 const serialize_map_normal_form = _serialize_map_normal_form
 """    deserialize_map_normal_form(data::AbstractDict) -> MapNormalForm"""
@@ -1809,10 +2546,31 @@ const deserialize_border_collision_classification = _deserialize_border_collisio
 const serialize_border_collision_point = _serialize_border_collision_point
 """    deserialize_border_collision_point(data::AbstractDict) -> BorderCollisionPoint"""
 const deserialize_border_collision_point = _deserialize_border_collision_point
+"""    serialize_border_scenario_prediction(prediction::BorderScenarioPrediction) -> Dict — versioned JSON-plain form (format "border-scenario-prediction-v1")."""
+const serialize_border_scenario_prediction = _serialize_border_scenario_prediction
+"""    deserialize_border_scenario_prediction(data::AbstractDict) -> BorderScenarioPrediction"""
+const deserialize_border_scenario_prediction = _deserialize_border_scenario_prediction
+"""    serialize_border_scenario_verification(result::BorderScenarioVerification) -> Dict — versioned JSON-plain form (format "border-scenario-verification-v1")."""
+const serialize_border_scenario_verification = _serialize_border_scenario_verification
+"""    deserialize_border_scenario_verification(data::AbstractDict) -> BorderScenarioVerification"""
+const deserialize_border_scenario_verification = _deserialize_border_scenario_verification
+"""    serialize_filippov_grazing_result(result::FilippovGrazingResult) -> Dict — versioned JSON-plain form (format "filippov-grazing-result-v1")."""
+const serialize_filippov_grazing_result = _serialize_filippov_grazing_result
+"""    deserialize_filippov_grazing_result(data::AbstractDict) -> FilippovGrazingResult"""
+const deserialize_filippov_grazing_result = _deserialize_filippov_grazing_result
+"""    serialize_filippov_grazing_locus_result(result::FilippovGrazingLocusResult) -> Dict — versioned JSON-plain form (format "filippov-grazing-locus-result-v1")."""
+const serialize_filippov_grazing_locus_result = _serialize_filippov_grazing_locus_result
+"""    deserialize_filippov_grazing_locus_result(data::AbstractDict) -> FilippovGrazingLocusResult"""
+const deserialize_filippov_grazing_locus_result = _deserialize_filippov_grazing_locus_result
+"""    serialize_filippov_sliding_result(result::FilippovSlidingResult) -> Dict — versioned JSON-plain form (format "filippov-sliding-result-v1")."""
+const serialize_filippov_sliding_result = _serialize_filippov_sliding_result
+"""    deserialize_filippov_sliding_result(data::AbstractDict) -> FilippovSlidingResult"""
+const deserialize_filippov_sliding_result = _deserialize_filippov_sliding_result
 
 # ---- Codim2SpecialPoint serialization ------------------------------------
 
-const _CODIM2_SPECIAL_POINT_FORMAT = "codim2-special-point-v1"
+const _CODIM2_SPECIAL_POINT_FORMAT = "codim2-special-point-v2"
+const _CODIM2_SPECIAL_POINT_FORMAT_V1 = "codim2-special-point-v1"
 
 function _serialize_codim2_special_point(point::Codim2SpecialPoint)::Dict{String, Any}
     point.kind in _CODIM2_SPECIAL_POINT_KINDS || throw(ArgumentError(
@@ -1845,6 +2603,8 @@ function _serialize_codim2_special_point(point::Codim2SpecialPoint)::Dict{String
         "status"         => String(point.status),
         "normalForm"     => point.normal_form === nothing ? nothing :
                             _serialize_map_normal_form(point.normal_form),
+        "codim2NormalForm" => point.codim2_normal_form === nothing ? nothing :
+                              _serialize_codim2_normal_form(point.codim2_normal_form),
     )
 end
 
@@ -1855,7 +2615,7 @@ function _deserialize_codim2_special_point(data::AbstractDict)::Codim2SpecialPoi
          "state", "multipliers", "testValue", "period", "converged", "status"),
         "codim2 special point")
     format = _as_string(get(data, "format", ""), "")
-    format == _CODIM2_SPECIAL_POINT_FORMAT || throw(ArgumentError(
+    format in (_CODIM2_SPECIAL_POINT_FORMAT, _CODIM2_SPECIAL_POINT_FORMAT_V1) || throw(ArgumentError(
         "Unsupported codim2 special-point serialization format '$format'."))
     kind = Symbol(_as_string(get(data, "kind", ""), ""))
     kind in _CODIM2_SPECIAL_POINT_KINDS || throw(ArgumentError(
@@ -1895,12 +2655,18 @@ function _deserialize_codim2_special_point(data::AbstractDict)::Codim2SpecialPoi
         "got $(repr(status))."))
     nf_data = get(data, "normalForm", nothing)
     normal_form = nf_data === nothing ? nothing : _deserialize_map_normal_form(nf_data)
+    c2nf_data = get(data, "codim2NormalForm", nothing)
+    codim2_normal_form = c2nf_data === nothing ? nothing : _deserialize_codim2_normal_form(c2nf_data)
     return Codim2SpecialPoint(kind, locus_kind, primary_param, secondary_param,
                               state, multipliers, test_value, period, converged,
-                              status, normal_form)
+                              status, normal_form, codim2_normal_form)
 end
 
-"""    serialize_codim2_special_point(point::Codim2SpecialPoint) -> Dict — versioned JSON-plain form (format "codim2-special-point-v1")."""
+"""    serialize_codim2_normal_form(normal_form::Codim2NormalForm) -> Dict — versioned JSON-plain form."""
+const serialize_codim2_normal_form = _serialize_codim2_normal_form
+"""    deserialize_codim2_normal_form(data::AbstractDict) -> Codim2NormalForm"""
+const deserialize_codim2_normal_form = _deserialize_codim2_normal_form
+"""    serialize_codim2_special_point(point::Codim2SpecialPoint) -> Dict — versioned JSON-plain form (format "codim2-special-point-v2")."""
 const serialize_codim2_special_point = _serialize_codim2_special_point
 """    deserialize_codim2_special_point(data::AbstractDict) -> Codim2SpecialPoint"""
 const deserialize_codim2_special_point = _deserialize_codim2_special_point
@@ -1908,7 +2674,7 @@ const deserialize_codim2_special_point = _deserialize_codim2_special_point
 # ---- Homoclinic continuation serialization --------------------------------
 
 const _HOMOCLINIC_BRANCH_FORMAT = "homoclinic-branch-v1"
-const _HOMOCLINIC_CONNECTION_KINDS = (:homoclinic, :heteroclinic, :saddle_cycle)
+const _HOMOCLINIC_CONNECTION_KINDS = (:homoclinic, :heteroclinic, :saddle_cycle, :cycle_connection)
 const _HOMOCLINIC_POINT_STATUSES = (:available, :unavailable, :degenerate)
 
 function _serialize_homoclinic_special_point(point::HomoclinicSpecialPoint)
@@ -2282,6 +3048,19 @@ function _deserialize_special_float_vec(raw::AbstractVector)
     return Float64[_decode_special_float(x) for x in raw]
 end
 
+function _lyapunov_method_symbol(name::AbstractString)
+    name in ("variational", "two_trajectory") || throw(ArgumentError(
+        "Unknown Lyapunov field method $(repr(name)); expected \"variational\" or \"two_trajectory\"."))
+    return Symbol(name)
+end
+
+function _lyapunov_normalization_symbol(name::AbstractString)
+    name in ("flow_time", "per_return", "per_iteration", "unspecified") || throw(ArgumentError(
+        "Unknown Lyapunov field normalization $(repr(name)); expected \"flow_time\", \"per_return\", " *
+        "\"per_iteration\", or \"unspecified\"."))
+    return Symbol(name)
+end
+
 function _serialize_lyapunov_field_result_v2(r::LyapunovFieldResult)
     na = length(r.a_grid); nb = length(r.b_grid)
     expected_size = (na, nb)
@@ -2306,6 +3085,8 @@ function _serialize_lyapunov_field_result_v2(r::LyapunovFieldResult)
         "paramNames"               => String.(collect(r.param_names)),
         "timestamp"                => _serialize_timestamp(r.timestamp),
         "computeBackend"           => String(r.compute_backend),
+        "lyapunovMethod"           => String(r.lyapunov_method),
+        "normalization"            => String(r.normalization),
     )
 end
 
@@ -2339,6 +3120,8 @@ function _deserialize_lyapunov_field_result_v2(data::AbstractDict)
         (Symbol(pn_raw[1]), Symbol(pn_raw[2])),
         _deserialize_timestamp(data["timestamp"]);
         compute_backend=_compute_backend_symbol(String(data["computeBackend"])),
+        lyapunov_method=_lyapunov_method_symbol(String(get(data, "lyapunovMethod", "two_trajectory"))),
+        normalization=_lyapunov_normalization_symbol(String(get(data, "normalization", "unspecified"))),
     )
 end
 

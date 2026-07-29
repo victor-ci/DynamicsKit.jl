@@ -396,3 +396,266 @@ function _record_continuous_gpu_provenance!(diagnostics::AbstractDict, config)
     diagnostics["closurePrecision"] = config.precision
     return diagnostics
 end
+
+# Variational Lyapunov GPU sweep
+#
+# Augmented-state layout for physical dim D:
+#   1 .. D       physical state u
+#   D+1 .. 2D    tangent vector v
+#   2D+1         crossing count (CC)
+#   2D+2         accumulated sample count (OC)
+#   2D+3         accumulated physical time (AT): measured inter-return intervals only
+#   2D+4         log stretch sum (LS)
+#   2D+5         status code: 0=running, 1=ok, 2=collapsed, 3=diverged, 6=invalid, 7=degenerate_section
+#   2D+6         last crossing time (FT, kept separate so AT and FT can both be updated)
+# Total: 2D + 6 elements.
+@inline _variational_lyapunov_gpu_state_dim(D::Int) = 2D + 6
+@inline function _variational_lyapunov_gpu_indices(::Val{D}) where D
+    return (CC = 2D + 1, OC = 2D + 2, AT = 2D + 3, LS = 2D + 4, ST = 2D + 5, FT = 2D + 6)
+end
+
+# Explicit vector-output JVP for `f_oop`: seed each state coordinate with the tangent component and
+# read the first partial of every returned coordinate. This avoids relying on scalar-derivative
+# dispatch for a vector-valued closure.
+@inline function _continuous_gpu_jvp(f_oop, uphys::SVector{D, T}, vtang::SVector{D, T}, p, t) where {D, T}
+    udual = SVector{D}(ntuple(i -> ForwardDiff.Dual{Nothing}(uphys[i], vtang[i]), Val(D)))
+    fdual = f_oop(udual, p, t)
+    return SVector{D, T}(ntuple(i -> ForwardDiff.partials(fdual[i], 1), Val(D)))
+end
+
+# Out-of-place augmented RHS: physical derivatives from `f_oop`, tangent derivatives from J(u)*v
+# via the explicit vector-output JVP above, zero for the register slots.
+@inline function _variational_lyapunov_gpu_rhs(f_oop, u::SVector{N, T}, p, t, ::Val{D}) where {N, T, D}
+    uphys = SVector{D, T}(ntuple(i -> u[i], Val(D)))
+    vtang = SVector{D, T}(ntuple(i -> u[D + i], Val(D)))
+    dphys = f_oop(uphys, p, t)
+    dvtang = _continuous_gpu_jvp(f_oop, uphys, vtang, p, t)
+    return SVector{N, T}(ntuple(Val(N)) do i
+        i <= D   ? dphys[i]        :
+        i <= 2D  ? dvtang[i - D]  : zero(T)
+    end)
+end
+
+# Per-crossing callback: return-time correction, renormalization, accumulation.
+function _make_variational_lyapunov_gpu_affect(::Val{D}, n_sv::SVector{D, Float64}, f_oop,
+                                               transient::Int, total_crossings::Int,
+                                               min_crossing_time::Float64) where D
+    idx = _variational_lyapunov_gpu_indices(Val(D))
+    CC = idx.CC; OC = idx.OC; AT = idx.AT; LS = idx.LS; ST = idx.ST; FT = idx.FT
+    return function (integrator)
+        u = integrator.u
+        t = integrator.t
+        t <= min_crossing_time && return
+
+        cc = u[CC] + 1.0
+        u  = setindex(u, cc, CC)
+        uphys = SVector{D, Float64}(ntuple(i -> u[i], Val(D)))
+        vtang = SVector{D, Float64}(ntuple(i -> u[D + i], Val(D)))
+
+        f_cross = f_oop(uphys, integrator.p, t)
+        nf = dot(n_sv, f_cross)
+        nf_scale = max(norm(n_sv) * norm(f_cross), 1.0)
+
+        if abs(nf) <= 100 * eps(Float64) * nf_scale
+            u = setindex(u, 7.0, ST)
+            integrator.u = u
+            terminate!(integrator)
+            return
+        end
+
+        nv     = dot(n_sv, vtang)
+        v_corr = vtang - f_cross * (nv / nf)
+        stretch = norm(v_corr)
+
+        if !isfinite(stretch)
+            u = setindex(u, 6.0, ST)
+            integrator.u = u
+            terminate!(integrator)
+            return
+        elseif stretch <= eps(Float64) * max(norm(uphys), 1.0)
+            u = setindex(u, 2.0, ST)
+            integrator.u = u
+            terminate!(integrator)
+            return
+        end
+
+        if cc == 1.0
+            u = setindex(u, t, FT)
+        else
+            if cc > transient + 1
+                dt = t - u[FT]
+                u = setindex(u, u[LS] + log(stretch), LS)
+                u = setindex(u, u[AT] + dt, AT)
+                u = setindex(u, u[OC] + 1.0, OC)
+            end
+            u = setindex(u, t, FT)
+        end
+
+        # Transient returns are renormalized but excluded from the accumulated exponent.
+        v_norm = v_corr * (1.0 / stretch)
+        for k in 1:D
+            u = setindex(u, v_norm[k], D + k)
+        end
+
+        if cc >= total_crossings
+            u = setindex(u, 1.0, ST)
+            integrator.u = u
+            terminate!(integrator)
+            return
+        end
+        integrator.u = u
+        return
+    end
+end
+
+# State-divergence DiscreteCallback for variational layout (mirrors the period-detection equivalent,
+# reads only the physical slots 1..D which occupy the same positions in both augmented layouts).
+function _variational_lyapunov_gpu_termination_callback(::Val{D}, divergence_cutoff::Float64) where D
+    idx = _variational_lyapunov_gpu_indices(Val(D))
+    ST = idx.ST; FT = idx.FT
+    condition = (u, t, integrator) -> _continuous_gpu_state_status_code(u, Val(D), divergence_cutoff) != 0.0
+    affect! = function (integrator)
+        u    = integrator.u
+        code = _continuous_gpu_state_status_code(u, Val(D), divergence_cutoff)
+        u    = setindex(u, code, ST)
+        u    = setindex(u, integrator.t, FT)
+        integrator.u = u
+        terminate!(integrator)
+    end
+    return DiscreteCallback(condition, affect!; save_positions = (false, false))
+end
+
+function _decode_variational_lyapunov_gpu_result(uend::AbstractVector, ::Val{D},
+                                                  steps::Int,
+                                                  solver_success::Bool) where D
+    idx = _variational_lyapunov_gpu_indices(Val(D))
+    cc  = Int(round(uend[idx.CC]))
+    oc  = Int(round(uend[idx.OC]))
+    at  = Float64(uend[idx.AT])
+    ls  = Float64(uend[idx.LS])
+    st  = Int(round(uend[idx.ST]))
+
+    samples = oc
+    partial = at > 0.0 ? ls / at : NaN
+
+    status = if     st == 3 || !solver_success; :diverged
+             elseif st == 6;                    :invalid_state
+             elseif st == 7;                    :degenerate_section
+             elseif st == 2;                    :collapsed
+             elseif cc < 2;                     :insufficient_crossings
+             elseif samples < steps;             :insufficient_crossings
+             elseif at <= 0.0;                  :insufficient_samples
+             else;                              :ok
+             end
+
+    exponent = if   status == :collapsed;                 -Inf
+               elseif status in (:diverged, :invalid_state,
+                                 :degenerate_section,
+                                 :insufficient_crossings, :insufficient_samples); NaN
+               else; ls / at
+               end
+
+    return (exponent = exponent, estimation_status = status, sample_count = samples)
+end
+
+"""
+Run a GPU ensemble of variational Lyapunov exponent estimates for continuous flows — one per
+`(u0_list[k], p_list[k])` trajectory — on `ka_backend` via DiffEqGPU's `EnsembleGPUKernel`.
+
+Each GPU trajectory carries an augmented `SVector{2D+6}` state (physical state + tangent vector +
+accumulation registers). The crossing callback applies the return-time correction and renormalization
+in-kernel, accumulating the log-stretch into the running registers. All mathematical constants and
+thresholds are identical to the CPU variational path in `_estimate_variational_continuous_lyapunov`.
+
+Requires `has_continuous_gpu_rhs(sys)` and a non-empty `sys.section.constant_normal`.
+"""
+function _variational_lyapunov_gpu_sweep(sys::ContinuousODE,
+                                         u0_list::Vector{<:AbstractVector},
+                                         p_list::Vector{<:AbstractVector},
+                                         n_vec::AbstractVector{Float64},
+                                         v0_list::Vector{<:AbstractVector},
+                                         ka_backend;
+                                         transient::Int,
+                                         steps::Int,
+                                         reltol::Float64,
+                                         abstol::Float64,
+                                         min_crossing_time::Float64,
+                                         divergence_cutoff::Float64,
+                                         alg = GPUTsit5())
+    f_oop = continuous_gpu_rhs(sys)
+    f_oop === nothing && throw(ArgumentError(
+        "_variational_lyapunov_gpu_sweep requires a system with a GPU out-of-place RHS (f_svector)."))
+    isempty(sys.section.constant_normal) && throw(ArgumentError(
+        "_variational_lyapunov_gpu_sweep requires a constant section normal (sys.section.constant_normal)."))
+    n = length(u0_list)
+    n > 0 || throw(ArgumentError("u0_list must not be empty."))
+    length(p_list) == n || throw(ArgumentError("u0_list and p_list must have equal length."))
+    length(v0_list) == n || throw(ArgumentError("u0_list and v0_list must have equal length."))
+
+    solve_n = n == 1 ? 2 : n
+    D  = sys.dim
+    N  = _variational_lyapunov_gpu_state_dim(D)
+    PP = length(first(p_list))
+
+    n_sv = SVector{D, Float64}(ntuple(i -> n_vec[i], Val(D)))
+
+    aug0 = Vector{SVector{N, Float64}}(undef, solve_n)
+    for k in 1:solve_n
+        src  = min(k, n)
+        u0   = u0_list[src]
+        v0   = v0_list[src]
+        aug0[k] = SVector{N, Float64}(ntuple(Val(N)) do i
+            i <= D      ? Float64(u0[i])     :
+            i <= 2D     ? Float64(v0[i - D]) : 0.0
+        end)
+    end
+    p_sv = Vector{SVector{PP, Float64}}(undef, solve_n)
+    for k in 1:solve_n
+        src   = min(k, n)
+        p_sv[k] = SVector{PP, Float64}(ntuple(i -> Float64(p_list[src][i]), Val(PP)))
+    end
+
+    total_crossings = transient + steps + 1
+    local_tmax  = sys.tspan_hint * max(total_crossings + 2, 4) * 4
+    initial_dt  = _default_poincare_initial_dt(min_crossing_time)
+
+    rhs_valD = Val(D)
+    rhs      = (u, p, t) -> _variational_lyapunov_gpu_rhs(f_oop, u, p, t, rhs_valD)
+    detect!  = _make_variational_lyapunov_gpu_affect(Val(D), n_sv, f_oop, transient,
+                                                      total_crossings, min_crossing_time)
+    section_cb = _continuous_gpu_callback(sys.section, detect!)
+    state_cb   = _variational_lyapunov_gpu_termination_callback(Val(D), divergence_cutoff)
+    cb = CallbackSet(section_cb, state_cb)
+
+    prob  = ODEProblem{false}(rhs, aug0[1], (0.0, local_tmax), p_sv[1])
+    eprob = EnsembleProblem(prob; prob_func = _ContinuousEnsembleProbFunc(aug0, p_sv), safetycopy = false)
+
+    _prepare_continuous_gpu_backend(ka_backend, solve_n)
+    sol = solve(eprob, alg, EnsembleGPUKernel(ka_backend);
+                trajectories  = solve_n,
+                adaptive      = true,
+                dt            = initial_dt,
+                callback      = cb,
+                merge_callbacks = true,
+                save_everystep = false,
+                save_start    = false,
+                save_end      = true,
+                reltol        = reltol,
+                abstol        = abstol)
+
+    first_traj    = sol.u[1]
+    first_uend    = first_traj.u[end]
+    first_success = SciMLBase.successful_retcode(first_traj.retcode) ||
+                    first_traj.retcode == SciMLBase.ReturnCode.Terminated
+    first_res = _decode_variational_lyapunov_gpu_result(first_uend, Val(D), steps, first_success)
+    results   = Vector{typeof(first_res)}(undef, n)
+    results[1] = first_res
+    for k in 2:n
+        traj    = sol.u[k]
+        uend    = traj.u[end]
+        success = SciMLBase.successful_retcode(traj.retcode) ||
+                  traj.retcode == SciMLBase.ReturnCode.Terminated
+        results[k] = _decode_variational_lyapunov_gpu_result(uend, Val(D), steps, success)
+    end
+    return results
+end

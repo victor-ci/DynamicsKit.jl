@@ -48,20 +48,29 @@ Defines a Poincaré section for continuous-time systems.
 - `direction`: `:up` (+1), `:down` (-1), or `:both` (0) — crossing direction to detect
 - `projection`: Indices of state variables kept after section crossing (the Poincaré map coordinates)
 - `template`: Optional full-state template used to lift projected section coordinates back to a full state
+- `constant_normal`: Optional constant section normal vector (gradient of `condition` w.r.t. state),
+  required for the GPU variational Lyapunov path; CPU paths derive the normal via automatic
+  differentiation when this is empty. For coordinate-hyperplane sections (`u[k] = c`), the normal is
+  the k-th unit vector. Leave empty for sections with non-constant normals (only CPU is supported there).
 """
 struct PoincareSection{F}
     condition::F
     direction::Int
     projection::Vector{Int}
     template::Vector{Float64}
+    constant_normal::Vector{Float64}
 end
 
 function PoincareSection(condition::F;
                          direction::Symbol=:up,
                          projection::Vector{Int}=[1, 3],
-                         template::AbstractVector=Float64[]) where F
+                         template::AbstractVector=Float64[],
+                         constant_normal::AbstractVector=Float64[]) where F
+    direction in (:up, :down, :both) || throw(ArgumentError(
+        "PoincareSection.direction must be :up, :down, or :both; got $(repr(direction))."))
     dir_int = direction == :up ? 1 : direction == :down ? -1 : 0
-    PoincareSection{F}(condition, dir_int, projection, collect(Float64, template))
+    PoincareSection{F}(condition, dir_int, projection, collect(Float64, template),
+                       collect(Float64, constant_normal))
 end
 
 """
@@ -462,6 +471,8 @@ struct LyapunovFieldResult
     param_names::Tuple{Symbol, Symbol}
     timestamp::DateTime
     compute_backend::Symbol           # :cpu, or the GPU vendor (e.g. :cuda) that computed this field
+    lyapunov_method::Symbol           # :variational or :two_trajectory
+    normalization::Symbol             # :flow_time, :per_return, :per_iteration, or :unspecified
 end
 
 function LyapunovFieldResult(a_grid::Vector{Float64},
@@ -474,9 +485,17 @@ function LyapunovFieldResult(a_grid::Vector{Float64},
                              system_name::String,
                              param_names::Tuple{Symbol, Symbol},
                              timestamp::DateTime;
-                             compute_backend::Symbol=:cpu)
+                             compute_backend::Symbol=:cpu,
+                             lyapunov_method::Symbol=:two_trajectory,
+                             normalization::Symbol=:unspecified)
+    lyapunov_method in (:variational, :two_trajectory) || throw(ArgumentError(
+        "LyapunovFieldResult.lyapunov_method must be :variational or :two_trajectory; got $(repr(lyapunov_method))."))
+    normalization in (:flow_time, :per_return, :per_iteration, :unspecified) || throw(ArgumentError(
+        "LyapunovFieldResult.normalization must be :flow_time, :per_return, :per_iteration, or :unspecified; " *
+        "got $(repr(normalization))."))
     return LyapunovFieldResult(a_grid, b_grid, exponents, classification_status_codes, estimation_status_codes,
-                               sample_counts, neutral_tolerance, system_name, param_names, timestamp, compute_backend)
+                               sample_counts, neutral_tolerance, system_name, param_names, timestamp,
+                               compute_backend, lyapunov_method, normalization)
 end
 
 """
@@ -813,17 +832,18 @@ end
 """
     HomoclinicBranchResult
 
-Plain-data connecting-orbit continuation result (homoclinic, heteroclinic, or
-homoclinic-to-saddle-cycle). The full two-parameter locus and saddle
-diagnostics are retained columnarly; bounded `orbits` preserve selected
-trajectories for inspection.
+Plain-data connecting-orbit continuation result (homoclinic, heteroclinic,
+homoclinic-to-saddle-cycle, or saddle-cycle-to-saddle-cycle). The full
+two-parameter locus and saddle/cycle-phase diagnostics are retained columnarly;
+bounded `orbits` preserve selected trajectories for inspection.
 
 Numerical provenance is explicit: `residuals` is the converged projection
 boundary-value residual norm at each locus sample, `corrector_paths` records
 whether the primary Newton corrector or the damped-pseudoinverse fallback
-produced each point, `connection_kind` is `:homoclinic`, `:heteroclinic`, or
-`:saddle_cycle`, and `target_saddles` stores the target equilibrium (equal to
-`saddles` for a homoclinic connection). `test_statuses` preserves the
+produced each point, `connection_kind` is `:homoclinic`, `:heteroclinic`,
+`:saddle_cycle`, or `:cycle_connection`, and `target_saddles` stores the target
+equilibrium or target cycle phase point (equal to `saddles` for a homoclinic
+connection). `test_statuses` preserves the
 `:available`, `:unavailable`, or `:degenerate` status of every test function at
 every locus sample. `diagnostics` carries free-form provenance (mesh size,
 epsilon policy, seed origin, fallback counts, warnings). `source_period` and
@@ -859,6 +879,141 @@ struct HomoclinicBranchResult
 end
 
 """
+    CycleConnectionSeedResult
+
+Automatic seed-discovery result for a saddle-cycle to saddle-cycle connecting
+orbit. `source_cycle_states` and `target_cycle_states` are rotated so the
+selected source and target phases are the first/last projection reference phases
+used by `cycle_connection_continuation`; `orbit_guess` is the discovered
+connecting trajectory segment and `truncation_time` its elapsed time.
+"""
+struct CycleConnectionSeedResult
+    orbit_guess::Matrix{Float64}
+    truncation_time::Float64
+    source_cycle_states::Matrix{Float64}
+    target_cycle_states::Matrix{Float64}
+    source_phase_index::Int
+    target_phase_index::Int
+    source_direction_index::Int
+    source_direction_sign::Float64
+    distance::Float64
+    status::Symbol
+    diagnostics::Dict{String, Any}
+    timestamp::DateTime
+end
+
+"""
+    FilippovGuardDiagnostic
+
+Local guard diagnostics for a flow-side switching surface. `guard_value` is
+`h(x,p)`, `normal` is `∇h`, `normal_velocity` is `∇h⋅f`, and
+`normal_acceleration` is the directional derivative of `normal_velocity` along
+the flow. `status` is `:ok` when all quantities are available.
+"""
+struct FilippovGuardDiagnostic
+    event_name::String
+    state::Vector{Float64}
+    params::Vector{Float64}
+    guard_value::Float64
+    normal::Vector{Float64}
+    vector_field::Vector{Float64}
+    normal_velocity::Float64
+    normal_acceleration::Float64
+    status::Symbol
+    message::String
+end
+
+"""
+    FilippovGrazingPoint
+
+Detected tangency between a continuous-flow orbit and a `SwitchingEvent`
+guard. `status == :grazing` means `h = 0`, `∇h⋅f = 0`, and the second
+normal derivative is nonzero within the configured tolerances;
+`:degenerate` means the same first two conditions hold but genericity failed.
+"""
+struct FilippovGrazingPoint
+    event_name::String
+    time::Float64
+    state::Vector{Float64}
+    params::Vector{Float64}
+    guard_value::Float64
+    normal_velocity::Float64
+    normal_acceleration::Float64
+    status::Symbol
+    converged::Bool
+end
+
+"""
+    FilippovGrazingResult
+
+Orbit-level grazing detection result for a continuous-time system.
+"""
+struct FilippovGrazingResult
+    points::Vector{FilippovGrazingPoint}
+    system_name::String
+    event_name::String
+    params::Vector{Float64}
+    tspan::Tuple{Float64, Float64}
+    status::Symbol
+    warnings::Vector{String}
+    timestamp::DateTime
+end
+
+"""
+    FilippovGrazingLocusResult
+
+Two-parameter grazing locus assembled by solving a signed guard-margin
+condition on repeated secondary-parameter slices. Each sample records the
+primary/secondary coordinates and the corresponding grazing state when
+available.
+"""
+struct FilippovGrazingLocusResult
+    primary_values::Vector{Float64}
+    secondary_values::Vector{Float64}
+    states::Matrix{Float64}
+    guard_values::Vector{Float64}
+    normal_velocities::Vector{Float64}
+    normal_accelerations::Vector{Float64}
+    statuses::Vector{Symbol}
+    system_name::String
+    event_name::String
+    param_names::Tuple{Symbol, Symbol}
+    timestamp::DateTime
+end
+
+"""
+    FilippovSlidingSegment
+
+Consecutive guard samples classified from the one-sided normal velocities.
+`kind` is `:attracting`, `:repelling`, `:crossing`, or `:degenerate`.
+"""
+struct FilippovSlidingSegment
+    event_name::String
+    start_index::Int
+    end_index::Int
+    start_state::Vector{Float64}
+    end_state::Vector{Float64}
+    normal_velocity_minus::Float64
+    normal_velocity_plus::Float64
+    kind::Symbol
+    status::Symbol
+end
+
+"""
+    FilippovSlidingResult
+
+Sliding/crossing classification for sampled points on a switching surface.
+"""
+struct FilippovSlidingResult
+    segments::Vector{FilippovSlidingSegment}
+    event_name::String
+    sample_count::Int
+    status::Symbol
+    warnings::Vector{String}
+    timestamp::DateTime
+end
+
+"""
     MapNormalForm
 
 Plain-data normal-form classification for a map bifurcation. `coefficient_name` is `:b`
@@ -871,6 +1026,24 @@ struct MapNormalForm
     kind::Symbol
     coefficient_name::Symbol
     coefficient::Union{Nothing, Float64}
+    criticality::Symbol
+    status::Symbol
+    convention::String
+end
+
+"""
+    Codim2NormalForm
+
+Plain-data normal-form classification for a map codimension-two organising point.
+`coefficient_names` and `coefficients` are paired arrays so the record remains
+JSON-plain without relying on symbol-keyed dictionaries. `criticality` names the
+sign-based local class when the reduction is nondegenerate; `status` is `:ok`,
+`:degenerate`, or an explicit unavailable reason.
+"""
+struct Codim2NormalForm
+    kind::Symbol
+    coefficient_names::Vector{Symbol}
+    coefficients::Vector{Float64}
     criticality::Symbol
     status::Symbol
     convention::String
@@ -934,9 +1107,9 @@ the resolution:
 - `:unavailable` — detection was requested but required data (multipliers, normal-form
   coefficients) were absent or numerically unstable.
 
-`normal_form` carries the codim-1 normal form for a `:sampled` coefficient detection
-(`:cusp`, `:generalized-flip`, `:bautin`); interpolated coefficient-zero points carry
-`nothing`, and full codim-2 normal-form classification is out of scope.
+`normal_form` carries the codim-1 normal form used by coefficient detectors.
+`codim2_normal_form` carries the codimension-two reduction when it is available;
+otherwise it is `nothing` and `status` identifies the point-location status only.
 """
 struct Codim2SpecialPoint
     kind::Symbol
@@ -950,7 +1123,18 @@ struct Codim2SpecialPoint
     converged::Bool
     status::Symbol
     normal_form::Union{Nothing, MapNormalForm}
+    codim2_normal_form::Union{Nothing, Codim2NormalForm}
 end
+
+Codim2SpecialPoint(kind::Symbol, locus_kind::Symbol, primary_param::Real,
+                   secondary_param::Real, state::AbstractVector,
+                   multipliers::AbstractVector, test_value::Real,
+                   period::Integer, converged::Bool, status::Symbol,
+                   normal_form::Union{Nothing, MapNormalForm}) =
+    Codim2SpecialPoint(kind, locus_kind, Float64(primary_param), Float64(secondary_param),
+                       collect(Float64, state), collect(ComplexF64, multipliers),
+                       Float64(test_value), Int(period), Bool(converged), status,
+                       normal_form, nothing)
 
 """
     BifurcationResult
@@ -1075,6 +1259,78 @@ struct RobustChaosCertificate
     robustness_score::Float64
     certificate_items::Vector{Dict{String, Any}}
     timestamp::DateTime
+end
+
+"""
+    RobustChaosRegion
+
+One connected two-parameter candidate region checked by
+`robust_chaos_region_certificate`. The verdict is bounded to the sampled
+operating-map cells, Lyapunov-field grid, atlas slices, basin knots, and finite
+search periods recorded in `certificate_items`.
+"""
+struct RobustChaosRegion
+    id::Int
+    verdict::Symbol
+    robustness_score::Float64
+    a_min::Float64
+    a_max::Float64
+    b_min::Float64
+    b_max::Float64
+    area::Float64
+    leaf_cell_count::Int
+    finest_depth::Int
+    coarsest_depth::Int
+    lyapunov_verdict::Symbol
+    lyapunov_positive_fraction::Float64
+    lyapunov_resolved_fraction::Float64
+    lyapunov_min_resolved_exponent::Float64
+    lyapunov_n_total::Int
+    lyapunov_n_resolved::Int
+    lyapunov_n_positive::Int
+    atlas_verdict::Symbol
+    atlas_slice_count::Int
+    atlas_passed_slices::Int
+    atlas_coverage_effort::Float64
+    atlas_stable_evidence_count::Int
+    basin_verdict::Symbol
+    basin_knot_count::Int
+    basin_chaotic_fraction::Float64
+    basin_resolved_fraction::Float64
+    basin_n_total::Int
+    basin_n_resolved::Int
+    basin_n_chaotic::Int
+    boundary_margin::Float64
+    boundary_edge_censored::Bool
+    counter_evidence::Vector{String}
+    certificate_items::Vector{Dict{String, Any}}
+end
+
+"""
+    RobustChaosRegionResult
+
+Summary of a two-parameter robust-chaos region certification run. It records the
+candidate-region discovery effort, all checked regions, and global budget/scale
+provenance. Use `serialize_robust_chaos_region_result` for a versioned
+JSON-plain representation.
+"""
+struct RobustChaosRegionResult
+    regions::Vector{RobustChaosRegion}
+    system_name::String
+    param_names::Tuple{Symbol, Symbol}
+    candidate_leaf_count::Int
+    rejected_leaf_count::Int
+    adaptive_budget_used::Int
+    adaptive_total_budget::Int
+    adaptive_budget_exhausted::Bool
+    adaptive_uninspected_cell_count::Int
+    adaptive_max_depth_reached::Int
+    adaptive_max_depth_allowed::Int
+    lyapunov_method::Symbol
+    lyapunov_normalization::Symbol
+    boundary_edge_policy::Symbol
+    timestamp::DateTime
+    certificate_items::Vector{Dict{String, Any}}
 end
 
 """
@@ -1381,4 +1637,120 @@ function BorderCollisionPoint(param::Real, orbit::AbstractVector, colliding_phas
         Int(period),
         classification,
         converged)
+end
+
+"""
+    BorderScenarioRung
+
+One symbolic rung in a Farey/Stern-Brocot period-adding ordering. `word` is the
+left/right itinerary label, `rotation_numerator / period` is the corresponding
+symbolic rotation number, and the parent labels identify the neighbouring words
+whose concatenation produced this rung.
+"""
+struct BorderScenarioRung
+    word::String
+    rotation_numerator::Int
+    period::Int
+    left_parent::Union{Nothing, String}
+    right_parent::Union{Nothing, String}
+end
+
+function BorderScenarioRung(word::AbstractString, rotation_numerator::Integer,
+                            period::Integer, left_parent, right_parent)
+    period >= 1 || throw(ArgumentError("BorderScenarioRung period must be >= 1; got $period."))
+    0 <= rotation_numerator <= period || throw(ArgumentError(
+        "BorderScenarioRung rotation numerator must lie in 0:period; got $rotation_numerator/$period."))
+    return BorderScenarioRung(String(word), Int(rotation_numerator), Int(period),
+        left_parent === nothing ? nothing : String(left_parent),
+        right_parent === nothing ? nothing : String(right_parent))
+end
+
+"""
+    BorderScenarioPrediction
+
+Prediction layer built from one-sided border-collision data. The determinant-sign
+classification is retained, the 2-D BCNF reduction stores trace/determinant
+parameters when available, robust-chaos conditions store the evaluated
+Banerjee--Yorke--Grebogi / Glendinning inequalities, and `period_adding_rungs`
+stores only the scalar Farey ordering that is valid under the 1-D discontinuous
+piecewise-linear hypotheses.
+"""
+struct BorderScenarioPrediction
+    status::Symbol
+    model::Symbol
+    classification::BorderCollisionClassification
+    bcnf_parameters::Dict{String, Float64}
+    predicted_cascade::Symbol
+    robust_chaos_verdict::Symbol
+    robust_chaos_conditions::Dict{String, Any}
+    period_adding_rungs::Vector{BorderScenarioRung}
+    validity_region::Dict{String, Any}
+    inference::String
+    warnings::Vector{String}
+    convention::String
+end
+
+function BorderScenarioPrediction(; status::Symbol, model::Symbol,
+        classification::BorderCollisionClassification,
+        bcnf_parameters::AbstractDict=Dict{String, Float64}(),
+        predicted_cascade::Symbol=:undetermined,
+        robust_chaos_verdict::Symbol=:not_applicable,
+        robust_chaos_conditions::AbstractDict=Dict{String, Any}(),
+        period_adding_rungs::AbstractVector{BorderScenarioRung}=BorderScenarioRung[],
+        validity_region::AbstractDict=Dict{String, Any}(),
+        inference::AbstractString="",
+        warnings::AbstractVector=String[],
+        convention::AbstractString="border-scenario-v1")
+    params = Dict{String, Float64}(String(k) => Float64(v) for (k, v) in bcnf_parameters)
+    conditions = Dict{String, Any}(String(k) => v for (k, v) in robust_chaos_conditions)
+    region = Dict{String, Any}(String(k) => v for (k, v) in validity_region)
+    return BorderScenarioPrediction(status, model, classification, params, predicted_cascade,
+        robust_chaos_verdict, conditions, collect(BorderScenarioRung, period_adding_rungs),
+        region, String(inference), collect(String, warnings), String(convention))
+end
+
+"""
+    BorderScenarioVerification
+
+Result of a targeted one-parameter sweep against a `BorderScenarioPrediction`.
+`observed_runs` compresses consecutive samples with the same detected period;
+`matched_prefix_length` compares the observed positive-period sequence with the
+prediction's expected period list (or an explicitly supplied list).
+"""
+struct BorderScenarioVerification
+    status::Symbol
+    prediction_status::Symbol
+    verification_kind::Symbol
+    param_values::Vector{Float64}
+    observed_periods::Vector{Int}
+    observed_runs::Vector{Dict{String, Any}}
+    lyapunov_exponents::Vector{Float64}
+    lyapunov_statuses::Vector{Symbol}
+    positive_lyapunov_fraction::Float64
+    aperiodic_fraction::Float64
+    matched_prefix_length::Int
+    required_prefix_length::Int
+    consistency_passed::Bool
+    inference::String
+    warnings::Vector{String}
+end
+
+function BorderScenarioVerification(; status::Symbol, prediction_status::Symbol,
+        verification_kind::Symbol=:period_sequence,
+        param_values::AbstractVector, observed_periods::AbstractVector{<:Integer},
+        observed_runs::AbstractVector=Dict{String, Any}[],
+        lyapunov_exponents::AbstractVector{<:Real}=Float64[],
+        lyapunov_statuses::AbstractVector{Symbol}=Symbol[],
+        positive_lyapunov_fraction::Real=NaN,
+        aperiodic_fraction::Real=NaN,
+        matched_prefix_length::Integer=0, required_prefix_length::Integer=0,
+        consistency_passed::Bool=false, inference::AbstractString="",
+        warnings::AbstractVector=String[])
+    return BorderScenarioVerification(status, prediction_status, verification_kind,
+        collect(Float64, param_values), collect(Int, observed_periods),
+        collect(Dict{String, Any}, observed_runs), collect(Float64, lyapunov_exponents),
+        collect(Symbol, lyapunov_statuses), Float64(positive_lyapunov_fraction),
+        Float64(aperiodic_fraction), Int(matched_prefix_length),
+        Int(required_prefix_length), consistency_passed, String(inference),
+        collect(String, warnings))
 end

@@ -1,6 +1,5 @@
 include(joinpath(@__DIR__, "..", "examples", "scientific_diagnostics_suite.jl"))
 
-using JSON3
 using Dates
 using Printf
 
@@ -25,12 +24,12 @@ function _write_scientific_diagnostics_benchmark(rows)
     save_results = _env_bool("SAVE_RESULTS", false) || !isempty(output_dir)
     save_results || return nothing
 
-    dir = isempty(output_dir) ? joinpath(@__DIR__, "..", "var", "output", "benchmarks") : output_dir
+    dir = isempty(output_dir) ? joinpath(@__DIR__, "..", "..", "var", "output", "benchmarks") : output_dir
     mkpath(dir)
     stamp = Dates.format(now(), dateformat"yyyymmdd_HHMMSS")
     file_path = joinpath(dir, "scientific_diagnostics_benchmark_$(stamp).json")
     open(file_path, "w") do io
-        JSON3.pretty(io, Dict{String, Any}(
+        json_pretty_print(io, Dict{String, Any}(
             "generatedAt" => string(now()),
             "threads" => Threads.nthreads(),
             "rows" => rows,

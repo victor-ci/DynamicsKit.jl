@@ -364,4 +364,143 @@ _bcnf(τ, δ) = [τ 1.0; -δ 0.0]
         bad_point["format"] = "border-collision-point-v999"
         @test_throws ErrorException deserialize_border_collision_point(bad_point)
     end
+
+    @testset "Scenario prediction: Farey order and 2D BCNF robust-chaos criteria" begin
+        order = border_period_adding_order(2)
+        @test [r.word for r in order] == ["L", "LLR", "LR", "LRR", "R"]
+        @test [r.period for r in order] == [1, 3, 2, 3, 1]
+        @test order[3].left_parent == "L"
+        @test order[3].right_parent == "R"
+
+        scalar = border_scenario_predict(reshape([0.4], 1, 1), reshape([-1.5], 1, 1);
+            switching_normal=[1.0], max_farey_level=1)
+        @test scalar.status == :ok
+        @test scalar.model == :scalar_pwl
+        @test scalar.predicted_cascade == :period_adding_order
+        @test scalar.robust_chaos_verdict == :not_applicable
+        @test [r.word for r in scalar.period_adding_rungs] == ["L", "LR", "R"]
+        @test any(w -> occursin("slopes alone", w), scalar.warnings)
+
+        fixed_point_candidate = border_scenario_predict(_bcnf(1.8, 0.3), _bcnf(-1.7, 0.2);
+            switching_normal=[1.0, 0.0])
+        @test fixed_point_candidate.status == :ok
+        @test fixed_point_candidate.model == :bcnf_2d
+        @test fixed_point_candidate.robust_chaos_verdict == :glendinning_fixed_point_candidate
+        @test fixed_point_candidate.robust_chaos_conditions["basicWedge"] === true
+        @test fixed_point_candidate.robust_chaos_conditions["trappingInequalityHolds"] === true
+        @test fixed_point_candidate.robust_chaos_conditions["homoclinicInequalityHolds"] === true
+        @test fixed_point_candidate.predicted_cascade == :robust_chaos_candidate
+        @test fixed_point_candidate.bcnf_parameters["tau_L"] ≈ 1.8 atol=1e-12
+        @test fixed_point_candidate.bcnf_parameters["delta_R"] ≈ 0.2 atol=1e-12
+
+        trapping_only = border_scenario_predict(_bcnf(1.4, 0.3), _bcnf(-1.4, 0.2);
+            switching_normal=[1.0, 0.0])
+        @test trapping_only.robust_chaos_verdict == :byg_trapping_candidate
+        @test trapping_only.robust_chaos_conditions["trappingInequalityHolds"] === true
+        @test trapping_only.robust_chaos_conditions["homoclinicInequalityHolds"] === false
+
+        refused = border_scenario_predict([0.5 1.0; -0.2 0.0], [-0.5 0.7; 0.1 0.1];
+            switching_normal=[1.0, 0.0])
+        @test refused.status == :refused
+        @test refused.classification.status == :noncontinuous
+
+        nontransversal = border_scenario_predict(_bcnf(1.8, 0.3), _bcnf(-1.7, 0.2);
+            switching_normal=[1.0, 0.0], transversality=0.0)
+        @test nontransversal.status == :refused
+        @test nontransversal.classification.status == :nontransversal
+    end
+
+    @testset "Scenario verification sweep and serialization" begin
+        selector = function (x, p)
+            p[1] < 1.0 && return SVector(0.2)
+            p[1] < 2.0 && return SVector(1.0 - x[1])
+            x[1] < 0.4 && return SVector(0.6)
+            x[1] < 0.8 && return SVector(0.9)
+            return SVector(0.2)
+        end
+        sys = DiscreteMap(selector, 1, [:a], "Period selector")
+        prediction = border_scenario_predict(reshape([0.4], 1, 1), reshape([-1.5], 1, 1);
+            switching_normal=[1.0], max_farey_level=1)
+        verification = border_scenario_verify(sys, prediction;
+            param_index=1, base_params=[0.0], param_min=0.5, param_max=2.5,
+            param_steps=3, initial_point=[0.1], transient=8, max_period=4,
+            expected_periods=[1, 2, 3], required_prefix_length=3)
+        @test verification.status == :ok
+        @test verification.observed_periods == [1, 2, 3]
+        @test verification.consistency_passed
+        @test verification.matched_prefix_length == 3
+        @test length(verification.observed_runs) == 3
+
+        pdata = serialize_border_scenario_prediction(prediction)
+        @test pdata["format"] == "border-scenario-prediction-v1"
+        p2 = deserialize_border_scenario_prediction(pdata)
+        @test p2.status == prediction.status
+        @test p2.model == prediction.model
+        @test [r.word for r in p2.period_adding_rungs] == [r.word for r in prediction.period_adding_rungs]
+        @test p2.classification.scenario == prediction.classification.scenario
+
+        vdata = serialize_border_scenario_verification(verification)
+        @test vdata["format"] == "border-scenario-verification-v1"
+        v2 = deserialize_border_scenario_verification(vdata)
+        @test v2.observed_periods == verification.observed_periods
+        @test v2.verification_kind == :period_sequence
+        @test v2.consistency_passed == verification.consistency_passed
+
+        logistic = DiscreteMap(
+            (x, p) -> SVector(p[1] * x[1] * (1 - x[1])),
+            1, [:r], "Logistic robust-screen fixture")
+        robust_prediction = border_scenario_predict(_bcnf(1.8, 0.3), _bcnf(-1.7, 0.2);
+            switching_normal=[1.0, 0.0], transversality=1.0)
+        chaos_check = border_scenario_verify(logistic, robust_prediction;
+            param_index=1, base_params=[3.9], param_min=3.9, param_max=4.0,
+            param_steps=5, initial_point=[0.2], transient=800, max_period=8,
+            lyapunov_transient=800, lyapunov_iterations=600,
+            required_chaotic_fraction=0.6)
+        @test chaos_check.verification_kind == :finite_time_chaos
+        @test chaos_check.consistency_passed
+        @test chaos_check.positive_lyapunov_fraction >= 0.6
+        @test chaos_check.aperiodic_fraction >= 0.6
+        @test length(chaos_check.lyapunov_exponents) == 5
+        cdata = serialize_border_scenario_verification(chaos_check)
+        c2 = deserialize_border_scenario_verification(cdata)
+        @test c2.verification_kind == :finite_time_chaos
+        @test c2.lyapunov_statuses == chaos_check.lyapunov_statuses
+        @test c2.positive_lyapunov_fraction == chaos_check.positive_lyapunov_fraction
+
+        bad_prediction = copy(pdata)
+        bad_prediction["format"] = "border-scenario-prediction-v999"
+        @test_throws ErrorException deserialize_border_scenario_prediction(bad_prediction)
+        bad_parent = serialize_border_scenario_prediction(prediction)
+        bad_parent["periodAddingRungs"][1]["leftParent"] = 1
+        @test_throws ErrorException deserialize_border_scenario_prediction(bad_parent)
+        bad_warnings = serialize_border_scenario_prediction(prediction)
+        bad_warnings["warnings"] = "not an array"
+        @test_throws ErrorException deserialize_border_scenario_prediction(bad_warnings)
+        bad_verification = serialize_border_scenario_verification(verification)
+        bad_verification["warnings"] = "not an array"
+        @test_throws ErrorException deserialize_border_scenario_verification(bad_verification)
+    end
+
+    @testset "Verification refuses a :none-cascade prediction rather than trivially passing" begin
+        # A verdict strictly inside the BCNF robust-chaos wedge boundary predicts
+        # neither a period-adding order nor a robust-chaos candidate: there is
+        # nothing for border_scenario_verify to falsify, and it must say so
+        # instead of reporting "passed" whenever the sweep observes any
+        # periodic point at all (regression for a prior silent-pass bug).
+        no_scenario = border_scenario_predict(_bcnf(1.8, 0.5), _bcnf(-1.8, 0.5);
+            switching_normal=[1.0, 0.0])
+        @test no_scenario.status == :ok
+        @test no_scenario.predicted_cascade == :none
+
+        unrelated = DiscreteMap(
+            (x, p) -> SVector(p[1] * x[1] + p[2] * x[2], p[3] * x[2]),
+            2, [:a, :b, :c], "Unrelated contracting fixture")
+        result = border_scenario_verify(unrelated, no_scenario;
+            param_index=1, base_params=[0.3, 0.1, 0.3], param_min=0.3, param_max=0.3,
+            param_steps=1, initial_point=[0.5, 0.2])
+        @test result.status == :refused
+        @test result.verification_kind == :not_applicable
+        @test !result.consistency_passed
+        @test isempty(result.observed_periods)
+    end
 end

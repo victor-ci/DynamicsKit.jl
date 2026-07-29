@@ -13,6 +13,7 @@ DynamicsKit provides complementary methods. They answer different scientific que
 | Which periodic orbits exist at one parameter value? | Periodic skeleton |
 | Which attractor is reached from each initial condition? | Basins of attraction |
 | What happens across two parameters? | 2D bifurcation map |
+| Which robust-chaos regions survive plane-level counter-evidence checks? | Robust-chaos region certificate |
 | Where does a continuation bifurcation boundary bend across two parameters? | Codimension-2 curve |
 | Where are fold / flip / Neimark-Sacker points and what is their local criticality? | Map special points + normal forms |
 | How does the largest Lyapunov exponent vary along one parameter? | Lyapunov diagram |
@@ -171,6 +172,8 @@ Function:
 ```julia
 codim2_special_points(sys, result::Codim2ContinuationResult; detect=(...), kwargs...)
     -> Vector{Codim2SpecialPoint}
+codim2_normal_form(sys, kind, state, params; kwargs...)
+    -> Codim2NormalForm
 ```
 
 Runs a test-function pass over an existing `Codim2ContinuationResult` produced by
@@ -180,19 +183,21 @@ deduplicated within configurable proximity tolerances.
 
 Supported kinds and applicable loci:
 
-| Kind | Locus | Test function | Needs `base_params` |
-| --- | --- | --- | --- |
-| `:cusp` | `:fold` | Sign change / vanishing of fold normal-form coefficient `b` at locus samples | yes |
-| `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | yes |
-| `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | no (needs `curve_diagnostics`) |
-| `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | no |
-| `:resonance_1_2` | `:ns` | `cos(θ/2)` crossing zero (θ = π+2πk) | no |
-| `:bautin` | `:ns` | Sign change of NS normal-form coefficient `d` at locus samples | yes |
+| Kind | Locus | Test function | Codim-2 reduction | Needs `base_params` |
+| --- | --- | --- | --- | --- |
+| `:cusp` | `:fold` | Sign change / vanishing of fold normal-form coefficient `b` at locus samples | cubic cusp coefficient `cusp_cubic` for `F^N-I` | yes |
+| `:generalized_flip` | `:pd` | Sign change of flip normal-form coefficient `c` at locus samples | scalar fifth-order `second_flip` coefficient at the degenerate flip | yes |
+| `:fold_flip` | `:pd` / `:fold` | Sign change of complementary multiplier determinant | nearest `fold_gap` and `flip_gap` nondegeneracy checks | no (needs `curve_diagnostics`) |
+| `:resonance_1_1` | `:ns` | `sin(θ/2)` crossing zero (θ = 2πk) | unit-circle and angle-gap nondegeneracy checks | no |
+| `:resonance_1_2` | `:ns` | `cos(θ/2)` crossing zero (θ = π+2πk) | unit-circle and angle-gap nondegeneracy checks | no |
+| `:bautin` | `:ns` | Sign change of NS normal-form coefficient `d` at locus samples | radial second-Lyapunov (`second_lyapunov`) coefficient | yes |
 
 Each `Codim2SpecialPoint` carries `kind`, `locus_kind`, `primary_param`, `secondary_param`,
 `state`, `multipliers` (empty when `curve_diagnostics=false`), `test_value`, `period`,
-`converged`, `status` (`:interpolated`, `:sampled`, or `:unavailable`), and an optional
-`MapNormalForm`.
+`converged`, `status` (`:interpolated`, `:sampled`, or `:unavailable`), an optional
+`MapNormalForm` used by coefficient detectors, and an optional `Codim2NormalForm`.
+The JSON-plain special-point serializer writes `codim2-special-point-v2` and still
+reads v1 payloads that predate `codim2NormalForm`.
 
 Resonance test functions: `sin(θ/2)` (1:1) and `cos(θ/2)` (1:2) respect unwrapped angle
 periodicity, correctly detect crossings at ±2π and ±π, and do not produce cross-contamination
@@ -219,17 +224,28 @@ The resulting `Codim2SpecialPoint` carries `normal_form=nothing` — attaching t
 bracketing sample's nonzero-coefficient form to the coefficient-zero point would be
 scientifically misleading.  All interpolated points carry `converged=false`.
 
+`codim2_normal_form` evaluates the local reduction at the returned point. Its result
+stores paired `coefficient_names` / `coefficients`, `criticality`, `status`, and the
+formula convention. `status=:ok` means the relevant nondegeneracy checks passed;
+`status=:degenerate` means the reduced quantity was computed but fell below the
+coefficient tolerance; unavailable states such as `:not_critical`, `:near_singular`,
+`:critical_eigenvector_unavailable`, `:strong_resonance`, and
+`:multipliers_unavailable` are reported explicitly. Interpolated points are not
+Newton-polished back to the exact codim-2 equations, so their codim-2 form can
+honestly be unavailable when the interpolated state is not critical under the
+chosen tolerances.
+
 `ArgumentError` policy: if `:cusp`, `:generalized_flip`, or `:bautin` is **explicitly** listed in
 `detect` on an applicable locus (`:fold`, `:pd`, or `:ns` respectively) but `base_params` /
 parameter indices are absent, an `ArgumentError` is raised.  The default `detect=nothing` (all
 kinds) silently skips coefficient detectors that lack parameter information, so it works on any
 locus without requiring `base_params`.
 
-`DiscreteMap` systems are fully supported. `ContinuousODE` (Poincaré return-map) systems use
-the same path; if `map_normal_form` returns `status=:fd_step_unstable` for a sample that
-sample is silently skipped (conservative: only stable evaluations bracket a sign change).
-
-Full codim-2 normal-form classification is explicitly out of scope.
+`DiscreteMap` systems use nested ForwardDiff through fifth directional order for
+the codim-2 scalar reductions. `ContinuousODE` systems use the same Poincare
+return-map interface with guarded finite differences; if the finite-difference
+window is unstable or a bordered solve is near-singular, the result is marked
+unavailable rather than filled with a fabricated class.
 
 Keyword arguments:
 - `detect`: tuple/vector of kinds to detect, or `nothing` for all six (default).
@@ -301,6 +317,22 @@ transversality, status, scenario, and a conservative inference string) and versi
 serializers. Validated against the Simpson (2014) 1D fixtures for all four scenarios,
 2D border-collision-normal-form fixtures, and a period-2 cycle-phase fixture.
 
+`border_scenario_predict(A_L, A_R; switching_normal=...)` is the explicit prediction
+layer above the classifier. For a successful 2D continuous-map classification it records
+the BCNF trace/determinant reduction (`tau = tr(A)`, `delta = det(A)`) and evaluates the
+Banerjee-Yorke-Grebogi trapping inequality and Glendinning's transverse-homoclinic
+condition. Verdicts such as `:glendinning_fixed_point_candidate` and
+`:byg_trapping_candidate` are local normal-form candidates, not global robust-chaos
+proofs for the original nonlinear map. For scalar data the prediction exposes only the
+Farey/Stern-Brocot symbolic period-adding order (`border_period_adding_order`); the 1D
+discontinuous period-adding theory is not transferred to the continuous 2D BCNF.
+`border_scenario_verify` performs the targeted one-parameter sweep of the actual map.
+Scalar predictions compare the observed period sequence with a predicted or supplied
+prefix. BCNF robust-chaos candidates use finite-time evidence: a configured fraction of
+sampled parameters must have no low-period closure and a positive largest-Lyapunov
+estimate. That verification is bounded to the sampled interval, transient/iteration
+budget, period ceiling, Lyapunov threshold, and initial condition.
+
 
 
 Functions:
@@ -340,6 +372,16 @@ Interpret the slice-tracking output in two layers:
 - `primary_values` + `valid_mask` is the stitched principal curve.
 
 The slice-tracking fallback for `:pd` uses branch-stability flips when BifurcationKit does not emit explicit period-doubling special points on a slice, so `candidate_sources` and `slice_statuses` matter when assessing trustworthiness. The defining-system engine instead verifies its seed against the actual multiplier gap (a flip that is really a fold/Neimark-Sacker crossing is rejected) and records per-sample multipliers so every returned point can be checked against the defining condition.
+
+## Filippov grazing and sliding for flows
+
+For `ContinuousODE` systems with scalar `SwitchingEvent` guards, `filippov_guard_diagnostic(sys, event_name, state, params)` evaluates the flow-side nonsmooth test functions at a state: the guard value `h(x,p)`, guard normal `∇h`, normal velocity `∇h⋅f`, and second normal derivative along the flow. Generic grazing requires `h = 0`, `∇h⋅f = 0`, and a nonzero second normal derivative; degenerate tangencies (where the second derivative also vanishes) are reported explicitly rather than promoted to a spurious grazing classification.
+
+`filippov_grazing_points(sys, FilippovGrazingConfig(...); params, initial_point)` locates isolated grazing points along a single trajectory via dense-output refinement, returning a `FilippovGrazingResult` with a `status` (`:grazing`, `:degenerate`, `:not_found`, or `:warning`) and the located `FilippovGrazingPoint`s. `filippov_grazing_locus(sys, FilippovGrazingLocusConfig(...))` extends this to a two-parameter grazing locus by solving a signed guard-margin root on repeated secondary-parameter slices — a compact flow-grazing locus tool, not a full hybrid-segment continuation engine (the niche boundary relative to tools like COCO's `hspo` is stated explicitly, not implied).
+
+Sliding classification is separate because it needs the two one-sided vector fields rather than a single trajectory: `filippov_sliding_segments(event, states, params, f_minus, f_plus)` classifies sampled guard-surface segments as `:attracting`, `:repelling`, `:crossing`, or `:degenerate` from the signs of the two one-sided normal velocities (`f_minus` on `h < 0`, `f_plus` on `h > 0`).
+
+`FilippovGrazingResult`, `FilippovGrazingLocusResult`, and `FilippovSlidingResult` are plain data with versioned serializers (`serialize_filippov_grazing_result`/`deserialize_filippov_grazing_result` and the locus/sliding equivalents). See `docs/julia-package.md` for full config field references and a worked example.
 
 ## Reseeding
 
@@ -408,6 +450,12 @@ Configuration highlights:
 | `brute_force` | Required reconnaissance/brute-force config |
 | `continuation` | Continuation config |
 | `recon_steps`, `recon_precision` | Reconnaissance grid and tolerance |
+| `recon_calibration` | `:fixed` uses `recon_precision`; `:auto` calibrates the tolerance from periodic noise and aperiodic recurrence evidence |
+| `recon_calibration_min_separation` | Minimum recurrence/noise separation required before an auto-calibrated threshold is accepted |
+| `recon_calibration_max_periodic_anchors` | Maximum Newton-verified periodic anchors used for the noise-floor estimate |
+| `recon_calibration_max_aperiodic_anchors` | Maximum extra-transient samples used for the recurrence-scale estimate |
+| `recon_calibration_transient_multiplier` | Extra transient budget used when rechecking candidate aperiodic anchors |
+| `recon_calibration_newton_tol` | Newton tolerance used while verifying candidate periodic anchors |
 | `adaptive_recon` | Add samples near classification/confidence changes before continuation |
 | `window_min_support`, `window_merge_gap` | Candidate-window segmentation |
 | `seed_points_per_window`, `seed_box_padding` | Skeleton seed-box construction |
@@ -420,6 +468,8 @@ Configuration highlights:
 | `cache_enabled` | Allow atlas-level cache use |
 
 The atlas reports both parameter coverage and geometry-aware orbit-cloud coverage, so a branch must match the observed support rather than merely overlap the same parameter interval.
+
+With `recon_calibration=:auto`, the initial reconnaissance pass estimates two scales and places the threshold at their geometric mean. Both are measured as *closure ratios* — `‖x₁ − x₁₊ₜ‖` on the orbit tail over `max(‖x₁‖, ‖x₁₊ₜ‖, 1)` — because that is the quantity `recon_precision` is compared against, and it is scale-free. The noise scale comes from periodic anchors whose own orbit closes to numerical precision: Newton confirms the orbit, and the anchor is admitted only when its ratio is within `recon_calibration_min_separation` of the solver/Newton tolerance floor. A nearby Newton-verified orbit is not on its own evidence that the *sampled* orbit is periodic, because a chaotic attractor contains embedded periodic orbits. The recurrence scale comes from the smallest-ratio samples that remain aperiodic after an extra-transient recheck, which is the tightest false closure chaotic recurrence achieves at the requested orbit length. If the two scales do not separate by `recon_calibration_min_separation`, the atlas records `diagnostics["reconCalibration"]["status"]` as a refusal and skips window recovery; robust-chaos certificates treat that atlas layer as inconclusive. The diagnostics carry both scales, the separation margin, the anchor counts, and a `scaleUnits` field recording that the scales are ratios.
 
 ## Phase portrait
 
@@ -666,7 +716,7 @@ Advanced fields:
 | `lyapunov_neutral_tolerance` | Threshold for neutral/quasiperiodic candidates |
 If Lyapunov diagnostics were enabled, call `lyapunov_field(result)` to extract the co-computed `LyapunovFieldResult` without re-running the map.
 
-This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The continuous Lyapunov field stays CPU-only (coupled two-trajectory method). See "Optional GPU acceleration" in `docs/julia-package.md`.
+This sweep optionally runs on a GPU via `backend=`: for `sys::DiscreteMap` with `reuse_neighbor_seeds=false` (the default) and no switching events / multistability / linked indices (`lyapunov_field(sys, ...)` too), and for `sys::ContinuousODE` under the same structural rules plus Lyapunov disabled, a GPU out-of-place RHS, and `precision` at or above the section-crossing localization floor. The standalone continuous Lyapunov field is GPU-eligible with the variational method when the system provides a GPU RHS and constant section normal; the explicit two-trajectory screen remains CPU-only. See "Optional GPU acceleration" in `docs/julia-package.md`.
 
 ## Adaptive bifurcation map
 
@@ -741,6 +791,80 @@ result2 = deserialize_adaptive_map_result(data)    # exact round-trip
 
 The adaptive-map serializer uses a columnar layout: `samples`, `leafCells`, and
 `boundarySegments` are dictionaries of flat arrays rather than row-wise records.
+
+## Robust-chaos region certificate
+
+Function:
+
+```julia
+robust_chaos_region_certificate(sys, config::RobustChaosRegionConfig; kwargs...)
+```
+
+This is the plane-level counterpart of `robust_chaos_certificate`. It composes
+existing primitives without changing their numerical meanings:
+
+1. `adaptive_bifurcation_map` proposes connected candidate cells with configured
+   map statuses, defaulting to `:aperiodic_or_high_period`.
+2. `lyapunov_field` checks the candidate interiors on the same parameter rectangle.
+3. `continuation_atlas` runs deterministic one-parameter slices through each
+   region and reports stable low-period counter-evidence.
+4. `basins_of_attraction` runs deterministic interior knots; undetected-period
+   seeds are rechecked by a finite-time Lyapunov estimator before counting as chaotic.
+5. `regime_boundary_distances` attaches the finite-grid boundary margin and
+   edge-censoring flag.
+
+`RobustChaosRegionConfig` carries the coarse/adaptive map configs, the Lyapunov
+field config, atlas and basin templates, the slice axis (`:a` or `:b`), layer
+thresholds, and deterministic per-region effort caps. The map and Lyapunov-field
+configs must describe the same parameter rectangle and base parameters outside
+the swept axes. The atlas and basin templates are filled per region/knot, so their
+primary `param_index` must match the selected slice axis.
+
+Each `RobustChaosRegion` records bounds, area, leaf-cell count, finest/coarsest
+quadtree depth, layer verdicts and fractions, atlas slice counts, basin knot
+counts, boundary margin, edge-censoring, named counter-evidence, and a
+conservative score. `:certified` requires all layers to pass; stable atlas evidence
+or failed Lyapunov/basin thresholds makes the region `:fragile`, and insufficient
+coverage makes it `:inconclusive`. The claim is bounded to the adaptive scale,
+field grid, atlas slice/period budget, basin knots, and boundary-distance
+convention recorded in the result.
+
+## Hardware acceptance test
+
+`hardware_acceptance_test` composes objects that already exist rather than
+recomputing anything: a measured mode sequence, the operating-map cross-section it
+is compared against, a robust-chaos certificate (band- or region-level), and
+optionally a regime-boundary or tolerance field supplying local margins. The result
+is an accept/reject/refuse verdict with every mismatching observation named and
+mapped to its certified operating point.
+
+The verdict semantics are deliberately asymmetric. Acceptance requires an accepted
+certificate verdict *and* no falsifying mismatch; a mismatch survives only when its
+required parameter shift lies inside the supplied local margin plus `margin_slack`.
+Missing or unresolved margin evidence yields `:inconclusive` rather than acceptance,
+so a hardware claim is never granted by absence of contrary data. Axis calibration
+is explicit — `:transition_affine` estimates scale and offset from matching
+measured/model transition anchors and returns `:refused` when fewer than two are
+available, instead of forcing an alignment.
+
+## Cycle-to-cycle connections
+
+`cycle_connection_seed` and `cycle_connection_continuation` extend the
+connecting-orbit engine from equilibrium connections to saddle-cycle → saddle-cycle
+ones. The seed search samples source-cycle phases and unstable Floquet launch
+directions, integrates candidates forward, and keeps the segment approaching the
+target cycle most closely; the continuation then solves the connecting mesh, both
+cycle meshes, the connecting time, both periods, and two free parameters in one
+projection boundary-value problem. Endpoint projections select the cycle phases and
+an integral phase condition removes the connection's global time shift.
+
+Non-hyperbolic cycles, unsupported Floquet dimensions, and degenerate orbit guesses
+are rejected at the interface. Accuracy is governed by the same second-order mesh
+relation as the other connection kinds (see `docs/julia-package.md`): the located
+locus carries an error quadratic in the mesh spacing, so `n_mesh` must resolve the
+connection's transition width and a located locus should be checked by refinement
+rather than by the corrector residual alone. `:cycle_connection` results do not
+populate HomCont test functions.
 
 ## Power spectrum
 
@@ -867,20 +991,24 @@ converters.
 
 ```julia
 AffineModeSpec(A, b; duration=nothing, boundary=nothing, events=SwitchingEvent[])
-SwitchingCircuitDescription(modes, period; param_names=Symbol[], name="Switching Circuit")
+SwitchingCircuitDescription(modes, period; param_names=Symbol[], name="Switching Circuit", state_dim=nothing)
 switching_map(desc::SwitchingCircuitDescription; name=nothing) -> DiscreteMap
 buck_converter_description(; L=2.2e-6, T=1/0.5e6) -> SwitchingCircuitDescription
 boost_converter_description(; L=1e-3, C=12e-6, T=100e-6) -> SwitchingCircuitDescription
+cuk_converter_description(; ...) -> SwitchingCircuitDescription
+sepic_converter_description(; ...) -> SwitchingCircuitDescription
 ```
 
-An `AffineModeSpec` describes one operating mode: `A` and `b` are either constant `SMatrix{2,2}` /
-`SVector{2}` values or parameter-dependent callables; `duration` is a callable `(x, p) -> Real` for
+An `AffineModeSpec` describes one operating mode: `A` and `b` are either constant `SMatrix` /
+`SVector` values or parameter-dependent callables; `duration` is a callable `(x, p) -> Real` for
 intermediate modes (`nothing` = final mode, consumes remaining period); `boundary` is an optional
-`(x_flow, p) -> SVector{2}` that overrides the state at the end of the mode (used to enforce exact
+`(x_flow, p) -> SVector` that overrides the state at the end of the mode (used to enforce exact
 switching conditions such as the buck comparator trip `I = Iref`).
 
 `SwitchingCircuitDescription` holds an ordered list of `AffineModeSpec` values and the clock period
-(constant `Float64` or callable `p -> Real`).
+(constant `Float64` or callable `p -> Real`). The state dimension is inferred from constant mode
+matrices/vectors; pass `state_dim` explicitly for descriptions whose modes are all
+parameter-dependent.
 
 `switching_map` generates the period-advance map: each intermediate mode runs for its (clamped)
 duration; the final mode consumes the remaining period. The map is ForwardDiff-compatible away from
@@ -890,10 +1018,10 @@ switching borders. Switching events from all modes are forwarded to the `Discret
 the hand-coded `buck_converter()` / `boost_converter()` to floating-point rounding for all
 operating states where the switching time `tₙ ≥ 0`. (The original buck uses un-clamped negative `tₙ`
 for `I > Iref`, a convention not replicated by the generator's clamped duration model.)
+`cuk_converter_description()` and `sepic_converter_description()` are native fourth-order
+descriptions with state order `[vC2, iL2, vC1, iL1]` and a peak-sum-current switching rule.
 
-**Flow formula.** Each mode uses the exact affine ODE solution via the `ψ₀`/`ψ₁` decomposition
-`exp(Aτ) = e^{aτ}·(ψ₀·I + ψ₁·(A − aI))` where `a = tr(A)/2` and the discriminant `disc = a²−det(A)`
-selects under-damped (`disc < 0`, ψ values trigonometric), over-damped (`disc > 0`, hyperbolic), or
-critically-damped (`disc ≈ 0`, ψ₀=1, ψ₁=τ). For singular `A` (`det ≈ 0`, boost ON stage), the
-Duhamel integral is used directly: `x(τ) = exp(Aτ)·x + (τ·I + coeff·A)·b` where
-`coeff = (e^{λ₂τ} − 1 − λ₂τ)/λ₂²`, `λ₂ = tr A`.
+**Flow formula.** Each mode uses the exact affine ODE solution by exponentiating the augmented
+Duhamel matrix `[[A b]; [0 0]] * τ`. This handles arbitrary state dimension, singular matrices,
+defective matrices, and nilpotent chains through one ForwardDiff-compatible scaling-and-squaring
+matrix-exponential path.

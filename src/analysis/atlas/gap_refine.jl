@@ -745,6 +745,12 @@ function _atlas_refine_gap(sys::DynamicalSystem,
         continuation=local_cont,
         recon_steps=max(local_bf.param_steps, 6),
         recon_precision=min(atlas_config.recon_precision, atlas_config.recon_precision / max(1.0, 2.0 ^ gap.depth)),
+        recon_calibration=atlas_config.recon_calibration,
+        recon_calibration_min_separation=atlas_config.recon_calibration_min_separation,
+        recon_calibration_max_periodic_anchors=atlas_config.recon_calibration_max_periodic_anchors,
+        recon_calibration_max_aperiodic_anchors=atlas_config.recon_calibration_max_aperiodic_anchors,
+        recon_calibration_transient_multiplier=atlas_config.recon_calibration_transient_multiplier,
+        recon_calibration_newton_tol=atlas_config.recon_calibration_newton_tol,
         window_min_support=max(2, min(atlas_config.window_min_support, 2 + gap.depth)),
         window_merge_gap=0,
         seed_points_per_window=max(atlas_config.seed_points_per_window, 4),
@@ -1102,11 +1108,12 @@ function continuation_atlas(sys::DynamicalSystem,
     else
         _atlas_reconnaissance(sys, base_params, bf_config, config, periods; initial_point=initial_point)
     end
-    recon_samples, adaptive_recon_diag = _atlas_adaptive_reconnaissance(
+    recon_samples, recon_calibration_diag, effective_config = _atlas_calibrate_recon_precision(
         sys,
         recon_samples,
         base_params,
         bf_config,
+        cont_config,
         config,
         periods;
         initial_point=initial_point,
@@ -1115,22 +1122,56 @@ function continuation_atlas(sys::DynamicalSystem,
         abstol=abstol,
         min_crossing_time=min_crossing_time
     )
+    calibration_refused = startswith(String(get(recon_calibration_diag, "status", "")), "refused")
+    if get(recon_calibration_diag, "status", "") == "applied"
+        _atlas_log!(log, "Atlas reconnaissance precision auto-calibrated to $(recon_calibration_diag["effectivePrecision"]) (separation=$(round(recon_calibration_diag["separation"], digits=3))).")
+    elseif calibration_refused
+        _atlas_log!(log, "Atlas reconnaissance calibration refused: $(recon_calibration_diag["status"]). Window recovery will be skipped.")
+    end
+    adaptive_recon_diag = Dict{String, Any}(
+        "requested" => effective_config.adaptive_recon,
+        "applied" => false,
+        "status" => calibration_refused ? "skipped_calibration_refused" : "disabled",
+        "initialSampleCount" => length(recon_samples),
+        "adaptiveSampleCount" => 0,
+        "finalSampleCount" => length(recon_samples),
+        "candidateCount" => 0,
+        "passCount" => 0,
+        "maxSamples" => effective_config.adaptive_recon_max_samples,
+        "maxDepth" => effective_config.adaptive_recon_max_depth,
+        "reasonCounts" => Dict{String, Int}()
+    )
+    if !calibration_refused
+        recon_samples, adaptive_recon_diag = _atlas_adaptive_reconnaissance(
+            sys,
+            recon_samples,
+            base_params,
+            bf_config,
+            effective_config,
+            periods;
+            initial_point=initial_point,
+            solver=solver,
+            reltol=reltol,
+            abstol=abstol,
+            min_crossing_time=min_crossing_time
+        )
+    end
     if get(adaptive_recon_diag, "applied", false)
         _atlas_log!(log, "Atlas adaptive reconnaissance inserted $(adaptive_recon_diag["adaptiveSampleCount"]) sample(s) across $(adaptive_recon_diag["passCount"]) pass(es).")
     end
     recon_periodic = count(sample -> sample.classification == :periodic, recon_samples)
     _atlas_log!(log, "Atlas reconnaissance classified $(length(recon_samples)) sample(s): periodic=$(recon_periodic), nonperiodic=$(count(sample -> sample.classification == :nonperiodic, recon_samples)), insufficient=$(count(sample -> sample.classification == :insufficient, recon_samples)).")
 
-    windows = _segment_period_windows(recon_samples, config, periods)
-    probe_windows = _atlas_hidden_period_probe_windows(recon_samples, config, periods, windows)
+    windows = calibration_refused ? AtlasWindow[] : _segment_period_windows(recon_samples, effective_config, periods)
+    probe_windows = calibration_refused ? AtlasWindow[] : _atlas_hidden_period_probe_windows(recon_samples, effective_config, periods, windows)
     windows = sort(vcat(windows, probe_windows); by=window -> (-window.priority_score, window.period, window.param_min))
-    length(windows) > config.max_total_windows && resize!(windows, config.max_total_windows)
+    length(windows) > effective_config.max_total_windows && resize!(windows, effective_config.max_total_windows)
     _atlas_log!(log, "Atlas reconnaissance found $(length(windows)) candidate window(s) ($(length(probe_windows)) hidden-period probe window(s)).")
 
     bf_result, brute_force_reuse_diag = _atlas_bruteforce_result(
         sys,
         bf_config,
-        config,
+        effective_config,
         periods,
         recon_samples;
         initial_point=initial_point,
@@ -1150,7 +1191,7 @@ function continuation_atlas(sys::DynamicalSystem,
     time_budget_exhausted = false
     branch_switching_diags = Dict{String, Any}[]
     seed_reuse_diags = Dict{String, Any}[]
-    seed_cache = config.reuse_neighbor_seeds ? _atlas_seed_cache() : nothing
+    seed_cache = effective_config.reuse_neighbor_seeds ? _atlas_seed_cache() : nothing
 
     for window in windows
         new_records, reason, attempt_diag = _atlas_attempt_window_recovery(
@@ -1161,7 +1202,7 @@ function continuation_atlas(sys::DynamicalSystem,
             branch_records,
             base_params,
             cont_config,
-            config,
+            effective_config,
             id_counter;
             depth=0,
             provenance=Dict("source" => "atlas-initial"),
@@ -1177,7 +1218,7 @@ function continuation_atlas(sys::DynamicalSystem,
         window_attempt_count += get(attempt_diag, "attemptCount", 0)
         branch_switching_diag = Dict{String, Any}()
 
-        if config.branch_switching
+        if effective_config.branch_switching
             switch_records, branch_switching_diag = _atlas_branch_switching_followups(
                 sys,
                 window,
@@ -1185,7 +1226,7 @@ function continuation_atlas(sys::DynamicalSystem,
                 branch_records,
                 base_params,
                 cont_config,
-                config,
+                effective_config,
                 id_counter;
                 solver=solver,
                 reltol=reltol,
@@ -1202,7 +1243,7 @@ function continuation_atlas(sys::DynamicalSystem,
             branch_records,
             window.id,
             window.period;
-            min_geometry_score=config.coverage_threshold
+            min_geometry_score=effective_config.coverage_threshold
         )
         uncovered_intervals = _atlas_uncovered_intervals(window.param_min, window.param_max, covered_intervals)
         leaf_gap_count_before = length(gaps)
@@ -1225,7 +1266,7 @@ function continuation_atlas(sys::DynamicalSystem,
                 )
             )
 
-            if _atlas_should_refine_gap(gap, config, started_at)
+            if _atlas_should_refine_gap(gap, effective_config, started_at)
                 refinement_attempts += 1
                 new_gap_records, leaf_gaps, refine_diag = _atlas_refine_gap(
                     sys,
@@ -1235,7 +1276,7 @@ function continuation_atlas(sys::DynamicalSystem,
                     base_params,
                     bf_config,
                     cont_config,
-                    config,
+                    effective_config,
                     id_counter,
                     started_at;
                     initial_point=initial_point,
@@ -1265,14 +1306,14 @@ function continuation_atlas(sys::DynamicalSystem,
                 ))
             end
 
-            if _atlas_time_budget_exhausted(config, started_at)
+            if _atlas_time_budget_exhausted(effective_config, started_at)
                 time_budget_exhausted = true
                 break
             end
         end
 
         coverage = _atlas_window_coverage_fraction(window, branch_records)
-        status = coverage >= config.coverage_threshold ? :recovered : coverage > 0 ? :partial : :failed
+        status = coverage >= effective_config.coverage_threshold ? :recovered : coverage > 0 ? :partial : :failed
         window_diagnostics = merge(copy(window.diagnostics), Dict(
             "attempts" => attempt_diag["attempts"],
             "attemptCount" => attempt_diag["attemptCount"],
@@ -1281,7 +1322,7 @@ function continuation_atlas(sys::DynamicalSystem,
             "refinementDiagnostics" => refinement_diags,
             "leafGapCount" => length(gaps) - leaf_gap_count_before
         ))
-        config.branch_switching && (window_diagnostics["branchSwitching"] = branch_switching_diag)
+        effective_config.branch_switching && (window_diagnostics["branchSwitching"] = branch_switching_diag)
         push!(resolved_windows, AtlasWindow(
             window.id,
             window.period,
@@ -1302,10 +1343,10 @@ function continuation_atlas(sys::DynamicalSystem,
         end
     end
 
-    isempty(gaps) && (gaps = _atlas_gap_records(resolved_windows, branch_records, config.coverage_threshold, config.max_refinement_depth))
-    coverage_summary = _atlas_coverage_summary(resolved_windows, branch_records, config.coverage_threshold)
-    branch_switching_summary = _atlas_branch_switching_summary(config, branch_switching_diags)
-    seed_reuse_summary = _atlas_seed_reuse_summary(config, seed_reuse_diags)
+    isempty(gaps) && (gaps = _atlas_gap_records(resolved_windows, branch_records, effective_config.coverage_threshold, effective_config.max_refinement_depth))
+    coverage_summary = _atlas_coverage_summary(resolved_windows, branch_records, effective_config.coverage_threshold)
+    branch_switching_summary = _atlas_branch_switching_summary(effective_config, branch_switching_diags)
+    seed_reuse_summary = _atlas_seed_reuse_summary(effective_config, seed_reuse_diags)
 
     result = AtlasResult(
         bf_result,
@@ -1328,6 +1369,9 @@ function continuation_atlas(sys::DynamicalSystem,
             "refinementAttempts" => refinement_attempts,
             "maxRefinementDepthReached" => max_depth_reached,
             "timeBudgetExceeded" => time_budget_exhausted,
+            "configuredReconPrecision" => config.recon_precision,
+            "effectiveReconPrecision" => effective_config.recon_precision,
+            "reconCalibration" => recon_calibration_diag,
             "adaptiveRecon" => adaptive_recon_diag,
             "bruteForceReusedFromRecon" => get(brute_force_reuse_diag, "reused", false),
             "bruteForceReuse" => brute_force_reuse_diag

@@ -2,10 +2,9 @@
 Switching map generator: construct a `DiscreteMap` from a piecewise-linear
 circuit description (per-mode affine state-space data + algebraic switching timing).
 
-Scope: 2-D systems (state = [V, I] or similar). Sufficient for the DC–DC
-converter family (buck, boost, …). The primitive `_affine_flow_2d` handles
-under-, over-, and critically-damped 2-D circuit matrices uniformly, as well
-as singular `A` matrices (boost ON stage).
+The affine primitive supports arbitrary finite state dimension by exponentiating
+the augmented Duhamel matrix for `dx/dt = A*x + b`, so singular and defective
+mode matrices use the same path as nonsingular matrices.
 """
 
 # ─── Descriptor types ─────────────────────────────────────────────────────────
@@ -13,15 +12,15 @@ as singular `A` matrices (boost ON stage).
 """
     AffineModeSpec{A,B,D,G}
 
-Describes one operating mode of a 2-D piecewise-linear switching circuit.
+Describes one operating mode of a piecewise-linear switching circuit.
 
 Type parameters encode the concrete types of the state-matrix, affine-input,
 duration, and optional boundary-state suppliers — no field is annotated `Function`:
-- `A`: `SMatrix{2,2}` constant **or** a callable `p -> SMatrix{2,2}`.
-- `B`: `SVector{2}` constant **or** a callable `p -> SVector{2}`.
+- `A`: square matrix constant **or** a callable `p -> matrix`.
+- `B`: vector constant **or** a callable `p -> vector`.
 - `D`: callable `(x, p) -> Real` for intermediate modes, `Nothing` for
   the final mode (which consumes the remaining clock period).
-- `G`: `Nothing` (no override) **or** a callable `(x_flow, p) -> SVector{2}`
+- `G`: `Nothing` (no override) **or** a callable `(x_flow, p) -> SVector`
   that overrides the state at the end of the mode.  Use this to enforce
   switching conditions — for example, forcing the inductor current to exactly
   `Iref` in a peak-current-mode buck converter, matching the comparator trip.
@@ -65,46 +64,66 @@ end
 """
     SwitchingCircuitDescription{T}
 
-Ordered list of operating modes making up one clock period of a 2-D
+Ordered list of operating modes making up one clock period of a
 piecewise-linear switching circuit, together with the clock period and
 parameter metadata needed to construct a `DiscreteMap` via `switching_map`.
 
 Type parameter `T` is the type of `period` — a `Float64` constant or a
-callable `p -> Real` for parameter-dependent periods.
+callable `p -> Real` for parameter-dependent periods. `M` is the concrete
+mode tuple type.
 
 # Fields
-- `modes::Vector{AffineModeSpec}`: ordered mode descriptions, one per operating mode.
+- `modes`: ordered mode descriptions, one per operating mode.
 - `period::T`: clock period constant or callable.
 - `param_names::Vector{Symbol}`: bifurcation-parameter names forwarded to the
   generated `DiscreteMap`.
 - `name::String`: human-readable circuit name.
+- `state_dim::Int`: state dimension of the generated map.
 """
-struct SwitchingCircuitDescription{T}
-    modes::Vector{AffineModeSpec}
+struct SwitchingCircuitDescription{T, M<:Tuple}
+    modes::M
     period::T
     param_names::Vector{Symbol}
     name::String
+    state_dim::Int
 end
 
 """
-    SwitchingCircuitDescription(modes, period; param_names=Symbol[], name="Switching Circuit")
+   SwitchingCircuitDescription(modes, period; param_names=Symbol[], name="Switching Circuit", state_dim=nothing)
 
 Construct a `SwitchingCircuitDescription` from an ordered collection of
 `AffineModeSpec` values and a clock period (constant `Float64` or callable).
+When all mode matrices/vectors are callable, pass `state_dim` explicitly.
 """
 function SwitchingCircuitDescription(modes, period;
                                      param_names::AbstractVector{Symbol}=Symbol[],
-                                     name::AbstractString="Switching Circuit")
-    typed_modes = AffineModeSpec[]
-    for (index, mode) in enumerate(modes)
+                                     name::AbstractString="Switching Circuit",
+                                     state_dim::Union{Integer,Nothing}=nothing)
+    mode_tuple = Tuple(modes)
+    inferred_dim = state_dim === nothing ? nothing : Int(state_dim)
+    inferred_dim !== nothing && inferred_dim > 0 ||
+        inferred_dim === nothing ||
+        throw(ArgumentError("SwitchingCircuitDescription: state_dim must be positive; got $state_dim."))
+    for (index, mode) in enumerate(mode_tuple)
         mode isa AffineModeSpec ||
-            throw(ArgumentError(
-                "SwitchingCircuitDescription: mode $index is not an AffineModeSpec."))
-        push!(typed_modes, mode)
+           throw(ArgumentError(
+               "SwitchingCircuitDescription: mode $index is not an AffineModeSpec."))
+        mode_dim = _sw_mode_state_dim(mode)
+        if mode_dim !== nothing
+           if inferred_dim === nothing
+               inferred_dim = mode_dim
+           elseif inferred_dim != mode_dim
+               throw(ArgumentError(
+                   "SwitchingCircuitDescription: mode $index has dimension $mode_dim, expected $inferred_dim."))
+           end
+        end
     end
-    SwitchingCircuitDescription{typeof(period)}(
-        typed_modes, period,
-        collect(Symbol, param_names), String(name))
+    inferred_dim === nothing &&
+        throw(ArgumentError(
+            "SwitchingCircuitDescription: could not infer state dimension; pass state_dim explicitly."))
+    SwitchingCircuitDescription{typeof(period), typeof(mode_tuple)}(
+        mode_tuple, period,
+        collect(Symbol, param_names), String(name), inferred_dim)
 end
 
 # ─── Evaluation helpers ───────────────────────────────────────────────────────
@@ -127,102 +146,182 @@ function _sw_duration(::Nothing, x, p)
     error("BUG: _sw_duration called on a final mode (duration_fn = nothing)")
 end
 
-# ─── 2-D affine flow ─────────────────────────────────────────────────────────
+function _sw_matrix_dim(A::AbstractMatrix)
+    size(A, 1) == size(A, 2) ||
+        throw(ArgumentError("AffineModeSpec requires a square A matrix; got size $(size(A))."))
+    return size(A, 1)
+end
+_sw_matrix_dim(A) = nothing
 
-"""
-    _affine_flow_2d(x, A, b, tau)
+_sw_vector_dim(b::AbstractVector) = length(b)
+_sw_vector_dim(b) = nothing
 
-Exact solution `x(tau)` of the 2-D affine ODE `dx/dt = A x + b` with
-initial condition `x(0) = x`, integrated for duration `tau ≥ 0`.
-
-**Matrix exponential.** Uses the psi0/psi1 decomposition valid for all
-damping regimes:
-
-    exp(A τ) = e^{aτ} · (ψ₀·I  +  ψ₁·(A − aI))
-
-where `a = tr(A)/2` is the half-trace and the discriminant
-`disc = a² − det(A)` selects the regime:
-- `disc < 0` (under-damped / complex eigenvalues): `ψ₀ = cos(ωτ)`, `ψ₁ = sin(ωτ)/ω` with `ω = √(−disc)`.
-- `disc > 0` (over-damped / real distinct eigenvalues): `ψ₀ = cosh(sτ)`, `ψ₁ = sinh(sτ)/s` with `s = √disc`.
-- `disc ≈ 0` (critically damped / repeated eigenvalue): `ψ₀ = 1`, `ψ₁ = τ`.
-
-**Non-singular A.** Uses the equilibrium form
-`x(τ) = exp(Aτ)·(x − x_eq) + x_eq` where `x_eq = −A⁻¹ b`.
-
-**Singular A (one or two zero eigenvalues, e.g. boost ON stage).** Uses the
-Duhamel integral directly:
-
-    x(τ) = exp(Aτ)·x  +  (τ·I + coeff·A)·b
-
-where `coeff = (exp(λ₂ τ) − 1 − λ₂ τ) / λ₂²` and `λ₂ = tr A` is the
-second eigenvalue. Its `λ₂ → 0` limit is evaluated by a local series, so
-nilpotent matrices are handled without division by zero. This is exact and
-avoids any division by `det A`.
-
-**ForwardDiff compatibility.** All damping-regime and singularity branches
-are evaluated via standard comparison operators, which `ForwardDiff.Dual`
-types reduce to primal-value comparisons. The function is therefore
-ForwardDiff-compatible away from the switching borders and the
-discriminant boundary.
-"""
-function _sw_exprel2(z)
-    if abs(z) < 1e-5
-        return one(z) / 2 + z / 6 + z^2 / 24 + z^3 / 120 + z^4 / 720
+function _sw_mode_state_dim(mode::AffineModeSpec)
+    a_dim = _sw_matrix_dim(mode.A_fn)
+    b_dim = _sw_vector_dim(mode.b_fn)
+    if a_dim !== nothing && b_dim !== nothing && a_dim != b_dim
+        throw(ArgumentError(
+            "AffineModeSpec dimension mismatch: A is $(a_dim)x$(a_dim) but b has length $b_dim."))
     end
-    return (expm1(z) - z) / (z * z)
+    return a_dim === nothing ? b_dim : a_dim
 end
 
-function _affine_flow_2d(x::SVector{2}, A::SMatrix{2,2}, b::SVector{2}, tau)
-    a    = (A[1,1] + A[2,2]) / 2
-    d    = A[1,1]*A[2,2] - A[1,2]*A[2,1]
-    disc = a*a - d
-    # Reference scale for relative thresholds: squared Frobenius norm + 1.
-    norm_ref = A[1,1]^2 + A[1,2]^2 + A[2,1]^2 + A[2,2]^2 + one(d)
-    e = exp(a * tau)
+_sw_primal(x::Real) = x
+_sw_primal(x::ForwardDiff.Dual) = _sw_primal(ForwardDiff.value(x))
 
-    # Damping-regime branches on primal disc (safe for ForwardDiff.Dual).
-    if disc < -1e-10 * norm_ref          # under-damped
-        omega = sqrt(-disc)
-        psi0  = cos(omega * tau)
-        psi1  = sin(omega * tau) / omega
-    elseif disc > 1e-10 * norm_ref       # over-damped (includes singular A: one zero eigenvalue)
-        s    = sqrt(disc)
-        psi0 = cosh(s * tau)
-        psi1 = sinh(s * tau) / s
-    else                                  # critically damped
-        psi0 = one(tau)
-        psi1 = tau
-    end
-
-    # Shifted circuit matrix A − aI (shared by both flow branches).
-    Ash11 = A[1,1] - a;  Ash12 = A[1,2]
-    Ash21 = A[2,1];      Ash22 = A[2,2] - a
-
-    if abs(d) > 1e-10 * norm_ref
-        # ── Non-singular A: equilibrium form ─────────────────────────────────
-        # x_eq = −A⁻¹ b;  2×2 inverse: A⁻¹ = [[A22,−A12],[−A21,A11]] / det
-        xeq1 = -(A[2,2]*b[1] - A[1,2]*b[2]) / d
-        xeq2 = -(-A[2,1]*b[1] + A[1,1]*b[2]) / d
-        w1   = x[1] - xeq1;  w2 = x[2] - xeq2
-        Aw1  = Ash11*w1 + Ash12*w2
-        Aw2  = Ash21*w1 + Ash22*w2
-        return e * SVector(psi0*w1 + psi1*Aw1, psi0*w2 + psi1*Aw2) +
-               SVector(xeq1, xeq2)
-    else
-        # ── Singular A (det ≈ 0, one zero eigenvalue): Duhamel form ──────────
-        # exp(Aτ)·x
-        Ax1 = Ash11*x[1] + Ash12*x[2]
-        Ax2 = Ash21*x[1] + Ash22*x[2]
-        ex  = e * SVector(psi0*x[1] + psi1*Ax1, psi0*x[2] + psi1*Ax2)
-        # Integral: (τ·I + coeff·A)·b
-        # λ₂ = tr A = 2a. The exprel₂ form stays finite for λ₂ = 0.
-        lam2  = A[1,1] + A[2,2]
-        coeff = tau * tau * _sw_exprel2(lam2 * tau)
-        Ab1   = A[1,1]*b[1] + A[1,2]*b[2]
-        Ab2   = A[2,1]*b[1] + A[2,2]*b[2]
-        return ex + tau*b + SVector(coeff*Ab1, coeff*Ab2)
-    end
+function _sw_primal_abs(x)
+    return abs(float(_sw_primal(x)))
 end
+
+function _sw_one_norm(A::AbstractMatrix)
+    isempty(A) && return 0.0
+    best = nothing
+    for j in axes(A, 2)
+        col_sum = nothing
+        for i in axes(A, 1)
+            value = _sw_primal_abs(A[i, j])
+            col_sum = col_sum === nothing ? value : col_sum + value
+        end
+        best = best === nothing ? col_sum : max(best, col_sum)
+    end
+    return best
+end
+
+function _sw_eye_like(A::AbstractMatrix)
+    n = size(A, 1)
+    T = eltype(A)
+    return Matrix{T}(I, n, n)
+end
+
+_sw_eye_like(A::SMatrix{N,N,T}) where {N,T} = SMatrix{N,N,T}(I)
+
+function _sw_coeffs(A::AbstractMatrix, values)
+    one_a = one(eltype(A))
+    return map(v -> v * one_a, values)
+end
+
+const _SW_MATRIX_EXP_PADE13_COEFFS = (
+    64764752532480000.0,
+    32382376266240000.0,
+    7771770303897600.0,
+    1187353796428800.0,
+    129060195264000.0,
+    10559470521600.0,
+    670442572800.0,
+    33522128640.0,
+    1323241920.0,
+    40840800.0,
+    960960.0,
+    16380.0,
+    182.0,
+    1.0,
+)
+
+# Shared Padé(13) rational-approximant + scaling-and-squaring core, given an
+# already norm-scaled matrix `B` (norm(B) <= theta13) and its squaring count
+# `s`. This is the single source of truth for the algorithm body: both
+# `_sw_matrix_exp` methods below differ only in how they obtain `B` and `s`
+# (a defensive heap copy for a general `AbstractMatrix`, vs. a direct
+# zero-copy pass-through for an immutable `SMatrix`) and delegate the actual
+# numerics — coefficient application, U/V construction, and squaring — here,
+# so a future coefficient/order change or bugfix cannot update one backend
+# and silently miss the other.
+function _sw_matrix_exp_pade13(B, s::Int)
+    c = _sw_coeffs(B, _SW_MATRIX_EXP_PADE13_COEFFS)
+    I_n = _sw_eye_like(B)
+    B2 = B * B
+    B4 = B2 * B2
+    B6 = B4 * B2
+
+    U = B * (B6 * (c[14] * B6 + c[12] * B4 + c[10] * B2) +
+             c[8] * B6 + c[6] * B4 + c[4] * B2 + c[2] * I_n)
+    V = B6 * (c[13] * B6 + c[11] * B4 + c[9] * B2) +
+        c[7] * B6 + c[5] * B4 + c[3] * B2 + c[1] * I_n
+    R = (V - U) \ (V + U)
+    for _ in 1:s
+        R = R * R
+    end
+    return R
+end
+
+# Norm-based scaling exponent `s` and scaled matrix `B` shared by both
+# `_sw_matrix_exp` methods (Higham scaling-and-squaring: reduce ||B|| below
+# theta13 by repeated halving, undone by `s` squarings in `_sw_matrix_exp_pade13`).
+function _sw_matrix_exp_scale(A)
+    norm_A = _sw_one_norm(A)
+    theta13 = 5.371920351148152
+    s = norm_A <= theta13 ? 0 : max(0, ceil(Int, log2(norm_A / theta13)))
+    B = A
+    if s > 0
+        scale = (one(eltype(A)) + one(eltype(A)))^s
+        B = B / scale
+    end
+    return B, s
+end
+
+"""
+    _sw_matrix_exp(A)
+
+Dense matrix exponential using the Higham scaling-and-squaring Padé(13)
+algorithm. Branching uses primal values so ForwardDiff dual payloads flow
+through the linear algebra operations.
+"""
+function _sw_matrix_exp(A::AbstractMatrix)
+    size(A, 1) == size(A, 2) ||
+        throw(ArgumentError("_sw_matrix_exp requires a square matrix; got size $(size(A))."))
+    n = size(A, 1)
+    n == 0 && return Matrix{eltype(A)}(undef, 0, 0)
+
+    B, s = _sw_matrix_exp_scale(Matrix(A))
+    return _sw_matrix_exp_pade13(B, s)
+end
+
+"""
+    _sw_matrix_exp(A::SMatrix)
+
+Stack-allocated specialization of the Higham scaling-and-squaring Padé(13)
+algorithm above, used for the fixed-size augmented Duhamel matrices built by
+`_affine_flow_nd`. Shares its algorithm body (`_sw_matrix_exp_pade13`) with the
+`AbstractMatrix` method above — only the scale/copy setup and the array
+backend differ — so every switching map (including the n-dimensional
+generator's runtime-sized modes lifted to a compile-time-known augmented
+dimension) gets identical numerics without the heap `Matrix` allocation and
+BLAS dispatch overhead that dominates cost when this runs inside a
+per-map-iteration bisection loop (e.g. peak-current-mode converters).
+"""
+function _sw_matrix_exp(A::SMatrix{N,N}) where {N}
+    B, s = _sw_matrix_exp_scale(A)
+    return _sw_matrix_exp_pade13(B, s)
+end
+
+# ─── n-D affine flow ─────────────────────────────────────────────────────────
+
+"""
+    _affine_flow_nd(x, A, b, tau)
+
+Exact solution `x(tau)` of `dx/dt = A*x + b` using the augmented Duhamel
+matrix `[[A b]; [0 0]]`. This form is valid for singular, nilpotent, and
+defective matrices without solving for an equilibrium.
+"""
+function _affine_flow_nd(x::SVector{N}, A::SMatrix{N,N}, b::SVector{N}, tau) where {N}
+    T = promote_type(eltype(x), eltype(A), eltype(b), typeof(tau))
+    M = SMatrix{N + 1, N + 1, T}(ntuple(k -> begin
+        i = ((k - 1) % (N + 1)) + 1
+        j = ((k - 1) ÷ (N + 1)) + 1
+        if j <= N
+            i <= N ? A[i, j] * tau : zero(T)
+        else
+            i <= N ? b[i] * tau : zero(T)
+        end
+    end, Val((N + 1) * (N + 1))))
+    y0 = SVector{N + 1, T}(ntuple(i -> i <= N ? T(x[i]) : one(T), N + 1))
+    E = _sw_matrix_exp(M)
+    y = E * y0
+    return SVector{N}(ntuple(i -> y[i], N))
+end
+
+_affine_flow_2d(x::SVector{2}, A::SMatrix{2,2}, b::SVector{2}, tau) =
+    _affine_flow_nd(x, A, b, tau)
 
 # ─── Validation helpers ───────────────────────────────────────────────────────
 
@@ -243,7 +342,7 @@ end
 """
     switching_map(desc::SwitchingCircuitDescription; name=nothing) -> DiscreteMap
 
-Construct a 2-D `DiscreteMap` from a `SwitchingCircuitDescription`.
+Construct a `DiscreteMap` from a `SwitchingCircuitDescription`.
 
 The generated map applies the affine flows of each `AffineModeSpec` in
 sequence over one clock period:
@@ -273,6 +372,7 @@ function switching_map(desc::SwitchingCircuitDescription;
     sys_name = isnothing(name) ? desc.name : name
     modes    = desc.modes
     n_modes  = length(modes)
+    state_dim = desc.state_dim
 
     n_modes >= 1 ||
         throw(ArgumentError("switching_map: description must contain at least one mode."))
@@ -292,39 +392,14 @@ function switching_map(desc::SwitchingCircuitDescription;
     end
 
     desc_name = desc.name  # capture for error messages inside closure
-    f = let modes=modes, desc=desc, n_modes=n_modes, desc_name=desc_name
-        function (x::SVector{2}, p)
+    f = let modes=modes, desc=desc, desc_name=desc_name, state_dim=state_dim
+        function (x::SVector{N}, p) where {N}
+            N == state_dim ||
+                throw(ArgumentError(
+                    "switching_map ($desc_name): state dimension mismatch; expected $state_dim, got $N."))
             T         = _sw_period(desc.period, p)
             _sw_check_period(T, desc_name)
-            xc        = x
-            remaining = T
-            for k in 1:n_modes
-                mode = modes[k]
-                A    = SMatrix{2,2}(_sw_A(mode.A_fn, p))
-                b    = SVector{2}(_sw_b(mode.b_fn, p))
-                if k < n_modes
-                    tau_raw = _sw_duration(mode.duration_fn, xc, p)
-                    _sw_check_raw_duration(tau_raw, k, desc_name)
-                    tau     = clamp(tau_raw, zero(remaining), remaining)
-                    x_flow  = _affine_flow_2d(xc, A, b, tau)
-                    # Apply boundary_fn only when the switch actually fired within
-                    # the remaining period (tau_raw < remaining, matching the
-                    # `tn < T` branch in the hand-coded buck). When clamped to the
-                    # full remaining period the event never triggered.
-                    if mode.boundary_fn !== nothing &&
-                       tau_raw >= zero(tau_raw) && tau_raw < remaining
-                        xc = mode.boundary_fn(x_flow, p)
-                    else
-                        xc = x_flow
-                    end
-                    remaining = remaining - tau
-                else
-                    x_flow = _affine_flow_2d(xc, A, b, remaining)
-                    xc     = mode.boundary_fn === nothing ? x_flow :
-                             mode.boundary_fn(x_flow, p)
-                end
-            end
-            return xc
+            return _sw_apply_modes(x, T, modes, p, desc_name)
         end
     end
 
@@ -334,7 +409,96 @@ function switching_map(desc::SwitchingCircuitDescription;
         append!(all_events, mode.events)
     end
 
-    DiscreteMap(f, 2, desc.param_names, sys_name; switching_events=all_events)
+    DiscreteMap(f, state_dim, desc.param_names, sys_name; switching_events=all_events)
+end
+
+function _sw_sum_indices(x, indices)
+    total = zero(eltype(x))
+    for idx in indices
+        total += x[idx]
+    end
+    return total
+end
+
+function _sw_peak_current_residual(x::SVector{N}, A::SMatrix{N,N}, b::SVector{N},
+                                   t, current_indices, iref) where {N}
+    y = _affine_flow_nd(x, A, b, t)
+    return _sw_sum_indices(y, current_indices) - iref
+end
+
+function _sw_peak_current_on_time(x::SVector{N}, p, A_fn, b_fn, T;
+                                  reference_index::Int=1,
+                                  current_indices=(2, 4),
+                                  iterations::Int=72) where {N}
+    return _sw_peak_current_on_time(x, p, A_fn, b_fn, T, reference_index, current_indices, iterations)
+end
+
+function _sw_peak_current_on_time(x::SVector{N}, p, A_fn, b_fn, T,
+                                  reference_index::Int,
+                                  current_indices,
+                                  iterations::Int) where {N}
+    A = SMatrix{N,N}(_sw_A(A_fn, p))
+    b = SVector{N}(_sw_b(b_fn, p))
+    iref = p[reference_index]
+    g0 = _sw_sum_indices(x, current_indices) - iref
+    _sw_primal(g0) >= 0 && return zero(T)
+
+    gT = _sw_peak_current_residual(x, A, b, T, current_indices, iref)
+    _sw_primal(gT) < 0 && return T + one(T)
+
+    lo = 0.0
+    hi = Float64(_sw_primal(T))
+    for _ in 1:iterations
+        mid = (lo + hi) / 2
+        if _sw_primal(_sw_peak_current_residual(x, A, b, mid, current_indices, iref)) >= 0
+            hi = mid
+        else
+            lo = mid
+        end
+    end
+
+    tau0 = hi
+    y = _affine_flow_nd(x, A, b, tau0)
+    dy = A * y + b
+    slope = _sw_sum_indices(dy, current_indices)
+    abs(Float64(_sw_primal(slope))) <= 10eps(Float64) && return tau0
+    return tau0 - _sw_peak_current_residual(x, A, b, tau0, current_indices, iref) / slope
+end
+
+function _sw_apply_final_mode(xc::SVector{N}, remaining, mode::AffineModeSpec, p) where {N}
+    A = SMatrix{N,N}(_sw_A(mode.A_fn, p))
+    b = SVector{N}(_sw_b(mode.b_fn, p))
+    x_flow = _affine_flow_nd(xc, A, b, remaining)
+    return mode.boundary_fn === nothing ? x_flow : mode.boundary_fn(x_flow, p)
+end
+
+function _sw_apply_intermediate_mode(xc::SVector{N}, remaining, mode::AffineModeSpec, p, desc_name, mode_index::Int) where {N}
+    A = SMatrix{N,N}(_sw_A(mode.A_fn, p))
+    b = SVector{N}(_sw_b(mode.b_fn, p))
+    tau_raw = mode.duration_fn(xc, p)
+    _sw_check_raw_duration(tau_raw, mode_index, desc_name)
+    tau = clamp(tau_raw, zero(remaining), remaining)
+    x_flow = _affine_flow_nd(xc, A, b, tau)
+    xc_next = if mode.boundary_fn !== nothing &&
+                 tau_raw >= zero(tau_raw) && tau_raw < remaining
+        mode.boundary_fn(x_flow, p)
+    else
+        x_flow
+    end
+    return xc_next, remaining - tau
+end
+
+function _sw_apply_modes(xc::SVector{N}, remaining, modes::Tuple, p, desc_name) where {N}
+    return _sw_apply_modes(xc, remaining, modes, p, desc_name, 1)
+end
+
+function _sw_apply_modes(xc::SVector{N}, remaining, modes::Tuple{M}, p, desc_name, mode_index::Int) where {N, M}
+    return _sw_apply_final_mode(xc, remaining, first(modes), p)
+end
+
+function _sw_apply_modes(xc::SVector{N}, remaining, modes::Tuple{M1, M2, Vararg}, p, desc_name, mode_index::Int) where {N, M1, M2}
+    xc_next, remaining_next = _sw_apply_intermediate_mode(xc, remaining, first(modes), p, desc_name, mode_index)
+    return _sw_apply_modes(xc_next, remaining_next, Base.tail(modes), p, desc_name, mode_index + 1)
 end
 
 # ─── Built-in circuit descriptions ───────────────────────────────────────────
@@ -412,7 +576,8 @@ function buck_converter_description(; L::Float64=2.2e-6, T::Float64=1/0.5e6)
     SwitchingCircuitDescription(
         (mode_on, mode_off), T;
         param_names=[:Iref, :Ein],
-        name="Buck Converter"
+        name="Buck Converter",
+        state_dim=2
     )
 end
 
@@ -498,6 +663,177 @@ function boost_converter_description(; L::Float64=1e-3, C::Float64=12e-6, T::Flo
     SwitchingCircuitDescription(
         (mode_on, mode_off), T;
         param_names=[:Iref, :E, :R, :Sc],
-        name="Boost (peak-current)"
+        name="Boost (peak-current)",
+        state_dim=2
     )
+end
+
+function _sw_converter_param(p, idx::Int, default)
+    return length(p) >= idx ? p[idx] : default
+end
+
+"""
+    cuk_converter_description(; kwargs...) -> SwitchingCircuitDescription
+
+Return the current-programmed Cuk converter description from Debbat,
+El Aroudi, and Bouyadjra (2012). State ordering is
+`[vC2, iL2, vC1, iL1]`; parameters are `[Iref, Vin, R]`, with `Vin`
+and `R` falling back to the cited operating point. The switch starts ON
+each period and opens when `iL1 + iL2 = Iref`.
+"""
+function cuk_converter_description(; Vin::Float64=15.0, L1::Float64=75e-3, L2::Float64=75e-3,
+                                   rL1::Float64=0.02, rL2::Float64=0.02,
+                                   C1::Float64=47e-6, C2::Float64=47e-6,
+                                   R::Float64=10.0, T::Float64=50e-6)
+    (Vin > 0 && L1 > 0 && L2 > 0 && C1 > 0 && C2 > 0 && R > 0 && T > 0) ||
+        throw(ArgumentError("cuk_converter_description requires positive Vin, L1, L2, C1, C2, R, and T."))
+    (rL1 >= 0 && rL2 >= 0) ||
+        throw(ArgumentError("cuk_converter_description requires non-negative inductor resistances."))
+
+    A_on = p -> begin
+        Rp = _sw_converter_param(p, 3, R)
+        z = zero(Rp); o = one(Rp)
+        SMatrix{4,4}(
+            -o/(Rp*C2), -o/L2, z, z,
+             o/C2,      -rL2/L2, -o/C1, z,
+             z,          o/L2, z, z,
+             z,          z, z, -rL1/L1)
+    end
+    A_off = p -> begin
+        Rp = _sw_converter_param(p, 3, R)
+        z = zero(Rp); o = one(Rp)
+        SMatrix{4,4}(
+            -o/(Rp*C2), -o/L2, z, z,
+             o/C2,      -rL2/L2, z, z,
+             z,          z, z, -o/L1,
+             z,          z, o/C1, -rL1/L1)
+    end
+    b = p -> begin
+        Vinp = _sw_converter_param(p, 2, Vin)
+        SVector(zero(Vinp), zero(Vinp), zero(Vinp), Vinp / L1)
+    end
+    t_on = (x, p) -> _sw_peak_current_on_time(x, p, A_on, b, T, 1, (2, 4), 72)
+
+    events_on = [
+        SwitchingEvent(
+            "sum-current-lower-border",
+            (x, p) -> x[2] + x[4] - p[1];
+            description="The clock-edge sum current is already at or above the reference, so the ON interval collapses.",
+            tolerance=1e-8,
+            scale=1.0
+        ),
+        SwitchingEvent(
+            "sum-current-upper-border",
+            (x, p) -> p[1] - (begin
+                A = SMatrix{4,4}(_sw_A(A_on, p))
+                bv = SVector{4}(_sw_b(b, p))
+                y = _affine_flow_nd(SVector{4}(x), A, bv, T)
+                y[2] + y[4]
+            end);
+            description="The sum current reaches the reference at the end of the clock period; beyond this border the cycle is all-ON.",
+            tolerance=1e-8,
+            scale=1.0
+        )
+    ]
+
+    mode_on = AffineModeSpec(A_on, b; duration=t_on, events=events_on)
+    mode_off = AffineModeSpec(A_off, b)
+    SwitchingCircuitDescription(
+        (mode_on, mode_off), T;
+        param_names=[:Iref, :Vin, :R],
+        name="Cuk (peak-current)",
+        state_dim=4
+    )
+end
+
+"""
+    sepic_converter_description(; kwargs...) -> SwitchingCircuitDescription
+
+Return the current-programmed SEPIC converter description from Debbat,
+El Aroudi, Giral, and Martinez-Salamero (2002). State ordering is
+`[vC2, iL2, vC1, iL1]`; parameters are `[Iref, Vin, R]`, with `Vin`
+and `R` falling back to the cited operating point. The switch starts ON
+each period and opens when `iL1 + iL2 = Iref`.
+"""
+function sepic_converter_description(; Vin::Float64=24.0, L1::Float64=17.8e-6, L2::Float64=37e-6,
+                                     rL1::Float64=0.13, rL2::Float64=0.019,
+                                     C1::Float64=0.4e-6, C2::Float64=47e-6,
+                                     R::Float64=10.0, T::Float64=2e-6)
+    (Vin > 0 && L1 > 0 && L2 > 0 && C1 > 0 && C2 > 0 && R > 0 && T > 0) ||
+        throw(ArgumentError("sepic_converter_description requires positive Vin, L1, L2, C1, C2, R, and T."))
+    (rL1 >= 0 && rL2 >= 0) ||
+        throw(ArgumentError("sepic_converter_description requires non-negative inductor resistances."))
+
+    A_on = p -> begin
+        Rp = _sw_converter_param(p, 3, R)
+        z = zero(Rp); o = one(Rp)
+        SMatrix{4,4}(
+            -o/(Rp*C2), z, z, z,
+             z,        -rL2/L2, -o/C1, z,
+             z,         o/L2, z, z,
+             z,         z, z, -rL1/L1)
+    end
+    A_off = p -> begin
+        Rp = _sw_converter_param(p, 3, R)
+        z = zero(Rp); o = one(Rp)
+        SMatrix{4,4}(
+            -o/(Rp*C2), -o/L2, z, -o/L1,
+             o/C2,      -rL2/L2, z, z,
+             z,          z, z, -o/L1,
+             o/C2,       z, o/C1, -rL1/L1)
+    end
+    b = p -> begin
+        Vinp = _sw_converter_param(p, 2, Vin)
+        SVector(zero(Vinp), zero(Vinp), zero(Vinp), Vinp / L1)
+    end
+    t_on = (x, p) -> _sw_peak_current_on_time(x, p, A_on, b, T, 1, (2, 4), 72)
+
+    events_on = [
+        SwitchingEvent(
+            "sum-current-lower-border",
+            (x, p) -> x[2] + x[4] - p[1];
+            description="The clock-edge sum current is already at or above the reference, so the ON interval collapses.",
+            tolerance=1e-8,
+            scale=1.0
+        ),
+        SwitchingEvent(
+            "sum-current-upper-border",
+            (x, p) -> p[1] - (begin
+                A = SMatrix{4,4}(_sw_A(A_on, p))
+                bv = SVector{4}(_sw_b(b, p))
+                y = _affine_flow_nd(SVector{4}(x), A, bv, T)
+                y[2] + y[4]
+            end);
+            description="The sum current reaches the reference at the end of the clock period; beyond this border the cycle is all-ON.",
+            tolerance=1e-8,
+            scale=1.0
+        )
+    ]
+
+    mode_on = AffineModeSpec(A_on, b; duration=t_on, events=events_on)
+    mode_off = AffineModeSpec(A_off, b)
+    SwitchingCircuitDescription(
+        (mode_on, mode_off), T;
+        param_names=[:Iref, :Vin, :R],
+        name="SEPIC (peak-current)",
+        state_dim=4
+    )
+end
+
+"""
+    cuk_converter(; kwargs...) -> DiscreteMap
+
+Create the generated 4-D current-programmed Cuk converter map.
+"""
+function cuk_converter(; kwargs...)
+    switching_map(cuk_converter_description(; kwargs...))
+end
+
+"""
+    sepic_converter(; kwargs...) -> DiscreteMap
+
+Create the generated 4-D current-programmed SEPIC converter map.
+"""
+function sepic_converter(; kwargs...)
+    switching_map(sepic_converter_description(; kwargs...))
 end

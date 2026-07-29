@@ -15,7 +15,8 @@ function _colpitts_section()
         (u, t, integrator) -> u[3];
         direction = :up,
         projection = [1, 2],
-        template = [0.0, 0.0, 0.0]
+        template = [0.0, 0.0, 0.0],
+        constant_normal = [0.0, 0.0, 1.0]
     )
 end
 

@@ -168,9 +168,17 @@ Estimate a direct 2D largest-Lyapunov-exponent field over the parameter plane, o
 return the first-class Lyapunov layer carried by a 2D bifurcation-map result.
 
 For `sys::DiscreteMap`, `backend` optionally runs the (always cell-independent) sweep on a GPU; see
-[`ComputeBackend`](@ref). The result's `compute_backend` field records what actually ran. No GPU
-backend is offered for `sys::ContinuousODE` — see the `bifurcation_map(sys::ContinuousODE, ...)`
-docstring for why.
+[`ComputeBackend`](@ref). The result's `compute_backend` field records what actually ran.
+
+For `sys::ContinuousODE`, the default method (`:auto`) is the **variational** estimator: each cell
+integrates one augmented trajectory through the first variational equation and applies the return-time
+correction at each Poincaré section return, normalizing the accumulated log-stretch by physical flow
+time. The result is the largest transverse Lyapunov exponent, directly comparable to
+`lyapunov_spectrum`'s leading transverse exponent. Pass `lyapunov_method=:two_trajectory` in
+`config` (via [`BifurcationMapConfig`](@ref)) to use the legacy cheap-screen estimator instead.
+GPU acceleration of the variational path is available for built-in systems that provide an
+out-of-place `SVector` RHS and a constant section normal; `AutoBackend()` falls back to CPU when
+these are absent (e.g. imported user systems). The explicit `:two_trajectory` method is always CPU-only.
 """
 function _validate_direct_lyapunov_field_config(config::BifurcationMapConfig)
     config.a_index != config.b_index || throw(ArgumentError(
@@ -231,6 +239,8 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
                         cells::Union{Nothing, LyapunovCellGrid}=nothing,
                         backend::ComputeBackend=CPUBackend())
     _validate_direct_lyapunov_field_config(config)
+    config.lyapunov_method in (:auto, :two_trajectory) || throw(ArgumentError(
+        "lyapunov_method=:variational is only available for ContinuousODE; use :auto or :two_trajectory for DiscreteMap."))
     length(sys.param_names) >= 2 || throw(ArgumentError("lyapunov_field requires a system with at least two parameters."))
 
     a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
@@ -299,7 +309,9 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
         sys.name,
         (sys.param_names[config.a_index], sys.param_names[config.b_index]),
         now();
-        compute_backend=compute_backend_used
+        compute_backend=compute_backend_used,
+        lyapunov_method=:two_trajectory,
+        normalization=:per_iteration
     )
 end
 
@@ -310,10 +322,40 @@ function lyapunov_field(sys::ContinuousODE, config::BifurcationMapConfig;
                         abstol::Float64=1e-8,
                         cells::Union{Nothing, LyapunovCellGrid}=nothing,
                         backend::ComputeBackend=CPUBackend())
-    _reject_continuous_lyapunov_gpu_backend(backend, "lyapunov_field")
     _validate_direct_lyapunov_field_config(config)
     length(sys.param_names) >= 2 || throw(ArgumentError("lyapunov_field requires a system with at least two parameters."))
+    if !isempty(sys.section.constant_normal)
+        length(sys.section.constant_normal) == sys.dim || throw(ArgumentError(
+            "PoincareSection.constant_normal has length $(length(sys.section.constant_normal)); expected state dimension $(sys.dim)."))
+        all(isfinite, sys.section.constant_normal) || throw(ArgumentError(
+            "PoincareSection.constant_normal must contain only finite values."))
+    end
 
+    # Resolve effective method: :auto → :variational for ContinuousODE.
+    method = config.lyapunov_method === :auto ? :variational : config.lyapunov_method
+    method in (:variational, :two_trajectory) || throw(ArgumentError(
+        "Unknown lyapunov_method $(repr(method)) for ContinuousODE; use :auto, :variational, or :two_trajectory."))
+
+    # GPU is only available for the variational path (independent per-cell augmented trajectories).
+    # The two-trajectory method is coupled and always runs on the CPU.
+    if method === :two_trajectory
+        isa(backend, GPUBackend) && throw(ArgumentError(
+            "lyapunov_field with lyapunov_method=:two_trajectory is CPU-only for ContinuousODE. " *
+            "Use backend=CPUBackend() or AutoBackend(), or switch to lyapunov_method=:variational for GPU support."))
+        return _lyapunov_field_continuous_two_trajectory(sys, config, initial_point, solver, reltol, abstol, cells)
+    end
+
+    # Variational path: check GPU eligibility and dispatch.
+    ka_backend, vendor = _resolve_variational_lyapunov_gpu_backend(backend, sys, "lyapunov_field (variational)")
+    if ka_backend !== nothing
+        return _lyapunov_field_continuous_variational_gpu(
+            sys, config, initial_point, solver, reltol, abstol, cells, ka_backend, vendor)
+    end
+    return _lyapunov_field_continuous_variational_cpu(sys, config, initial_point, solver, reltol, abstol, cells)
+end
+
+function _lyapunov_field_continuous_two_trajectory(sys::ContinuousODE, config::BifurcationMapConfig,
+                                                    initial_point, solver, reltol, abstol, cells)
     a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
     b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
     u0 = _resolve_initial_state(sys, initial_point)
@@ -330,38 +372,139 @@ function lyapunov_field(sys::ContinuousODE, config::BifurcationMapConfig;
         for idx in chunks[chunk_idx]
             i = ((idx - 1) % length(a_vals)) + 1
             j = ((idx - 1) ÷ length(a_vals)) + 1
-            (cells !== nothing && cells.known[i, j]) && continue   # cache hook: skip pre-seeded cells
+            (cells !== nothing && cells.known[i, j]) && continue
             params = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
             estimate = _estimate_continuous_poincare_largest_lyapunov(
-                sys,
-                params,
-                u0,
-                transient,
-                iterations,
-                config.lyapunov_perturbation,
-                config.divergence_cutoff;
-                solver=solver,
-                reltol=reltol,
-                abstol=abstol,
-                min_crossing_time=config.min_crossing_time
-            )
+                sys, params, u0, transient, iterations,
+                config.lyapunov_perturbation, config.divergence_cutoff;
+                solver=solver, reltol=reltol, abstol=abstol,
+                min_crossing_time=config.min_crossing_time)
             _record_direct_field_lyapunov!(storage, i, j, estimate, config.lyapunov_neutral_tolerance)
+            cells !== nothing && (cells.known[i, j] = true)
+        end
+    end
+    return LyapunovFieldResult(
+        a_vals, b_vals,
+        Float64.(storage.exponents), Int.(storage.status_codes),
+        Int.(storage.estimation_status_codes), Int.(storage.sample_counts),
+        config.lyapunov_neutral_tolerance, sys.name,
+        (sys.param_names[config.a_index], sys.param_names[config.b_index]),
+        now(); compute_backend=:cpu, lyapunov_method=:two_trajectory, normalization=:per_return)
+end
+
+function _lyapunov_field_continuous_variational_cpu(sys::ContinuousODE, config::BifurcationMapConfig,
+                                                     initial_point, solver, reltol, abstol, cells)
+    a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
+    b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
+    u0 = _resolve_initial_state(sys, initial_point)
+    storage = _lyapunov_field_storage(cells, length(a_vals), length(b_vals))
+    param_template = map_param_template(config)
+    a_indices = map_a_write_indices(config)
+    b_indices = map_b_write_indices(config)
+    transient = _map_lyapunov_transient(config)
+    iterations = _map_lyapunov_iterations(config)
+
+    chunks = _balanced_index_chunks(length(a_vals) * length(b_vals), Threads.nthreads())
+    Threads.@threads for chunk_idx in eachindex(chunks)
+        param_buffer = copy(param_template)
+        for idx in chunks[chunk_idx]
+            i = ((idx - 1) % length(a_vals)) + 1
+            j = ((idx - 1) ÷ length(a_vals)) + 1
+            (cells !== nothing && cells.known[i, j]) && continue
+            params = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+            estimate = _estimate_variational_continuous_lyapunov(
+                sys, params, u0, transient, iterations, config.divergence_cutoff;
+                solver=solver, reltol=reltol, abstol=abstol,
+                min_crossing_time=config.min_crossing_time)
+            _record_direct_field_lyapunov!(storage, i, j, estimate, config.lyapunov_neutral_tolerance)
+            cells !== nothing && (cells.known[i, j] = true)
+        end
+    end
+    return LyapunovFieldResult(
+        a_vals, b_vals,
+        Float64.(storage.exponents), Int.(storage.status_codes),
+        Int.(storage.estimation_status_codes), Int.(storage.sample_counts),
+        config.lyapunov_neutral_tolerance, sys.name,
+        (sys.param_names[config.a_index], sys.param_names[config.b_index]),
+        now(); compute_backend=:cpu, lyapunov_method=:variational, normalization=:flow_time)
+end
+
+function _lyapunov_field_continuous_variational_gpu(sys::ContinuousODE, config::BifurcationMapConfig,
+                                                     initial_point, solver, reltol, abstol, cells,
+                                                     ka_backend, vendor::Symbol)
+    a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
+    b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
+    u0 = _resolve_initial_state(sys, initial_point)
+    storage = _lyapunov_field_storage(cells, length(a_vals), length(b_vals))
+    param_template = map_param_template(config)
+    a_indices = map_a_write_indices(config)
+    b_indices = map_b_write_indices(config)
+    transient = _map_lyapunov_transient(config)
+    iterations = _map_lyapunov_iterations(config)
+
+    n_raw = collect(Float64, sys.section.constant_normal)
+    nn    = dot(n_raw, n_raw)
+    nn > 0 || throw(ArgumentError(
+        "lyapunov_field (variational GPU): sys.section.constant_normal is a zero vector."))
+    dim = sys.dim
+
+    # Compute a canonical initial tangent vector in the section's tangent plane.
+    v0 = zeros(Float64, dim)
+    for k in 1:dim
+        v0[k] = 1.0
+        nv = dot(n_raw, v0)
+        v0 .-= (nv / nn) .* n_raw
+        vn = norm(v0)
+        if vn > sqrt(eps(Float64))
+            v0 ./= vn
+            break
+        end
+        fill!(v0, 0.0)
+    end
+    all(iszero, v0) && throw(ArgumentError(
+        "lyapunov_field (variational GPU): could not find a tangent vector orthogonal to the section normal."))
+
+    # Collect uncached cells, solve ensemble on GPU, write back results.
+    na = length(a_vals); nb = length(b_vals)
+    cell_indices = Vector{Tuple{Int,Int}}()
+    for j in 1:nb, i in 1:na
+        (cells !== nothing && cells.known[i, j]) && continue
+        push!(cell_indices, (i, j))
+    end
+
+    if !isempty(cell_indices)
+        n_cells = length(cell_indices)
+        u0_list = Vector{Vector{Float64}}(undef, n_cells)
+        p_list  = Vector{Vector{Float64}}(undef, n_cells)
+        v0_list = Vector{Vector{Float64}}(undef, n_cells)
+        for (k, (i, j)) in enumerate(cell_indices)
+            param_buffer = copy(param_template)
+            p_list[k]  = map_params_from_buffer!(param_buffer, param_template, a_indices, b_indices, a_vals[i], b_vals[j])
+            u0_list[k] = collect(Float64, u0)
+            v0_list[k] = copy(v0)
+        end
+
+        gpu_results = _variational_lyapunov_gpu_sweep(sys, u0_list, p_list, n_raw, v0_list, ka_backend;
+            transient=transient, steps=iterations,
+            reltol=reltol, abstol=abstol,
+            min_crossing_time=config.min_crossing_time,
+            divergence_cutoff=config.divergence_cutoff)
+
+        for (k, (i, j)) in enumerate(cell_indices)
+            r = gpu_results[k]
+            est = _lyapunov_estimate_result(Float64(r.exponent), r.estimation_status, r.sample_count)
+            _record_direct_field_lyapunov!(storage, i, j, est, config.lyapunov_neutral_tolerance)
             cells !== nothing && (cells.known[i, j] = true)
         end
     end
 
     return LyapunovFieldResult(
-        a_vals,
-        b_vals,
-        Float64.(storage.exponents),
-        Int.(storage.status_codes),
-        Int.(storage.estimation_status_codes),
-        Int.(storage.sample_counts),
-        config.lyapunov_neutral_tolerance,
-        sys.name,
+        a_vals, b_vals,
+        Float64.(storage.exponents), Int.(storage.status_codes),
+        Int.(storage.estimation_status_codes), Int.(storage.sample_counts),
+        config.lyapunov_neutral_tolerance, sys.name,
         (sys.param_names[config.a_index], sys.param_names[config.b_index]),
-        now()
-    )
+        now(); compute_backend=vendor, lyapunov_method=:variational, normalization=:flow_time)
 end
 
 lyapunov_field(result::LyapunovFieldResult) = result
