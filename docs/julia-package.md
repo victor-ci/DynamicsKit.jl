@@ -445,9 +445,16 @@ entry point.
 ### Numerical formulation
 
 The truncated orbit is discretized on a uniform trapezoidal mesh of `n_mesh`
-intervals in rescaled time. The unknown vector packs the mesh states, the source
-saddle (and, for a heteroclinic connection, the target saddle), the truncation
-time, and the two continuation parameters:
+intervals in rescaled time. Located parameter values therefore carry a second-order
+error in the mesh spacing `h = truncation_time / (n_mesh - 1)`: choose `n_mesh` so
+that `h` resolves the connection's own transition width, not merely the truncation
+window, and refine it to check a located locus rather than relying on the corrector
+residual, which measures how well the discrete system was solved and not how close
+the discretization is to the continuous problem. Note also that the residual is an
+unnormalised norm over the packed unknowns, so an accepted `newton_tol` has to grow
+with the mesh. The unknown vector packs the mesh states, the source saddle (and, for
+a heteroclinic connection, the target saddle), the truncation time, and the two
+continuation parameters:
 
 ```
 z = [ vec(U) ; xs ; (xt) ; T ; α ; β ]
@@ -1089,7 +1096,7 @@ plot_overlay(atlas.brute_force, branches)
 
 Set `auto_refine_sparse_branches=false` (or `auto_refine_max_passes=0`) to disable refinement and accept branches exactly as continuation returns them; raise `auto_refine_max_passes` to densify stubborn tails over additional passes. Each branch's per-attempt outcome is reported in its diagnostics under `autoRefineApplied`, `autoRefineReason`, `autoRefineIntervalsDetected`, and `autoRefinePointCountBefore`/`After`.
 
-Set `recon_calibration=:auto` to replace the fixed `recon_precision` with a run-specific threshold. The atlas estimates a closure-noise scale from Newton-verified periodic anchors when present, otherwise from the solver/Newton tolerance floor; it estimates a recurrence scale from samples that remain aperiodic after an extra-transient check. The selected threshold, both scales, separation margin, and any refusal status are stored in `atlas.diagnostics["reconCalibration"]`. If the scales do not separate, window recovery is skipped and robust-chaos certificates treat the atlas layer as inconclusive.
+Set `recon_calibration=:auto` to replace the fixed `recon_precision` with a run-specific threshold. Both estimated scales are closure *ratios* in the units `recon_precision` is compared against (tail closure distance over the local state scale), not absolute distances. The noise scale comes from periodic anchors whose own orbit closes to numerical precision — Newton-confirmed, and admitted only within `recon_calibration_min_separation` of the solver/Newton tolerance floor, since a chaotic attractor's embedded periodic orbits make Newton verification alone uninformative about the sampled orbit. The recurrence scale comes from the smallest-ratio samples that stay aperiodic under an extra-transient recheck. The selected threshold, both scales, separation margin, anchor counts, `scaleUnits`, and any refusal status are stored in `atlas.diagnostics["reconCalibration"]`. If the scales do not separate, window recovery is skipped and robust-chaos certificates treat the atlas layer as inconclusive.
 
 Important atlas output fields:
 

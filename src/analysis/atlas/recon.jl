@@ -456,38 +456,45 @@ function _atlas_param_values_match(samples::Vector{AtlasReconSample}, expected_v
     return true
 end
 
-function _atlas_requested_closure_pairs(sample::AtlasReconSample, periods::Vector{Int})
-    pairs = Tuple{Int, Float64}[]
+"""
+Closure ratio of a reconnaissance sample in the units `recon_precision` is compared against.
+
+`_atlas_classify_sample` locks a period when `‖x₁ − x_{1+T}‖` on the orbit tail falls below
+`precision · max(‖x₁‖, ‖x_{1+T}‖, 1)`. The scale-free ratio of those two quantities is therefore
+the statistic the threshold governs, and the only one a calibration may compare against it.
+`sample.closure_errors` is a different quantity — a mean over all index pairs `T` apart across the
+whole cloud — which on a chaotic sample reports the attractor diameter, not a closure scale.
+"""
+function _atlas_recon_closure_ratios(sample::AtlasReconSample, periods::Vector{Int})
+    ratios = Tuple{Int, Float64}[]
+    points = sample.support_points
+    length(points) >= 2 || return ratios
+    effective_max_period = _atlas_recon_max_period(periods)
+    tail = length(points) >= effective_max_period ? points[end - effective_max_period + 1:end] : points
+    length(tail) >= 2 || return ratios
+    base = tail[1]
+    base_norm = norm(base)
     for period in periods
-        period > 0 && period <= length(sample.closure_errors) || continue
-        closure = sample.closure_errors[period]
-        isfinite(closure) && push!(pairs, (period, Float64(closure)))
+        period > 0 && period + 1 <= length(tail) || continue
+        candidate = tail[period + 1]
+        scale = max(base_norm, norm(candidate), 1.0)
+        ratio = norm(base .- candidate) / scale
+        isfinite(ratio) && push!(ratios, (period, ratio))
     end
-    return pairs
+    return ratios
 end
 
-function _atlas_best_requested_closure(sample::AtlasReconSample, periods::Vector{Int})
+"""Requested period whose tail closure ratio is smallest, or `nothing`."""
+function _atlas_best_requested_ratio(sample::AtlasReconSample, periods::Vector{Int})
     best = nothing
-    best_closure = Inf
-    for pair in _atlas_requested_closure_pairs(sample, periods)
-        if pair[2] < best_closure
+    best_ratio = Inf
+    for pair in _atlas_recon_closure_ratios(sample, periods)
+        if pair[2] < best_ratio
             best = pair
-            best_closure = pair[2]
+            best_ratio = pair[2]
         end
     end
     return best
-end
-
-function _atlas_recon_state_scale(samples::Vector{AtlasReconSample})
-    scale = 1.0
-    for sample in samples
-        !isempty(sample.orbit_center) && (scale = max(scale, maximum(abs, sample.orbit_center)))
-        !isempty(sample.orbit_span) && (scale = max(scale, maximum(abs, sample.orbit_span)))
-        for point in sample.support_points
-            !isempty(point) && (scale = max(scale, maximum(abs, point)))
-        end
-    end
-    return scale
 end
 
 function _atlas_recon_sample_search_box(sample::AtlasReconSample, atlas_config::AtlasConfig)
@@ -641,17 +648,29 @@ function _atlas_calibrate_recon_precision(sys::DynamicalSystem,
     max_period = _atlas_recon_max_period(periods)
     candidates = Tuple{Int, Int, Float64}[]
     for (idx, sample) in enumerate(samples)
-        best = _atlas_best_requested_closure(sample, periods)
+        best = _atlas_best_requested_ratio(sample, periods)
         isnothing(best) && continue
-        period, closure = best
-        push!(candidates, (idx, period, closure))
+        period, ratio = best
+        push!(candidates, (idx, period, ratio))
     end
     sort!(candidates; by=item -> item[3])
 
-    periodic_closures = Float64[]
+    # Both scales are closure ratios, so the floor is relative: a verified periodic orbit cannot
+    # close tighter than the solver/Newton tolerance that produced it.
+    solver_floor = max(100 * max(reltol, abstol, atlas_config.recon_calibration_newton_tol),
+                       sqrt(eps(Float64)))
+    # A sample is periodic *evidence* only if its own orbit closes to numerical precision. Newton
+    # verification alone is not sufficient: a chaotic attractor contains embedded periodic orbits, so
+    # the search box around any chaotic sample yields a genuine fixed point whose existence says
+    # nothing about the sampled orbit. Admitting those would inflate the noise floor to the
+    # attractor's recurrence scale and destroy the separation the calibration exists to measure.
+    periodic_admissible = solver_floor * atlas_config.recon_calibration_min_separation
+    periodic_ratios = Float64[]
     periodic_keys = Set{Tuple{Int, Int}}()
-    for (idx, period, closure) in candidates
-        length(periodic_closures) >= atlas_config.recon_calibration_max_periodic_anchors && break
+    for (idx, period, ratio) in candidates
+        length(periodic_ratios) >= atlas_config.recon_calibration_max_periodic_anchors && break
+        # Candidates are sorted by ascending ratio, so the first inadmissible one ends the search.
+        ratio <= periodic_admissible || break
         verified, err = _atlas_verify_periodic_anchor(
             sys,
             samples[idx],
@@ -666,12 +685,12 @@ function _atlas_calibrate_recon_precision(sys::DynamicalSystem,
             min_crossing_time=min_crossing_time,
         )
         if verified
-            push!(periodic_closures, max(closure, 0.0))
+            push!(periodic_ratios, max(ratio, 0.0))
             push!(periodic_keys, (idx, period))
             push!(diagnostics["periodicAnchors"], Dict{String, Any}(
                 "param" => samples[idx].param,
                 "period" => period,
-                "closure" => closure,
+                "closureRatio" => ratio,
             ))
         elseif !isempty(err)
             push!(diagnostics["verificationFailures"], Dict{String, Any}(
@@ -682,43 +701,26 @@ function _atlas_calibrate_recon_precision(sys::DynamicalSystem,
         end
     end
 
-    state_scale = _atlas_recon_state_scale(samples)
-    solver_floor = max(100 * max(reltol, abstol, atlas_config.recon_calibration_newton_tol),
-                       sqrt(eps(Float64)) * state_scale)
-    noise_floor = isempty(periodic_closures) ? solver_floor : max(maximum(periodic_closures), solver_floor)
-    noise_source = isempty(periodic_closures) ? "solver_tolerance_floor" : "newton_verified_periodic"
-    diagnostics["periodicAnchorCount"] = length(periodic_closures)
+    noise_floor = isempty(periodic_ratios) ? solver_floor : max(maximum(periodic_ratios), solver_floor)
+    noise_source = isempty(periodic_ratios) ? "solver_tolerance_floor" : "newton_verified_periodic"
+    diagnostics["periodicAnchorCount"] = length(periodic_ratios)
     diagnostics["noiseFloor"] = noise_floor
     diagnostics["noiseSource"] = noise_source
+    diagnostics["scaleUnits"] = "closure_ratio"
 
     recurrence_scales = Float64[]
-    for (idx, period, closure) in reverse(candidates)
+    # Ascending order matters: the recurrence scale is the *tightest* false closure chaos achieves,
+    # so the anchors that bound it are the smallest-ratio aperiodic samples. Walking from the
+    # largest ratio down samples the least recurrent points and overestimates the scale, which
+    # would push the chosen threshold above the false closures it exists to exclude.
+    for (idx, period, ratio) in candidates
         length(recurrence_scales) >= atlas_config.recon_calibration_max_aperiodic_anchors && break
         (idx, period) in periodic_keys && continue
-        closure > noise_floor * atlas_config.recon_calibration_min_separation || continue
-        verified, err = _atlas_verify_periodic_anchor(
-            sys,
-            samples[idx],
-            period,
-            base_params,
-            bf_config,
-            cont_config,
-            atlas_config;
-            solver=solver,
-            reltol=reltol,
-            abstol=abstol,
-            min_crossing_time=min_crossing_time,
-        )
-        if verified
-            push!(periodic_keys, (idx, period))
-            continue
-        elseif !isempty(err)
-            push!(diagnostics["verificationFailures"], Dict{String, Any}(
-                "param" => samples[idx].param,
-                "period" => period,
-                "error" => err,
-            ))
-        end
+        ratio > noise_floor * atlas_config.recon_calibration_min_separation || continue
+        # Aperiodicity is confirmed by escalating the transient, not by Newton: a nearby verified
+        # orbit is compatible with a chaotic sample (see the periodic-anchor note above), so using
+        # verification as a disqualifier here would reject every anchor on a chaotic band and leave
+        # the calibration with nothing to measure the recurrence scale from.
         escalated = _atlas_recon_calibration_sample(
             sys,
             samples[idx],
@@ -732,18 +734,18 @@ function _atlas_calibrate_recon_precision(sys::DynamicalSystem,
             abstol=abstol,
             min_crossing_time=min_crossing_time,
         )
-        escalated_best = _atlas_best_requested_closure(escalated, periods)
+        escalated_best = _atlas_best_requested_ratio(escalated, periods)
         isnothing(escalated_best) && continue
-        escalated_period, escalated_closure = escalated_best
-        recurrence = min(closure, escalated_closure)
+        escalated_period, escalated_ratio = escalated_best
+        recurrence = min(ratio, escalated_ratio)
         recurrence > noise_floor * atlas_config.recon_calibration_min_separation || continue
         push!(recurrence_scales, recurrence)
         push!(diagnostics["aperiodicAnchors"], Dict{String, Any}(
             "param" => samples[idx].param,
             "initialBestPeriod" => period,
-            "initialClosure" => closure,
+            "initialClosureRatio" => ratio,
             "escalatedBestPeriod" => escalated_period,
-            "escalatedClosure" => escalated_closure,
+            "escalatedClosureRatio" => escalated_ratio,
             "recurrenceScale" => recurrence,
         ))
     end

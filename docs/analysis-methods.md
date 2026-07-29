@@ -469,7 +469,7 @@ Configuration highlights:
 
 The atlas reports both parameter coverage and geometry-aware orbit-cloud coverage, so a branch must match the observed support rather than merely overlap the same parameter interval.
 
-With `recon_calibration=:auto`, the initial reconnaissance pass estimates a closure-noise scale from Newton-verified periodic anchors when available (otherwise from the solver/Newton tolerance floor) and a recurrence scale from samples that remain aperiodic after an extra-transient check. The effective threshold is the geometric mean of the two scales. If they do not separate by `recon_calibration_min_separation`, the atlas records `diagnostics["reconCalibration"]["status"]` as a refusal and skips window recovery; robust-chaos certificates treat that atlas layer as inconclusive.
+With `recon_calibration=:auto`, the initial reconnaissance pass estimates two scales and places the threshold at their geometric mean. Both are measured as *closure ratios* — `‖x₁ − x₁₊ₜ‖` on the orbit tail over `max(‖x₁‖, ‖x₁₊ₜ‖, 1)` — because that is the quantity `recon_precision` is compared against, and it is scale-free. The noise scale comes from periodic anchors whose own orbit closes to numerical precision: Newton confirms the orbit, and the anchor is admitted only when its ratio is within `recon_calibration_min_separation` of the solver/Newton tolerance floor. A nearby Newton-verified orbit is not on its own evidence that the *sampled* orbit is periodic, because a chaotic attractor contains embedded periodic orbits. The recurrence scale comes from the smallest-ratio samples that remain aperiodic after an extra-transient recheck, which is the tightest false closure chaotic recurrence achieves at the requested orbit length. If the two scales do not separate by `recon_calibration_min_separation`, the atlas records `diagnostics["reconCalibration"]["status"]` as a refusal and skips window recovery; robust-chaos certificates treat that atlas layer as inconclusive. The diagnostics carry both scales, the separation margin, the anchor counts, and a `scaleUnits` field recording that the scales are ratios.
 
 ## Phase portrait
 
@@ -828,6 +828,43 @@ or failed Lyapunov/basin thresholds makes the region `:fragile`, and insufficien
 coverage makes it `:inconclusive`. The claim is bounded to the adaptive scale,
 field grid, atlas slice/period budget, basin knots, and boundary-distance
 convention recorded in the result.
+
+## Hardware acceptance test
+
+`hardware_acceptance_test` composes objects that already exist rather than
+recomputing anything: a measured mode sequence, the operating-map cross-section it
+is compared against, a robust-chaos certificate (band- or region-level), and
+optionally a regime-boundary or tolerance field supplying local margins. The result
+is an accept/reject/refuse verdict with every mismatching observation named and
+mapped to its certified operating point.
+
+The verdict semantics are deliberately asymmetric. Acceptance requires an accepted
+certificate verdict *and* no falsifying mismatch; a mismatch survives only when its
+required parameter shift lies inside the supplied local margin plus `margin_slack`.
+Missing or unresolved margin evidence yields `:inconclusive` rather than acceptance,
+so a hardware claim is never granted by absence of contrary data. Axis calibration
+is explicit — `:transition_affine` estimates scale and offset from matching
+measured/model transition anchors and returns `:refused` when fewer than two are
+available, instead of forcing an alignment.
+
+## Cycle-to-cycle connections
+
+`cycle_connection_seed` and `cycle_connection_continuation` extend the
+connecting-orbit engine from equilibrium connections to saddle-cycle → saddle-cycle
+ones. The seed search samples source-cycle phases and unstable Floquet launch
+directions, integrates candidates forward, and keeps the segment approaching the
+target cycle most closely; the continuation then solves the connecting mesh, both
+cycle meshes, the connecting time, both periods, and two free parameters in one
+projection boundary-value problem. Endpoint projections select the cycle phases and
+an integral phase condition removes the connection's global time shift.
+
+Non-hyperbolic cycles, unsupported Floquet dimensions, and degenerate orbit guesses
+are rejected at the interface. Accuracy is governed by the same second-order mesh
+relation as the other connection kinds (see `docs/julia-package.md`): the located
+locus carries an error quadratic in the mesh spacing, so `n_mesh` must resolve the
+connection's transition width and a located locus should be checked by refinement
+rather than by the corrector residual alone. `:cycle_connection` results do not
+populate HomCont test functions.
 
 ## Power spectrum
 
