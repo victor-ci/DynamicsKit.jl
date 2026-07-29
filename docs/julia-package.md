@@ -432,7 +432,7 @@ on the stiff memristive diode bridge the collocation branch — which return-map
 automatic seeder does not converge on — agrees with an independent shooting Newton solve
 to ~1e-4 in both the fixed point and the multipliers.
 
-## Connecting-orbit continuation (homoclinic / heteroclinic / saddle-cycle)
+## Connecting-orbit continuation (homoclinic / heteroclinic / saddle-cycle / cycle-to-cycle)
 
 `homoclinic_orbit_continuation`, `heteroclinic_orbit_continuation`, and
 `saddle_cycle_homoclinic_continuation` continue connecting orbits with a
@@ -915,7 +915,7 @@ c.status              # :ok
 
 For scalar data, `border_scenario_predict` and `border_period_adding_order(max_level)` expose the Farey/Stern-Brocot symbolic ordering used by 1D discontinuous piecewise-linear period-adding theory. The library deliberately does not transfer those theorems to the continuous 2D BCNF. Use `border_scenario_verify(sys, prediction; param_index, base_params, param_min, param_max, initial_point, ...)` to run a targeted sweep of the actual map: scalar predictions compare observed periods with the predicted/expected prefix, while BCNF robust-chaos candidates require a configured fraction of high-period/aperiodic samples with positive finite-time largest-Lyapunov estimates. This is verification evidence for the sampled map and settings, not a global proof. `serialize_border_scenario_prediction` / `deserialize_border_scenario_prediction` and `serialize_border_scenario_verification` / `deserialize_border_scenario_verification` provide versioned JSON-plain forms.
 
-
+## Codim-2 curve tracking and normal-form classification
 
 `codim2_curve` assembles a traced curve in a two-parameter plane by sweeping a secondary parameter and running a 1D continuation slice along the primary parameter at each secondary value.
 

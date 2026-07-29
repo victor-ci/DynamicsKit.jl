@@ -12,15 +12,15 @@ sweeps and shooting-based continuation, with orthogonal collocation as an altern
 | Area | Core capabilities |
 | --- | --- |
 | **Parameter-space exploration** | Threaded 1-D sweeps; basins of attraction; uniform and adaptive 2-D period, status, and Lyapunov maps; Lyapunov spectra, phase portraits, and power spectra. |
-| **Continuation and local bifurcations** | [`BifurcationKit.jl`](https://github.com/bifurcationkit/BifurcationKit.jl) pseudo-arclength continuation; periodic-orbit shooting and collocation; branch refinement; codimension-2 curves and map normal forms; [connecting orbits](docs/julia-package.md#connecting-orbit-continuation-homoclinic--heteroclinic--saddle-cycle); and [border-collision diagnostics](docs/julia-package.md#border-collision-classification). |
+| **Continuation and local bifurcations** | [`BifurcationKit.jl`](https://github.com/bifurcationkit/BifurcationKit.jl) pseudo-arclength continuation; periodic-orbit shooting and collocation; branch refinement; [codim-2 curve tracking and normal-form classification](docs/julia-package.md#codim-2-curve-tracking-and-normal-form-classification) (cusp, generalized-flip, Bautin, fold-flip, strong-resonance); [connecting orbits](docs/julia-package.md#connecting-orbit-continuation-homoclinic--heteroclinic--saddle-cycle--cycle-to-cycle) (homoclinic, heteroclinic, saddle-cycle, cycle-to-cycle); [border-collision classification and scenario prediction](docs/julia-package.md#border-collision-classification); and [Filippov grazing/sliding diagnostics](docs/julia-package.md#filippov-grazing-and-sliding-for-flows) for piecewise-smooth flows. |
 | **Automatic structure discovery** | Periodic-skeleton searches and an atlas combining reconnaissance sweeps with targeted seeding and recovery to map periodic branches and windows. |
-| **Robustness and design** | Multistability-aware branch reachability; regime-boundary and tolerance maps; layered robust-chaos evidence; and [inverse chaos-source design](docs/julia-package.md#chaos-source-inverse-design). |
+| **Robustness and design** | Multistability-aware branch reachability; regime-boundary and tolerance maps; layered robust-chaos evidence and [two-parameter region certification](docs/julia-package.md#two-parameter-region-certificates); [hardware acceptance testing](docs/julia-package.md#hardware-acceptance-against-certificates); and [inverse chaos-source design](docs/julia-package.md#chaos-source-inverse-design). |
 
 [GPU acceleration](docs/julia-package.md#optional-gpu-acceleration) is available through CUDA.jl or
-AMDGPU.jl for eligible cell-independent discrete-map sweeps and independent-trajectory ODE
-bifurcation maps and basin sweeps. Continuous-time Lyapunov analyses and continuation remain CPU-only;
-Metal is unavailable because its lack of Float64 support is incompatible with the validated
-classification tolerances.
+AMDGPU.jl for eligible cell-independent discrete-map sweeps, independent-trajectory ODE bifurcation
+maps and basin sweeps, and the variational continuous-flow Lyapunov field. Continuation and the
+coupled two-trajectory Lyapunov method remain CPU-only; Metal is unavailable because its lack of
+Float64 support is incompatible with the validated classification tolerances.
 
 ```julia
 using DynamicsKit
@@ -66,7 +66,7 @@ See [`docs/`](docs/README.md):
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-CI runs the suite on every push to `main` and every pull request.
+See [`docs/validation.md`](docs/validation.md) for focused test targets, CI details, and quality gates.
 
 ## Related
 
