@@ -340,7 +340,8 @@ function lyapunov_field(sys::ContinuousODE, config::BifurcationMapConfig;
     # The two-trajectory method is coupled and always runs on the CPU.
     if method === :two_trajectory
         isa(backend, GPUBackend) && throw(ArgumentError(
-            "lyapunov_field with lyapunov_method=:two_trajectory is CPU-only for ContinuousODE. " *
+            "lyapunov_field with lyapunov_method=:two_trajectory uses coupled trajectories and is " *
+            "CPU-only for ContinuousODE. " *
             "Use backend=CPUBackend() or AutoBackend(), or switch to lyapunov_method=:variational for GPU support."))
         return _lyapunov_field_continuous_two_trajectory(sys, config, initial_point, solver, reltol, abstol, cells)
     end
