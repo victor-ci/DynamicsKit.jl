@@ -62,6 +62,8 @@ using StaticArrays
         @test SVector(rhs[1], rhs[2], rhs[3]) ≈ expected_state
         @test SVector(rhs[4], rhs[5], rhs[6]) ≈ expected_tangent
         @test all(iszero, rhs[7:end])
+        @test BE._variational_gpu_state_slice(aug, Val(3), Val(0)) == u
+        @test BE._variational_gpu_state_slice(aug, Val(3), Val(3)) == v
     end
 
     sys = rossler_oscillator()
@@ -384,7 +386,16 @@ using StaticArrays
                                      max_period=6, iterations=40, precision=1e-3,
                                      lyapunov_enabled=true, lyapunov_iterations=30,
                                      lyapunov_method=:two_trajectory)
-        @test_throws ArgumentError lyapunov_field(sys, lcfg2; backend=seam)
+        rejection = try
+            lyapunov_field(sys, lcfg2; backend=seam)
+            nothing
+        catch e
+            e
+        end
+        rejection_text = rejection === nothing ? "" : sprint(showerror, rejection)
+        @test rejection isa ArgumentError
+        @test occursin("coupled", rejection_text)
+        @test occursin("CPU-only", rejection_text)
 
         # Auto/CPU run on the CPU without error.
         @test lyapunov_field(sys, lcfg; backend=auto_backend()) isa LyapunovFieldResult
@@ -454,6 +465,22 @@ using StaticArrays
             r_gpu = Base.invokelatest(bifurcation_map, sys, cascade; backend=gpu_backend(vendor))
             @test r_gpu.compute_backend == vendor
             @test r_gpu.periodicity == r_cpu.periodicity           # FP64 scientific parity on real hardware
+
+            l_cfg = BifurcationMapConfig(
+                a_min=0.15, a_max=0.16, a_steps=1,
+                b_min=2.3, b_max=2.4, b_steps=1,
+                a_index=1, b_index=3, base_params=[0.2, 0.2, 3.0],
+                lyapunov_transient=10, lyapunov_method=:variational, lyapunov_iterations=20,
+            )
+            l_cpu = lyapunov_field(sys, l_cfg)
+            l_gpu = Base.invokelatest(lyapunov_field, sys, l_cfg; backend=gpu_backend(vendor))
+            @test l_gpu.compute_backend == vendor
+            @test l_gpu.lyapunov_method == :variational
+            @test l_gpu.normalization == :flow_time
+            @test l_gpu.estimation_status_codes == l_cpu.estimation_status_codes
+            @test l_gpu.sample_counts == l_cpu.sample_counts
+            @test maximum(abs.(l_gpu.exponents .- l_cpu.exponents)) <= 1e-4
+
             b_cfg = BasinsConfig(bif_param=5.0, param_index=3, fixed_params=[0.2, 0.2, 5.0],
                                  x_min=-6.0, x_max=6.0, x_steps=6, y_min=0.0, y_max=6.0, y_steps=6,
                                  x_index=1, y_index=3, max_period=6, iterations=120, precision=1e-3)

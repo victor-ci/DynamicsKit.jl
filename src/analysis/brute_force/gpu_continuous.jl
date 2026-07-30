@@ -436,6 +436,17 @@ end
     end)
 end
 
+# Avoid an `ntuple` closure in the device callback. CUDA can compile the generated, statically indexed
+# constructor for any state dimension without falling back to dynamic `getindex`/`SVector` dispatch.
+@generated function _variational_gpu_state_slice(u::SVector{N, T}, ::Val{D},
+                                                  ::Val{OFFSET}) where {N, T, D, OFFSET}
+    D > 0 || return :(throw(ArgumentError("state dimension must be positive")))
+    OFFSET >= 0 || return :(throw(ArgumentError("state offset must be non-negative")))
+    OFFSET + D <= N || return :(throw(BoundsError(u, $(OFFSET + D))))
+    elements = [:(@inbounds u[$(OFFSET + i)]) for i in 1:D]
+    return :(SVector{$D, $T}($(elements...)))
+end
+
 # Per-crossing callback: return-time correction, renormalization, accumulation.
 function _make_variational_lyapunov_gpu_affect(::Val{D}, n_sv::SVector{D, Float64}, f_oop,
                                                transient::Int, total_crossings::Int,
@@ -449,8 +460,8 @@ function _make_variational_lyapunov_gpu_affect(::Val{D}, n_sv::SVector{D, Float6
 
         cc = u[CC] + 1.0
         u  = setindex(u, cc, CC)
-        uphys = SVector{D, Float64}(ntuple(i -> u[i], Val(D)))
-        vtang = SVector{D, Float64}(ntuple(i -> u[D + i], Val(D)))
+        uphys = _variational_gpu_state_slice(u, Val(D), Val(0))
+        vtang = _variational_gpu_state_slice(u, Val(D), Val(D))
 
         f_cross = f_oop(uphys, integrator.p, t)
         nf = dot(n_sv, f_cross)
