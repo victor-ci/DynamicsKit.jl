@@ -1298,16 +1298,9 @@ end
 """
     _rc_region_config_with_min_crossing_time(config, min_crossing_time) -> RobustChaosRegionConfig
 
-Return a copy of `config` with `min_crossing_time` propagated into every
-sub-configuration that carries the field: `map`, `lyapunov_field`, `basins`,
-and `atlas.brute_force`. `ContinuationConfig` has no crossing-time field; the
-atlas continuation receives the value through the
+`atlas.continuation` is deliberately not touched: `ContinuationConfig` has no
+crossing-time field, and the atlas continuation receives the value through the
 `continuation_atlas(...; min_crossing_time)` keyword instead.
-
-Each `@set` rebuilds the whole (immutable) config with one nested field
-replaced and returns the new root, which must be reassigned. The sequential
-rebuilds cost a few small-struct allocations on a path taken once per
-certification and are kept for readability.
 """
 function _rc_region_config_with_min_crossing_time(
     config::RobustChaosRegionConfig,

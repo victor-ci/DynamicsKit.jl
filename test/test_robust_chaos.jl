@@ -540,23 +540,21 @@ using Dates: DateTime
         )
         mct = 3.25e-4
         out = DynamicsKit._rc_region_config_with_min_crossing_time(cfg, mct)
-        # types survive the rebuild — this is the corruption the bug caused
+        # The bug wrote the rebuilt root config into atlas.brute_force.
         @test out isa RobustChaosRegionConfig
         @test out.atlas isa AtlasConfig
         @test out.atlas.brute_force isa BruteForceConfig
-        # the value reaches every carrier field
         @test out.map.min_crossing_time == mct
         @test out.lyapunov_field.min_crossing_time == mct
         @test out.basins.min_crossing_time == mct
         @test out.atlas.brute_force.min_crossing_time == mct
-        # unrelated fields are preserved
         @test out.map.a_min == cfg.map.a_min
         @test out.atlas.recon_steps == cfg.atlas.recon_steps
         @test out.atlas.brute_force.param_steps == cfg.atlas.brute_force.param_steps
         @test out.basins.x_min == cfg.basins.x_min
         @test out.adaptive.total_budget == cfg.adaptive.total_budget
-        # and the input is untouched (guaranteed by immutability, asserted
-        # for documentation)
+        # Guaranteed by immutability; asserted to document that the bug
+        # produced a mistyped copy, never a mutation.
         @test cfg.atlas.brute_force.min_crossing_time != mct
     end
 
