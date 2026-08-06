@@ -8,6 +8,7 @@ Accessors = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
 BifurcationKit = "0f109fa4-8a5d-4b75-95aa-f515264e7665"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+DiffEqBase = "2b5f629d-d688-5b77-993f-72d75c75574e"
 DiffEqGPU = "071ae1c0-96b5-11e9-1965-c90190d839ea"
 DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
@@ -43,6 +44,11 @@ BifurcationKit = "0.7.1"
 CSV = "0.10.16"
 CUDA = "5, 6"
 Dates = "1"
+# Capped below 7.10: from there the resolver pulls OrdinaryDiffEqCore 4.12+/
+# SciMLBase 3.40+, whose integrator changes break the exact CPU-vs-kernel-seam
+# parity of continuous sweeps (test_gpu_continuous.jl, basins parity) under
+# --check-bounds=yes. Lift after adapting the seam path to the new stack.
+DiffEqBase = "7.6.2 - 7.9"
 DiffEqGPU = "3.13.0"
 DifferentialEquations = "8.0.0"
 FFTW = "1.10.0"
