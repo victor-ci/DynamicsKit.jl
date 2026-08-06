@@ -87,10 +87,10 @@ Typical uses:
 
 The Cuk defaults follow Debbat, El Aroudi, and Bouyadjra (2012). The SEPIC defaults follow
 Debbat, El Aroudi, Giral, and Martinez-Salamero (2002), including the first flip near
-`Iref = 5.25 A`. The Cuk converter's *exact* stroboscopic map places its first flip near
-`Iref ≈ 3.0 A` rather than the ~4.0 A reported in the source paper (which uses an averaged
-model); this is a known, informational source discrepancy between the exact switched map
-computed here and the paper's averaged analysis, not a defect in this implementation.
+`Iref = 5.25 A`. The Cuk converter's first flip at the catalog defaults (`Vin = 15 V`) sits
+near `Iref ≈ 3.0 A`, consistent with the lossless steady-state peak-current relation at that
+input voltage; at the source paper's `Vin = 20 V` the exact stroboscopic map places the first
+flip at `Iref ≈ 3.99 A`, matching the paper's reported ~4.0 A.
 
 ## Switching-map generator
 
