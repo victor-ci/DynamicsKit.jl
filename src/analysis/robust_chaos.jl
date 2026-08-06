@@ -1296,6 +1296,24 @@ function _rc_region_layer_verdicts(
 end
 
 """
+    _rc_region_config_with_min_crossing_time(config, min_crossing_time) -> RobustChaosRegionConfig
+
+`atlas.continuation` is deliberately not touched: `ContinuationConfig` has no
+crossing-time field, and the atlas continuation receives the value through the
+`continuation_atlas(...; min_crossing_time)` keyword instead.
+"""
+function _rc_region_config_with_min_crossing_time(
+    config::RobustChaosRegionConfig,
+    min_crossing_time::Float64,
+)::RobustChaosRegionConfig
+    config = Accessors.@set config.map.min_crossing_time = min_crossing_time
+    config = Accessors.@set config.lyapunov_field.min_crossing_time = min_crossing_time
+    config = Accessors.@set config.basins.min_crossing_time = min_crossing_time
+    config = Accessors.@set config.atlas.brute_force.min_crossing_time = min_crossing_time
+    return config
+end
+
+"""
     robust_chaos_region_certificate(sys, config; kwargs...) -> RobustChaosRegionResult
 
 Certify robust-chaos regions in a two-parameter operating plane. The analysis is
@@ -1315,17 +1333,7 @@ function robust_chaos_region_certificate(
     compute_backend::ComputeBackend = cpu_backend(),
 )::RobustChaosRegionResult
     if sys isa ContinuousODE
-        map_cfg = Accessors.@set config.map.min_crossing_time = min_crossing_time
-        field_cfg = Accessors.@set config.lyapunov_field.min_crossing_time = min_crossing_time
-        basins_cfg = Accessors.@set config.basins.min_crossing_time = min_crossing_time
-        # ContinuationConfig has no crossing-time field; atlas continuation receives
-        # the same value through the `continuation_atlas(...; min_crossing_time)` keyword.
-        atlas_bf = Accessors.@set config.atlas.brute_force.min_crossing_time = min_crossing_time
-        atlas_cfg = Accessors.@set config.atlas.brute_force = atlas_bf
-        config = Accessors.@set config.map = map_cfg
-        config = Accessors.@set config.lyapunov_field = field_cfg
-        config = Accessors.@set config.basins = basins_cfg
-        config = Accessors.@set config.atlas = atlas_cfg
+        config = _rc_region_config_with_min_crossing_time(config, min_crossing_time)
     end
 
     _rc_log!(log, "robust_chaos_region_certificate: adaptive candidate map")

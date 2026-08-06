@@ -500,6 +500,136 @@ using Dates: DateTime
         @test only(rt.regions).leaf_cell_count == region.leaf_cell_count
     end
 
+    @testset "min_crossing_time propagation rebuilds the config intact" begin
+        # Pins the regression directly: the transform used to write the
+        # rebuilt ROOT config into AtlasConfig.brute_force. The corruption
+        # never mutated the input (all configs are immutable structs); it
+        # produced a mistyped copy, so the assertions target the copy.
+        map_cfg = BifurcationMapConfig(
+            a_min=0.2, a_max=0.3, a_steps=2,
+            b_min=0.0, b_max=1.0, b_steps=2,
+            a_index=1, b_index=2,
+            base_params=[0.25, 0.5],
+            max_period=2, iterations=6,
+        )
+        atlas_cfg = AtlasConfig(
+            brute_force=BruteForceConfig(
+                param_min=0.2, param_max=0.3, param_index=1,
+                fixed_params=[0.25, 0.5], param_steps=3,
+                iterations=6, transient=3,
+            ),
+            continuation=ContinuationConfig(
+                p_min=0.2, p_max=0.3, param_index=1,
+                ds=0.02, dsmax=0.05, max_steps=10,
+            ),
+            periods=[1], max_period=2, recon_steps=3,
+            cache_enabled=false, threaded=false,
+        )
+        basins_cfg = BasinsConfig(
+            bif_param=0.25, param_index=1, fixed_params=[0.25, 0.5],
+            x_min=0.5, x_max=1.5, x_steps=2,
+            y_min=-0.5, y_max=0.5, y_steps=2,
+            iterations=6, max_period=2,
+        )
+        cfg = RobustChaosRegionConfig(
+            map=map_cfg,
+            adaptive=AdaptiveMapConfig(total_budget=15, max_depth=1),
+            lyapunov_field=map_cfg,
+            atlas=atlas_cfg,
+            basins=basins_cfg,
+        )
+        mct = 3.25e-4
+        out = DynamicsKit._rc_region_config_with_min_crossing_time(cfg, mct)
+        # The bug wrote the rebuilt root config into atlas.brute_force.
+        @test out isa RobustChaosRegionConfig
+        @test out.atlas isa AtlasConfig
+        @test out.atlas.brute_force isa BruteForceConfig
+        @test out.map.min_crossing_time == mct
+        @test out.lyapunov_field.min_crossing_time == mct
+        @test out.basins.min_crossing_time == mct
+        @test out.atlas.brute_force.min_crossing_time == mct
+        @test out.map.a_min == cfg.map.a_min
+        @test out.atlas.recon_steps == cfg.atlas.recon_steps
+        @test out.atlas.brute_force.param_steps == cfg.atlas.brute_force.param_steps
+        @test out.basins.x_min == cfg.basins.x_min
+        @test out.adaptive.total_budget == cfg.adaptive.total_budget
+        # Guaranteed by immutability; asserted to document that the bug
+        # produced a mistyped copy, never a mutation.
+        @test cfg.atlas.brute_force.min_crossing_time != mct
+    end
+
+    @testset "Integration — region certificate accepts a ContinuousODE" begin
+        # Regression: the ContinuousODE branch used to corrupt the nested atlas
+        # config while propagating min_crossing_time (the rebuilt root config was
+        # written into AtlasConfig.brute_force), so any flow input threw before
+        # computing anything.
+        function radial2!(du, u, p, t)
+            μ = p[1]
+            r2 = u[1]^2 + u[2]^2
+            du[1] = u[2] + u[1] * (μ - r2)
+            du[2] = -u[1] + u[2] * (μ - r2)
+            nothing
+        end
+        section = PoincareSection(
+            (u, t, integrator) -> u[2];
+            direction=:up,
+            projection=[1],
+            template=[0.0, 0.0],
+        )
+        # Parameter naming: the config's a-axis (a_index=1) is μ and its
+        # b-axis (b_index=2) is ν; ν is inert and exists only to give the
+        # region certificate a second parameter axis.
+        sys = ContinuousODE(radial2!, 2, section, [:μ, :ν], "Radial2P";
+            tspan_hint=8.0,
+            default_initial_state=[1.0, 0.1],
+            default_params=[0.25, 0.5])
+        map_cfg = BifurcationMapConfig(
+            a_min=0.2, a_max=0.3, a_steps=2,
+            b_min=0.0, b_max=1.0, b_steps=2,
+            a_index=1, b_index=2,
+            base_params=[0.25, 0.5],
+            max_period=2, iterations=6, precision=1e-3,
+            reuse_neighbor_seeds=false,
+        )
+        atlas = AtlasConfig(
+            brute_force=BruteForceConfig(
+                param_min=0.2, param_max=0.3, param_index=1,
+                fixed_params=[0.25, 0.5], param_steps=3,
+                iterations=6, transient=3,
+            ),
+            continuation=ContinuationConfig(
+                p_min=0.2, p_max=0.3, param_index=1,
+                ds=0.02, dsmax=0.05, max_steps=10,
+            ),
+            periods=[1], max_period=2, recon_steps=3,
+            cache_enabled=false, threaded=false,
+        )
+        basins = BasinsConfig(
+            bif_param=0.25, param_index=1, fixed_params=[0.25, 0.5],
+            x_min=0.5, x_max=1.5, x_steps=2,
+            y_min=-0.5, y_max=0.5, y_steps=2,
+            iterations=6, max_period=2,
+        )
+        cfg = RobustChaosRegionConfig(
+            map=map_cfg,
+            adaptive=AdaptiveMapConfig(total_budget=15, max_depth=1),
+            lyapunov_field=map_cfg,
+            atlas=atlas,
+            basins=basins,
+            max_atlas_slices_per_region=1,
+            max_basin_knots_per_region=1,
+        )
+        result = robust_chaos_region_certificate(
+            sys, cfg;
+            initial_point=[1.0, 0.1],
+            min_crossing_time=1e-4,
+        )
+        @test result isa RobustChaosRegionResult
+        # The limit-cycle plane is periodic throughout, so no chaotic region
+        # may certify.
+        @test all(r -> r.verdict != :certified, result.regions)
+    end
+
     # --- Source-result reuse ---
     # The cat-map fixture is reused; each sub-testset pre-computes only the layers it
     # needs to supply, then verifies that the log contains the reuse message and that
