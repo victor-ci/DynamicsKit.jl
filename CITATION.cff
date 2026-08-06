@@ -3,11 +3,23 @@ message: "If you use this software, please cite it using the metadata below."
 title: "DynamicsKit.jl"
 abstract: >-
   A Julia library for bifurcation analysis of dynamical systems — discrete maps
-  and continuous-time ODEs with Poincaré sections. Provides threaded brute-force
-  parameter sweeps (1-D diagrams, basins of attraction, and 2-D parameter maps
-  with period/status/Lyapunov diagnostics) and pseudo-arclength continuation
-  wrapping BifurcationKit.jl, including a higher-level atlas that maps periodic
-  branches automatically.
+  and continuous-time ODEs analysed through Poincaré sections and return maps.
+  Direct exploration provides threaded parameter sweeps: 1-D diagrams, basins of
+  attraction, and uniform or adaptive 2-D operating maps with period, status, and
+  Lyapunov diagnostics. Continuation wraps BifurcationKit.jl pseudo-arclength with
+  shooting and collocation, and extends it with codim-2 curve tracking and
+  normal-form classification, connecting-orbit continuation from homoclinic to
+  cycle-to-cycle connections, border-collision classification with scenario
+  prediction, and grazing/sliding diagnostics for piecewise-smooth flows; an atlas
+  maps periodic branches and windows automatically. An engineering layer generates
+  switching maps directly from circuit descriptions, assigns branch reachability,
+  computes tolerance and regime-boundary fields, certifies robust chaos over
+  parameter bands and two-parameter regions, tests measured hardware routes
+  against those certificates, and searches for operating points from signal
+  specifications. Eligible discrete sweeps, independent-trajectory ODE maps and
+  basins, and the variational continuous-flow Lyapunov field accelerate on CUDA or
+  AMDGPU devices. Results serialise as versioned plain data with explicit refusal
+  semantics.
 type: software
 authors:
   - family-names: Iheanacho
