@@ -1205,7 +1205,8 @@ Conservative minimum of three layer scores:
 - `lyapunov_min_resolved_exponent`: Minimum exponent among resolved samples (can be negative)
 - `lyapunov_n_total`, `lyapunov_n_resolved`, `lyapunov_n_positive`: Lyapunov sample counts
 - `atlas_searched_periods`: Periods searched by the atlas recon
-- `atlas_search_complete`: Whether the atlas ran to completion without time-budget exhaustion
+- `atlas_search_complete`: Whether the atlas ran to completion, with neither its wall-clock budget nor its
+  recovery-attempt budget refusing a search
 - `atlas_coverage_effort`: Bounded [0, 1] measure of atlas window coverage effort
 - `atlas_n_windows`, `atlas_n_covered`, `atlas_n_partial`, `atlas_n_unresolved`, `atlas_n_gaps`
 - `atlas_unresolved_stability_count`: Branch samples whose stability could not be evaluated

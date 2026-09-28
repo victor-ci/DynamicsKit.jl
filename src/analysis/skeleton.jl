@@ -349,19 +349,19 @@ function _collect_skeleton_candidates(initial_points, solver!::Function;
         return candidates
     end
 
-    buckets = [Vector{Vector{Float64}}() for _ in 1:Threads.maxthreadid()]
+    # Results are stored by seed index and read back in seed order, so the
+    # threaded path returns exactly the serial candidate list. Collecting into
+    # per-thread buckets made the order depend on scheduling, and the first
+    # candidate of each orbit is the one downstream deduplication keeps, so the
+    # seed a branch was continued from changed between runs.
+    slots = Vector{Union{Nothing, Vector{Float64}}}(nothing, length(initial_points))
 
-    Threads.@threads for idx in eachindex(initial_points)
+    Threads.@threads for idx in 1:length(initial_points)
         point, converged = solver!(collect(Float64, initial_points[idx]))
-        converged || continue
-        push!(buckets[Threads.threadid()], point)
+        converged && (slots[idx] = point)
     end
 
-    candidates = Vector{Vector{Float64}}()
-    for bucket in buckets
-        append!(candidates, bucket)
-    end
-    return candidates
+    return Vector{Float64}[point for point in slots if point !== nothing]
 end
 
 """

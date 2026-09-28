@@ -464,8 +464,12 @@ Configuration highlights:
 | `coverage_threshold` | Recovery threshold |
 | `branch_switching` | Probe special points for connected structures |
 | `reuse_neighbor_seeds` | Recycle successful skeleton seeds for nearby windows |
-| `threaded` | Allow threaded substeps |
+| `threaded` | Allow threaded substeps; a threaded run returns the same records as a serial run |
 | `cache_enabled` | Allow atlas-level cache use |
+| `max_recovery_attempts` | Deterministic cap on window-recovery searches |
+| `time_budget_s` | Wall-clock cap; a run stopped by it is not reproducible |
+
+Two budgets can stop the search early. `max_recovery_attempts` counts window-recovery searches, one per window whether it comes from the reconnaissance or from a gap refinement, in the atlas's own serial order, so a run it stops ends at the same point on any machine and at any thread count. `time_budget_s` stops on elapsed wall-clock time, so where it stops depends on machine speed and load. A search either budget refuses stays in the result: the window is kept with status `:unattempted` and its interval is recorded as a `:budget_exhausted` gap, so a stopped run never reads as a fully covered one. The diagnostics record `workBudgetExceeded`, `timeBudgetExceeded`, `recoveryAttempts`, and `reproducible`. Each budget flag is set only when that budget refused a search; reaching a limit with nothing left to do sets neither. `reproducible` is false only when the wall-clock budget refused a search. A robust-chaos certificate treats an atlas stopped by either budget as incomplete, so its atlas layer cannot pass. Use the attempt cap for any result that will be cited.
 
 The atlas reports both parameter coverage and geometry-aware orbit-cloud coverage, so a branch must match the observed support rather than merely overlap the same parameter interval.
 

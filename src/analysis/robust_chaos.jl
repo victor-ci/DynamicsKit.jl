@@ -340,8 +340,8 @@ Compute a conservative robust-chaos certificate by orchestrating three analysis 
 1. **Lyapunov sweep** (`lyapunov_diagram`): verifies that the swept parameter interval yields
    predominantly positive Lyapunov exponents with sufficient resolved sample coverage.
 2. **Continuation-atlas search** (`continuation_atlas`): checks that no stable low-period
-   orbits exist within the searched region, that the atlas search was not cut short by a time
-   budget, and that all candidate windows were adequately covered.
+   orbits exist within the searched region, that the atlas search was not cut short by its
+   wall-clock or recovery-attempt budget, and that all candidate windows were adequately covered.
 3. **Basin of attraction** (`basins_of_attraction` + per-seed Lyapunov re-estimation): verifies
    that basin-of-attraction grid seeds are predominantly chaotic. Seeds with detected periodicity
    (`BasinsResult.periodicity > 0`) are classified as periodic without re-estimation; seeds with
@@ -500,7 +500,10 @@ function _robust_chaos_analysis(
         end
     end
 
-    time_budget_exceeded  = _as_bool(get(_atlas_result.diagnostics, "timeBudgetExceeded", false))
+    # Either budget leaves the search incomplete; the work budget is the reproducible one.
+    atlas_time_budget_hit = _as_bool(get(_atlas_result.diagnostics, "timeBudgetExceeded", false))
+    atlas_work_budget_hit = _as_bool(get(_atlas_result.diagnostics, "workBudgetExceeded", false))
+    budget_exceeded       = atlas_time_budget_hit || atlas_work_budget_hit
     calibration_refused   = _atlas_recon_calibration_refused(_atlas_result.diagnostics)
     periods_searched      = Int[_as_int(x) for x in get(_atlas_result.diagnostics, "periods", Int[])]
     n_atlas_covered       = _as_int(get(_atlas_result.coverage_summary, "covered",    0))
@@ -508,7 +511,7 @@ function _robust_chaos_analysis(
     n_atlas_unresolved_w  = _as_int(get(_atlas_result.coverage_summary, "unresolved", 0))
     n_atlas_windows       = n_atlas_covered + n_atlas_partial + n_atlas_unresolved_w
     n_atlas_gaps          = length(_atlas_result.gaps)
-    atlas_search_complete = !time_budget_exceeded && !calibration_refused
+    atlas_search_complete = !budget_exceeded && !calibration_refused
 
     base_params     = _rc_atlas_base_params(config.atlas)
     stable_evidence, unresolved_stability_count = _rc_stable_window_evidence(
@@ -524,7 +527,7 @@ function _robust_chaos_analysis(
     atlas_coverage_effort = if n_atlas_windows == 0
         atlas_search_complete && n_atlas_gaps == 0 ? 1.0 : 0.0
     else
-        min(1.0, (n_atlas_covered / n_atlas_windows) * (time_budget_exceeded ? 0.5 : 1.0))
+        min(1.0, (n_atlas_covered / n_atlas_windows) * (budget_exceeded ? 0.5 : 1.0))
     end
 
     atlas_verdict = if !isempty(stable_evidence)
@@ -533,7 +536,7 @@ function _robust_chaos_analysis(
         :inconclusive
     elseif unresolved_stability_count > 0
         :inconclusive
-    elseif time_budget_exceeded
+    elseif budget_exceeded
         :inconclusive
     elseif n_atlas_gaps > 0
         :inconclusive
@@ -558,6 +561,8 @@ function _robust_chaos_analysis(
         "n_gaps"               => n_atlas_gaps,
         "unresolved_stability_count" => unresolved_stability_count,
         "stable_evidence_count"=> length(stable_evidence),
+        "time_budget_exceeded" => atlas_time_budget_hit,
+        "work_budget_exceeded" => atlas_work_budget_hit,
         "recon_calibration"    => get(_atlas_result.diagnostics, "reconCalibration", Dict{String, Any}()),
     ))
     _rc_log!(log, "layer 2 verdict: $atlas_verdict (windows=$n_atlas_windows, covered=$n_atlas_covered, stable=$(length(stable_evidence)), periods=$(periods_searched))")
@@ -1117,7 +1122,9 @@ function _rc_region_layer_verdicts(
             region_bounds.primary_min,
             region_bounds.primary_max,
         )
-        time_budget_exceeded = _as_bool(get(atlas_result.diagnostics, "timeBudgetExceeded", false))
+        slice_time_budget_hit = _as_bool(get(atlas_result.diagnostics, "timeBudgetExceeded", false))
+        slice_work_budget_hit = _as_bool(get(atlas_result.diagnostics, "workBudgetExceeded", false))
+        budget_exceeded = slice_time_budget_hit || slice_work_budget_hit
         calibration_refused = _atlas_recon_calibration_refused(atlas_result.diagnostics)
         atlas_calibration_refused |= calibration_refused
         n_covered = _as_int(get(atlas_result.coverage_summary, "covered", 0))
@@ -1126,13 +1133,13 @@ function _rc_region_layer_verdicts(
         n_windows = n_covered + n_partial + n_unresolved
         n_gaps = length(atlas_result.gaps)
         coverage_effort = if n_windows == 0
-            (!time_budget_exceeded && n_gaps == 0) ? 1.0 : 0.0
+            (!budget_exceeded && n_gaps == 0) ? 1.0 : 0.0
         else
-            min(1.0, (n_covered / n_windows) * (time_budget_exceeded ? 0.5 : 1.0))
+            min(1.0, (n_covered / n_windows) * (budget_exceeded ? 0.5 : 1.0))
         end
         slice_pass = isempty(stable_evidence) && unresolved_stability == 0 &&
                      !calibration_refused &&
-                     !time_budget_exceeded && n_gaps == 0 &&
+                     !budget_exceeded && n_gaps == 0 &&
                      n_partial == 0 && n_unresolved == 0
         atlas_passed += slice_pass ? 1 : 0
         stable_evidence_total += length(stable_evidence)
@@ -1143,7 +1150,8 @@ function _rc_region_layer_verdicts(
             "coverageEffort" => coverage_effort,
             "stableEvidenceCount" => length(stable_evidence),
             "unresolvedStabilityCount" => unresolved_stability,
-            "timeBudgetExceeded" => time_budget_exceeded,
+            "timeBudgetExceeded" => slice_time_budget_hit,
+            "workBudgetExceeded" => slice_work_budget_hit,
             "reconCalibrationRefused" => calibration_refused,
             "reconCalibration" => get(atlas_result.diagnostics, "reconCalibration", Dict{String, Any}()),
             "nGaps" => n_gaps,

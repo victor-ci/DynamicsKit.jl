@@ -198,6 +198,80 @@
         @test [sample.param for sample in threaded_samples] == sort([sample.param for sample in threaded_samples])
     end
 
+    @testset "Threaded skeleton candidates keep seed order" begin
+        # Uneven per-seed cost makes tasks finish out of order; the collector
+        # must still return the serial candidate list, since the first
+        # candidate of each orbit is the one deduplication keeps.
+        seeds = [[Float64(k), 0.0] for k in 1:48]
+        solver = x -> begin
+            k = Int(x[1])
+            s = 0.0
+            for m in 1:(2000 * (49 - k)); s += sin(m * 1e-3); end
+            (x .+ 1e-12 * s, isodd(k) || k % 6 == 0)
+        end
+        serial = DynamicsKit._collect_skeleton_candidates(seeds, solver; threaded=false)
+        Threads.nthreads() > 1 || @info "Threaded skeleton ordering test ran on one thread; the threaded path is not exercised."
+        for _ in 1:25
+            threaded = DynamicsKit._collect_skeleton_candidates(seeds, solver; threaded=true)
+            @test threaded == serial
+        end
+        @test [round(Int, c[1]) for c in serial] == [k for k in 1:48 if isodd(k) || k % 6 == 0]
+    end
+
+    @testset "Threaded atlas and recovery budget on a discrete map" begin
+        sys = henon_map()
+        make = (threaded, cap) -> AtlasConfig(max_period=8,
+            brute_force=BruteForceConfig(param_min=1.0, param_max=1.3, param_steps=120,
+                param_index=1, fixed_params=[1.15, 0.3], iterations=2000, transient=1000),
+            continuation=ContinuationConfig(p_min=0.95, p_max=1.35, param_index=1, ds=1e-3,
+                dsmax=5e-3, dsmin=1e-9, max_steps=600, newton_tol=1e-10, newton_max_iter=30,
+                detect_bifurcation=3),
+            recon_steps=80, cache_enabled=false, threaded=threaded, max_recovery_attempts=cap)
+        signature = res -> [(r.branch.period, r.param_min, r.param_max, r.seed_param)
+                            for r in res.branch_records]
+
+        # One serial reference serves every comparison below.
+        full = continuation_atlas(sys, make(false, nothing))
+        reference = signature(full)
+        needed = full.diagnostics["recoveryAttempts"]
+        @test !isempty(reference)
+        @test needed >= 2
+        @test full.diagnostics["workBudgetExceeded"] == false
+        @test full.diagnostics["reproducible"] == true
+
+        # Threaded runs reproduce the serial records.
+        for _ in 1:4
+            @test signature(continuation_atlas(sys, make(true, nothing))) == reference
+        end
+
+        # A cap that covers every search changes nothing and raises no flag.
+        exact = continuation_atlas(sys, make(false, needed))
+        @test signature(exact) == reference
+        @test exact.diagnostics["workBudgetExceeded"] == false
+        @test exact.diagnostics["recoveryAttempts"] == needed
+        @test length(exact.windows) == length(full.windows)
+
+        # A cap of one stops after the first window, reproducibly, and keeps what it skipped.
+        capped = continuation_atlas(sys, make(false, 1))
+        @test capped.diagnostics["workBudgetExceeded"] == true
+        @test capped.diagnostics["recoveryAttempts"] == 1
+        @test capped.diagnostics["reproducible"] == true
+        @test length(capped.branch_records) < length(full.branch_records)
+        @test length(capped.windows) == length(full.windows)
+        @test any(w -> w.status === :unattempted, capped.windows)
+        @test any(g -> g.reason === :budget_exhausted && !g.retryable, capped.gaps)
+        for _ in 1:2
+            @test signature(continuation_atlas(sys, make(true, 1))) == signature(capped)
+        end
+
+        # A cap of zero runs no search and leaves every window unattempted.
+        none = continuation_atlas(sys, make(false, 0))
+        @test none.diagnostics["recoveryAttempts"] == 0
+        @test isempty(none.branch_records)
+        @test all(w -> w.status === :unattempted, none.windows)
+        @test none.coverage_summary["covered"] == 0
+    end
+
     @testset "Auto-calibrated reconnaissance separates periodic noise from recurrence" begin
         sys = DiscreteMap((x, p) -> p[1] < 0.5 ?
             SVector(0.25 * (x[1] - 0.2) + 0.2) :

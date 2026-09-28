@@ -784,6 +784,62 @@ using Dates: DateTime
         @test Set(cert.atlas_searched_periods) == Set(Int[Int(x) for x in get(precomputed_atlas.diagnostics, "periods", Int[])])
     end
 
+    @testset "Source-result reuse — a spent work budget leaves the atlas incomplete" begin
+        # The cat map certifies with a complete atlas; the same atlas marked as stopped by
+        # its recovery-attempt budget must not pass, exactly as a spent time budget does not.
+        precomputed_atlas = continuation_atlas(_rc_reuse_cat_map, _rc_reuse_atlas_cfg;
+            initial_point=_rc_reuse_ip)
+        precomputed_atlas.diagnostics["timeBudgetExceeded"] = false
+        precomputed_atlas.diagnostics["workBudgetExceeded"] = true
+        cert = robust_chaos_certificate(
+            _rc_reuse_cat_map, _rc_reuse_cfg;
+            initial_point=_rc_reuse_ip,
+            atlas_result=precomputed_atlas,
+        )
+        @test !cert.atlas_search_complete
+        @test cert.atlas_verdict != :pass
+        @test cert.overall_verdict != :certified
+    end
+
+    @testset "Region certificate — a spent work budget fails the atlas slice" begin
+        # A chaotic Hénon patch containing the period-seven window: with the slice atlas allowed
+        # no recovery searches, every slice that found a window must report the refusal and
+        # fail, and no region may certify over it.
+        sys = henon_map()
+        plane = BifurcationMapConfig(a_min=1.20, a_max=1.30, a_steps=4, b_min=0.28, b_max=0.30,
+            b_steps=4, a_index=1, b_index=2, base_params=[1.25, 0.29], max_period=8,
+            iterations=600, precision=1e-6, reuse_neighbor_seeds=false,
+            lyapunov_iterations=400, lyapunov_transient=200)
+        atlas = AtlasConfig(periods=collect(1:8), max_period=8,
+            brute_force=BruteForceConfig(param_min=1.20, param_max=1.30, param_index=1,
+                fixed_params=[1.25, 0.29], param_steps=60, iterations=1500, transient=800),
+            continuation=ContinuationConfig(p_min=1.20, p_max=1.30, param_index=1, ds=1e-3,
+                dsmax=5e-3, max_steps=200, newton_tol=1e-10, newton_max_iter=30),
+            recon_steps=60, cache_enabled=false, threaded=false, max_recovery_attempts=0)
+        basins = BasinsConfig(bif_param=1.25, param_index=1, fixed_params=[1.25, 0.29],
+            x_min=-1.2, x_max=1.2, x_steps=4, y_min=-0.35, y_max=0.35, y_steps=4,
+            iterations=400, max_period=8)
+        cfg = RobustChaosRegionConfig(map=plane,
+            adaptive=AdaptiveMapConfig(total_budget=40, max_depth=1),
+            lyapunov_field=plane, atlas=atlas, basins=basins, slice_axis=:a,
+            max_atlas_slices_per_region=2, max_basin_knots_per_region=1,
+            min_lyapunov_positive_fraction=0.5, min_lyapunov_resolved_fraction=0.5,
+            min_atlas_slice_fraction=1.0,
+            min_chaotic_basin_fraction=0.5, min_basin_resolved_fraction=0.5)
+        res = robust_chaos_region_certificate(sys, cfg; initial_point=[0.1, 0.1])
+        windowed = Dict{String, Any}[]
+        for region in res.regions, item in region.certificate_items
+            get(item, "layer", "") == "atlas" || continue
+            for slice in get(item, "slices", Dict{String, Any}[])
+                get(slice, "nWindows", 0) > 0 && push!(windowed, slice)
+            end
+        end
+        @test !isempty(windowed)
+        @test all(s -> s["workBudgetExceeded"] == true && s["passed"] == false, windowed)
+        @test all(s -> s["timeBudgetExceeded"] == false, windowed)
+        @test !any(r -> r.verdict === :certified && r.atlas_slice_count > 0, res.regions)
+    end
+
     @testset "Source-result reuse — malformed Lyapunov vectors throw" begin
         malformed = LyapunovDiagramResult(
             [0.5, 2 / 3, 5 / 6, 1.0],

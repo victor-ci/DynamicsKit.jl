@@ -726,21 +726,32 @@ function tolerance_regime_map(a_grid::AbstractVector{<:Real},
     zb = _tolerance_is_zero(config.tolerance_b)
     both_zero = za && zb
     n_eff = both_zero ? 0 : config.n_samples
-    counts_workspaces = [zeros(Int, length(regime_labels) + 2) for _ in 1:Threads.maxthreadid()]
+    n_counts = length(regime_labels) + 2
 
     if config.threaded
-        Threads.@threads for idx in 1:(na * nb)
-            i = ((idx - 1) % na) + 1
-            j = ((idx - 1) ÷ na) + 1
-            _tolerance_fill_cell!(arrays, i, j, a, b, labs, res, regime_labels, label_index,
-                config.tolerance_a, config.tolerance_b, za, zb, both_zero, config.n_samples,
-                config.seed, counts_workspaces[Threads.threadid()])
+        # One workspace per chunk of cells. Indexing a shared workspace by
+        # `threadid()` is unsafe under dynamic scheduling, where a task can
+        # resume on another thread; chunk ownership is fixed for the whole loop.
+        # The workspace is `local` and named apart from the serial branch's:
+        # sharing one name would make Julia box it into a single captured
+        # variable, and every task would then write the same vector.
+        chunks = _balanced_index_chunks(na * nb, Threads.nthreads())
+        Threads.@threads for chunk_idx in eachindex(chunks)
+            local chunk_counts = zeros(Int, n_counts)
+            for idx in chunks[chunk_idx]
+                i = ((idx - 1) % na) + 1
+                j = ((idx - 1) ÷ na) + 1
+                _tolerance_fill_cell!(arrays, i, j, a, b, labs, res, regime_labels, label_index,
+                    config.tolerance_a, config.tolerance_b, za, zb, both_zero, config.n_samples,
+                    config.seed, chunk_counts)
+            end
         end
     else
+        serial_counts = zeros(Int, n_counts)
         for j in 1:nb, i in 1:na
             _tolerance_fill_cell!(arrays, i, j, a, b, labs, res, regime_labels, label_index,
                 config.tolerance_a, config.tolerance_b, za, zb, both_zero, config.n_samples,
-                config.seed, counts_workspaces[1])
+                config.seed, serial_counts)
         end
     end
 

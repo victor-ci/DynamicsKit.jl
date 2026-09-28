@@ -716,9 +716,21 @@ Configuration scaffold for the automatic continuation atlas workflow.
 - `neighbor_seed_max_entries`: Maximum cached seeds per period
 - `neighbor_seed_max_distance_fraction`: Maximum reuse distance as a fraction of the continuation parameter span
 - `neighbor_seed_max_points`: Maximum cached seed hints injected into one recovery attempt
-- `threaded`: Whether atlas substeps may use Julia threads
+- `threaded`: Whether atlas substeps may use Julia threads. A threaded run returns the same
+  records as a serial run with the same configuration.
 - `cache_enabled`: Whether atlas intermediate/final artifacts may be cached
-- `time_budget_s`: Optional wall-clock budget in seconds
+- `time_budget_s`: Optional wall-clock budget in seconds. When it binds, how far the search
+  got depends on machine speed and load, so the result is not reproducible between runs. The
+  result records `timeBudgetExceeded`, and `robust_chaos_certificate` treats such a search as
+  incomplete, so it cannot certify.
+- `max_recovery_attempts`: Optional cap on window-recovery searches. One attempt is one search for
+  a window's branches, whether the window comes from the reconnaissance or from a gap refinement;
+  the local reconnaissance of a refinement and branch-switching follow-ups are not counted. Attempts
+  are taken in the atlas's serial order, so a run stopped by this cap is reproducible; prefer it to
+  `time_budget_s` wherever a result will be cited. Windows and gaps the cap refuses stay in the
+  result, as `:unattempted` windows and `:budget_exhausted` gaps. The result records
+  `workBudgetExceeded` only when a search was refused, and a certificate then treats the search as
+  incomplete.
 - `reseed`: Targeted re-seed settings for continuation directions that die in the interior (enabled by default; a no-op when branches reach a boundary)
 """
 @with_kw struct AtlasConfig
@@ -765,7 +777,9 @@ Configuration scaffold for the automatic continuation atlas workflow.
     threaded::Bool = Threads.nthreads() > 1
     cache_enabled::Bool = true
     time_budget_s::Union{Nothing, Float64} = nothing
+    max_recovery_attempts::Union{Nothing, Int} = nothing
     reseed::ReseedConfig = ReseedConfig(enabled=true)
+    @assert isnothing(max_recovery_attempts) || max_recovery_attempts >= 0 "AtlasConfig.max_recovery_attempts must be nothing or non-negative"
     @assert recon_calibration in (:fixed, :auto) "AtlasConfig.recon_calibration must be :fixed or :auto"
     @assert isfinite(recon_calibration_min_separation) && recon_calibration_min_separation > 1.0 "AtlasConfig.recon_calibration_min_separation must be finite and > 1"
     @assert recon_calibration_max_periodic_anchors >= 0 "AtlasConfig.recon_calibration_max_periodic_anchors must be >= 0"
