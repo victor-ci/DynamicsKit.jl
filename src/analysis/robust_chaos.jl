@@ -158,13 +158,15 @@ function _rc_classify_basin_seed(
     sys::DiscreteMap,
     ic::AbstractVector,
     params::AbstractVector,
-    lya_config::LyapunovConfig,
+    lya_config::LyapunovConfig;
+    method::Symbol,
 )
     sv_ic = SVector{sys.dim, Float64}(ic)
     result = _estimate_discrete_map_largest_lyapunov(
         sys, params, sv_ic,
         lya_config.transient, lya_config.iterations,
-        lya_config.perturbation, lya_config.divergence_cutoff,
+        lya_config.perturbation, lya_config.divergence_cutoff;
+        method=method,
     )
     if result.estimation_status == :collapsed
         return :non_chaotic
@@ -449,6 +451,9 @@ function _robust_chaos_analysis(
         end
     end
 
+    # One exponent method for the whole certificate: the basin seeds use the one the diagram
+    # ran, including a supplied diagram's, so the certificate never mixes estimators.
+    lyapunov_method = lya_result.lyapunov_method
     resolved_indices = findall(eachindex(lya_result.exponents)) do idx
         lya_result.estimation_statuses[idx] == :ok && isfinite(lya_result.exponents[idx])
     end
@@ -468,6 +473,7 @@ function _robust_chaos_analysis(
     )
     push!(items, Dict{String, Any}(
         "layer"                 => "lyapunov",
+        "method"                => String(lyapunov_method),
         "verdict"               => String(lya_verdict),
         "n_total"               => n_lya_total,
         "n_resolved"            => n_lya_resolved,
@@ -603,7 +609,7 @@ function _robust_chaos_analysis(
                 solver=solver, reltol=reltol, abstol=abstol,
                 min_crossing_time=min_crossing_time)
         else
-            _rc_classify_basin_seed(sys, ic, basin_params, config.lyapunov)
+            _rc_classify_basin_seed(sys, ic, basin_params, config.lyapunov; method=lyapunov_method)
         end
         !isnothing(basin_classifications) && (basin_classifications[i, j] = cls)
         basin_class_counts[cls] = get(basin_class_counts, cls, 0) + 1
@@ -944,7 +950,8 @@ function _rc_region_classify_basin_seed(
     sys::DiscreteMap,
     ic::AbstractVector,
     params::AbstractVector,
-    config::BifurcationMapConfig,
+    config::BifurcationMapConfig;
+    method::Symbol,
 )
     result = _estimate_discrete_map_largest_lyapunov(
         sys,
@@ -953,7 +960,8 @@ function _rc_region_classify_basin_seed(
         _map_lyapunov_transient(config),
         _map_lyapunov_iterations(config),
         config.lyapunov_perturbation,
-        config.divergence_cutoff,
+        config.divergence_cutoff;
+        method=method,
     )
     if result.estimation_status == :collapsed
         return :non_chaotic
@@ -1009,6 +1017,7 @@ function _rc_region_basin_counts(
     reltol::Float64,
     abstol::Float64,
     min_crossing_time::Float64,
+    lyapunov_method::Symbol,
 )
     x_grid = basins_result.x_grid
     y_grid = basins_result.y_grid
@@ -1034,7 +1043,7 @@ function _rc_region_basin_counts(
                 min_crossing_time=min_crossing_time,
             )
         else
-            _rc_region_classify_basin_seed(sys, ic, params, config.lyapunov_field)
+            _rc_region_classify_basin_seed(sys, ic, params, config.lyapunov_field; method=lyapunov_method)
         end
         counts[cls] = get(counts, cls, 0) + 1
         if cls == :chaotic
@@ -1197,6 +1206,8 @@ function _rc_region_layer_verdicts(
             reltol=reltol,
             abstol=abstol,
             min_crossing_time=min_crossing_time,
+            # Basin seeds use the exponent method the region's Lyapunov field ran.
+            lyapunov_method=lyapunov_result.lyapunov_method,
         )
         basin_total += counts.n_total
         basin_resolved += counts.n_resolved

@@ -487,6 +487,8 @@ using Dates: DateTime
 
         @test result isa RobustChaosRegionResult
         @test result.candidate_leaf_count > 0
+        # The cat map accepts dual numbers, so the region field and its basin seeds used the tangent map.
+        @test result.lyapunov_method == :variational
         @test length(result.regions) == 1
         region = only(result.regions)
         @test region.verdict == :certified

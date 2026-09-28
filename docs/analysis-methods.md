@@ -514,6 +514,7 @@ Configuration:
 | `transient` | Warm-up iterates / Poincare returns discarded before estimation |
 | `iterations` | Renormalized steps / returns used for the finite-time estimate |
 | `perturbation` | Initial trajectory separation for the two-trajectory estimator |
+| `method` | `:auto` (tangent map when the `DiscreteMap` is differentiable, else two-trajectory), `:variational`, or `:two_trajectory` |
 | `neutral_tolerance` | Threshold for near-zero exponent classification |
 | `divergence_cutoff` | Optional bailout for escaping trajectories |
 | `min_crossing_time` | Continuous-time only: reject very early / duplicate Poincare crossings |
@@ -717,6 +718,7 @@ Advanced fields:
 | `lyapunov_enabled` | Estimate largest Lyapunov exponent |
 | `lyapunov_iterations`, `lyapunov_transient` | Lyapunov sampling budgets |
 | `lyapunov_perturbation` | Perturbation size for two-trajectory estimates |
+| `lyapunov_method` | `:auto`, `:variational` (tangent map for maps, variational equation for flows), or `:two_trajectory` |
 | `lyapunov_neutral_tolerance` | Threshold for neutral/quasiperiodic candidates |
 If Lyapunov diagnostics were enabled, call `lyapunov_field(result)` to extract the co-computed `LyapunovFieldResult` without re-running the map.
 

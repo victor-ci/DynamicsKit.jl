@@ -65,15 +65,26 @@ single source of truth for this code space (see the constants block above
 end
 
 """
+Exponent method a `lyapunov_diagram` of a `DiscreteMap` runs with `config`, resolved once at the
+first sweep value and the initial point. Certificates call this too, so they record the method the
+diagram used.
+"""
+_lyapunov_diagram_method(sys::DiscreteMap, config::LyapunovConfig, x0::SVector) =
+    _resolve_map_lyapunov_method(sys, config.method, _lyapunov_params(sys, config, config.param_min), x0)
+
+"""
     lyapunov_diagram(sys, config::LyapunovConfig; kwargs...) -> LyapunovDiagramResult
 
-Sweep one bifurcation parameter and estimate the largest Lyapunov exponent at each
-sample using the existing two-trajectory estimators.
+Sweep one bifurcation parameter and estimate the largest Lyapunov exponent at each sample. For a
+`DiscreteMap` the estimator follows `config.method`: with `:auto` it is the tangent map through the
+forward-mode Jacobian when the map accepts dual numbers, and the two-trajectory estimator otherwise.
+For a `ContinuousODE` it is the two-trajectory Poincaré-return estimator.
 """
 function lyapunov_diagram(sys::DiscreteMap, config::LyapunovConfig;
                           initial_point::Union{Nothing, AbstractVector}=nothing)
     param_values = collect(range(config.param_min, config.param_max, length=config.param_steps + 1))
     x0 = isnothing(initial_point) ? zeros(SVector{sys.dim, Float64}) : SVector{sys.dim}(initial_point)
+    method = _lyapunov_diagram_method(sys, config, x0)
     exponents = fill(NaN, length(param_values))
     classifications = fill(:unresolved, length(param_values))
     estimation_statuses = fill(:uncomputed, length(param_values))
@@ -89,7 +100,8 @@ function lyapunov_diagram(sys::DiscreteMap, config::LyapunovConfig;
             config.transient,
             config.iterations,
             config.perturbation,
-            config.divergence_cutoff
+            config.divergence_cutoff;
+            method=method
         )
         exponents[idx] = Float64(estimate.exponent)
         estimation_statuses[idx] = estimate.estimation_status
@@ -107,7 +119,8 @@ function lyapunov_diagram(sys::DiscreteMap, config::LyapunovConfig;
         config.neutral_tolerance,
         sys.name,
         sys.param_names[config.param_index],
-        now()
+        now(),
+        method
     )
 end
 
@@ -116,6 +129,9 @@ function lyapunov_diagram(sys::ContinuousODE, config::LyapunovConfig;
                           solver=Tsit5(),
                           reltol::Float64=1e-8,
                           abstol::Float64=1e-8)
+    config.method in (:auto, :two_trajectory) || throw(ArgumentError(
+        "lyapunov_diagram on a ContinuousODE uses the two-trajectory Poincaré-return estimator; " *
+        "method=$(repr(config.method)) is not available here. Use lyapunov_field for the variational flow estimator."))
     param_values = collect(range(config.param_min, config.param_max, length=config.param_steps + 1))
     u0 = _resolve_initial_state(sys, initial_point)
     exponents = fill(NaN, length(param_values))
@@ -155,7 +171,8 @@ function lyapunov_diagram(sys::ContinuousODE, config::LyapunovConfig;
         config.neutral_tolerance,
         sys.name,
         sys.param_names[config.param_index],
-        now()
+        now(),
+        :two_trajectory
     )
 end
 
@@ -168,7 +185,11 @@ Estimate a direct 2D largest-Lyapunov-exponent field over the parameter plane, o
 return the first-class Lyapunov layer carried by a 2D bifurcation-map result.
 
 For `sys::DiscreteMap`, `backend` optionally runs the (always cell-independent) sweep on a GPU; see
-[`ComputeBackend`](@ref). The result's `compute_backend` field records what actually ran.
+[`ComputeBackend`](@ref). The result's `compute_backend` field records what actually ran. The
+estimator follows `config.lyapunov_method`: with `:auto` it is the tangent map through the
+forward-mode Jacobian when the map accepts dual numbers and a short check against the
+two-trajectory estimator agrees at the first cell, and the two-trajectory estimator otherwise.
+The method is resolved once for the whole field and recorded in `lyapunov_method`.
 
 For `sys::ContinuousODE`, the default method (`:auto`) is the **variational** estimator: each cell
 integrates one augmented trajectory through the first variational equation and applies the return-time
@@ -239,8 +260,6 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
                         cells::Union{Nothing, LyapunovCellGrid}=nothing,
                         backend::ComputeBackend=CPUBackend())
     _validate_direct_lyapunov_field_config(config)
-    config.lyapunov_method in (:auto, :two_trajectory) || throw(ArgumentError(
-        "lyapunov_method=:variational is only available for ContinuousODE; use :auto or :two_trajectory for DiscreteMap."))
     length(sys.param_names) >= 2 || throw(ArgumentError("lyapunov_field requires a system with at least two parameters."))
 
     a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
@@ -252,6 +271,7 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
     b_indices = map_b_write_indices(config)
     transient = _map_lyapunov_transient(config)
     iterations = _map_lyapunov_iterations(config)
+    method = _map_field_lyapunov_method(sys, config, x0)
 
     lyapunov_gpu_eligible = isempty(config.a_linked_param_indices) && isempty(config.b_linked_param_indices)
     ka_backend, compute_backend_used = _resolve_gpu_backend(
@@ -272,7 +292,8 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
             _lyapunov_field_gpu_kernel!, cells,
             a_vals_dev, b_vals_dev,
             sys.f, template_sv, a_index, b_index, x0, transient, iterations,
-            config.lyapunov_perturbation, config.divergence_cutoff, config.lyapunov_neutral_tolerance
+            config.lyapunov_perturbation, config.divergence_cutoff, config.lyapunov_neutral_tolerance,
+            Val(method)
         )
     else
         chunks = _balanced_index_chunks(length(a_vals) * length(b_vals), Threads.nthreads())
@@ -290,7 +311,8 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
                     transient,
                     iterations,
                     config.lyapunov_perturbation,
-                    config.divergence_cutoff
+                    config.divergence_cutoff;
+                    method=method
                 )
                 _record_direct_field_lyapunov!(storage, i, j, estimate, config.lyapunov_neutral_tolerance)
                 cells !== nothing && (cells.known[i, j] = true)
@@ -310,7 +332,7 @@ function lyapunov_field(sys::DiscreteMap, config::BifurcationMapConfig;
         (sys.param_names[config.a_index], sys.param_names[config.b_index]),
         now();
         compute_backend=compute_backend_used,
-        lyapunov_method=:two_trajectory,
+        lyapunov_method=method,
         normalization=:per_iteration
     )
 end

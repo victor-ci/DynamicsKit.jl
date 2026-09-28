@@ -294,6 +294,7 @@ function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPred
                                 lyapunov_transient::Integer=transient,
                                 lyapunov_iterations::Integer=max(200, transient),
                                 lyapunov_perturbation::Float64=1e-8,
+                                lyapunov_method::Symbol=:auto,
                                 lyapunov_min::Float64=1e-4,
                                 required_chaotic_fraction::Float64=0.6)
     param_steps >= 1 || throw(ArgumentError("param_steps must be >= 1; got $param_steps."))
@@ -301,6 +302,8 @@ function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPred
     transient >= 0 || throw(ArgumentError("transient must be >= 0; got $transient."))
     lyapunov_transient >= 0 || throw(ArgumentError("lyapunov_transient must be >= 0; got $lyapunov_transient."))
     lyapunov_iterations >= 1 || throw(ArgumentError("lyapunov_iterations must be >= 1; got $lyapunov_iterations."))
+    lyapunov_method in (:auto, :variational, :two_trajectory) || throw(ArgumentError(
+        "lyapunov_method must be :auto, :variational or :two_trajectory; got $(repr(lyapunov_method))."))
     0 <= required_chaotic_fraction <= 1 || throw(ArgumentError(
         "required_chaotic_fraction must be in [0, 1]; got $required_chaotic_fraction."))
     if prediction.predicted_cascade === :none
@@ -319,6 +322,12 @@ function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPred
     linked = collect(Int, linked_param_indices)
     window = Int(max_period) + 1
     robust_candidate = _bsp_is_robust_candidate(prediction)
+    # One exponent method for the whole verification sweep, resolved at its first parameter.
+    exponent_method = robust_candidate ?
+        _resolve_map_lyapunov_method(sys, lyapunov_method,
+            inject_param(base, Int(param_index), first(pvals), linked),
+            SVector{sys.dim, Float64}(initial_point)) :
+        :two_trajectory
     for p in pvals
         params = inject_param(base, Int(param_index), p, linked)
         orbit = _bsp_iterate_window(sys, params, initial_point;
@@ -333,7 +342,8 @@ function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPred
                 Int(lyapunov_transient),
                 Int(lyapunov_iterations),
                 lyapunov_perturbation,
-                divergence_cutoff,
+                divergence_cutoff;
+                method=exponent_method,
             )
             push!(lyaps, Float64(estimate.exponent))
             push!(lyap_statuses, estimate.estimation_status)
@@ -361,6 +371,7 @@ function border_scenario_verify(sys::DiscreteMap, prediction::BorderScenarioPred
             "aperiodicOrHighPeriod" => high_period,
             "aperiodicFraction" => aperiodic_fraction,
             "lyapunovMinimum" => lyapunov_min,
+            "lyapunovMethod" => String(exponent_method),
             "requiredFraction" => required_chaotic_fraction,
         ))
         return BorderScenarioVerification(status=:ok, prediction_status=prediction.status,

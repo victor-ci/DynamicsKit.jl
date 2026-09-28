@@ -461,6 +461,12 @@ _bcnf(τ, δ) = [τ 1.0; -δ 0.0]
         @test chaos_check.positive_lyapunov_fraction >= 0.6
         @test chaos_check.aperiodic_fraction >= 0.6
         @test length(chaos_check.lyapunov_exponents) == 5
+        # The logistic fixture accepts dual numbers, so under :auto the verification ran the tangent map.
+        summary = only(filter(r -> get(r, "kind", "") == "lyapunov_summary", chaos_check.observed_runs))
+        @test summary["lyapunovMethod"] == "variational"
+        @test_throws ArgumentError border_scenario_verify(logistic, robust_prediction;
+            param_index=1, base_params=[3.9], param_min=3.9, param_max=4.0, param_steps=5,
+            initial_point=[0.2], lyapunov_method=:tangent)
         cdata = serialize_border_scenario_verification(chaos_check)
         c2 = deserialize_border_scenario_verification(cdata)
         @test c2.verification_kind == :finite_time_chaos

@@ -524,15 +524,173 @@ the public `Symbol` at the boundary.
     return _lyapunov_estimate_result_code(log_sum / sample_count, 1, sample_count)   # :ok
 end
 
+@inline _tangent_partial(y::ForwardDiff.Dual) = ForwardDiff.partials(y, 1)
+@inline _tangent_partial(y::Real) = zero(Float64)
+
+"""
+One tangent-map step: evaluates `f` once on dual numbers seeded with the tangent vector, so the
+value is the next point and the single partial is the Jacobian-vector product `J(x) v`.
+"""
+@inline function _map_tangent_step(f::F, params, point::SVector{D, Float64},
+                                   tangent::SVector{D, Float64}) where {F, D}
+    seeded = SVector{D}(ntuple(i -> ForwardDiff.Dual{Nothing}(point[i], tangent[i]), Val(D)))
+    image = f(seeded, params)
+    next_point = SVector{D, Float64}(ntuple(i -> Float64(ForwardDiff.value(image[i])), Val(D)))
+    stretched = SVector{D, Float64}(ntuple(i -> Float64(_tangent_partial(image[i])), Val(D)))
+    return next_point, stretched
+end
+
+"""
+Non-allocating tangent-map Lyapunov estimator core. Propagates a unit tangent vector through the
+map's Jacobian, `v ← J(x) v / ‖J(x) v‖`, and averages `log ‖J(x) v‖`. Each step evaluates `f`
+once on dual numbers, which yields both the next point and `J(x) v`. On a piecewise-smooth map the
+derivative is that of the branch the evaluation takes. Where it is not finite although the next
+point is (the wrap point of `mod`, for example, where the derivative rule divides by zero), that
+one step falls back to the finite-difference directional derivative `(f(x + h v) - f(x)) / h`
+with `h = perturbation`. Like the two-trajectory core it is `isbits`-safe, so the CPU sweep and
+the GPU kernels share it.
+"""
+@inline function _estimate_discrete_map_largest_lyapunov_variational_core(f::F,
+                                                                           params,
+                                                                           initial_point::SVector{D, Float64},
+                                                                           transient::Int,
+                                                                           steps::Int,
+                                                                           perturbation::Float64,
+                                                                           divergence_cutoff::Float64) where {F, D}
+    steps > 0 || return _lyapunov_estimate_result_code(NaN, 7, 0)   # :insufficient_samples
+
+    point = initial_point
+    for _ in 1:transient
+        point = f(point, params)
+        state_code = _map_state_status_code(point, divergence_cutoff)
+        state_code != _STATE_CODE_OK && return _lyapunov_estimate_result_code(NaN, _lyapunov_estimation_code_from_state_code(state_code), 0)
+    end
+
+    tangent = _lyapunov_initial_direction(Val(D))
+    log_sum = 0.0
+    sample_count = 0
+    for _ in 1:steps
+        next_point, stretched = _map_tangent_step(f, params, point, tangent)
+        state_code = _map_state_status_code(next_point, divergence_cutoff)
+        state_code != _STATE_CODE_OK && return _lyapunov_estimate_result_code(_partial_lyapunov_exponent(log_sum, sample_count), _lyapunov_estimation_code_from_state_code(state_code), sample_count)
+
+        growth = norm(stretched)
+        if !isfinite(growth)
+            stretched = (SVector{D, Float64}(f(point + perturbation * tangent, params)) - next_point) / perturbation
+            growth = norm(stretched)
+        end
+        if !isfinite(growth)
+            return _lyapunov_estimate_result_code(_partial_lyapunov_exponent(log_sum, sample_count), 4, sample_count)   # :invalid_state
+        elseif growth <= floatmin(Float64)
+            # A tangent vector annihilated by the Jacobian (a superstable point) has no finite
+            # logarithm; report it as the same collapse the two-trajectory estimator reports.
+            return _lyapunov_estimate_result_code(-Inf, 2, sample_count + 1)   # :collapsed
+        end
+
+        sample_count += 1
+        log_sum += log(growth)
+        tangent = stretched / growth
+        point = next_point
+    end
+
+    return _lyapunov_estimate_result_code(log_sum / sample_count, 1, sample_count)   # :ok
+end
+
+"""
+Largest-exponent core for a resolved method, dispatched at compile time so CPU sweeps and GPU
+kernels run the same code for the same method. `perturbation` is used only by `:two_trajectory`.
+"""
+@inline _map_lyapunov_core(::Val{:two_trajectory}, f::F, params, x0, transient::Int, steps::Int,
+                           perturbation::Float64, divergence_cutoff::Float64) where {F} =
+    _estimate_discrete_map_largest_lyapunov_core(f, params, x0, transient, steps, perturbation, divergence_cutoff)
+@inline _map_lyapunov_core(::Val{:variational}, f::F, params, x0, transient::Int, steps::Int,
+                           perturbation::Float64, divergence_cutoff::Float64) where {F} =
+    _estimate_discrete_map_largest_lyapunov_variational_core(f, params, x0, transient, steps, perturbation, divergence_cutoff)
+
 function _estimate_discrete_map_largest_lyapunov(sys::DiscreteMap,
                                                  params::AbstractVector,
                                                  initial_point::SVector{D, Float64},
                                                  transient::Int,
                                                  steps::Int,
                                                  perturbation::Float64,
-                                                 divergence_cutoff::Float64) where {D}
-    core = _estimate_discrete_map_largest_lyapunov_core(sys.f, params, initial_point, transient, steps, perturbation, divergence_cutoff)
+                                                 divergence_cutoff::Float64;
+                                                 method::Symbol=:two_trajectory) where {D}
+    method in (:two_trajectory, :variational) || throw(ArgumentError(
+        "Resolved map Lyapunov method must be :two_trajectory or :variational, got $(repr(method)); resolve :auto first."))
+    core = _map_lyapunov_core(Val(method), sys.f, params, initial_point, transient, steps, perturbation, divergence_cutoff)
     return _lyapunov_estimate_result(core.exponent, _map_lyapunov_estimation_status_symbol(core.estimation_status), core.sample_count)
+end
+
+"""
+Return whether the map function accepts dual numbers at `x`, that is, whether evaluating
+it on a dual-seeded state completes without error. A map written against concrete `Float64` buffers cannot, and fails
+here with a conversion or method error. The derivative itself is not required to be finite at
+`x`; the tangent core handles non-finite steps.
+"""
+function _map_accepts_duals(sys::DiscreteMap, params::AbstractVector, x::SVector{D, Float64}) where {D}
+    try
+        _map_tangent_step(sys.f, params, x, _lyapunov_initial_direction(Val(D)))
+        return true
+    catch err
+        err isa Union{MethodError, InexactError, TypeError, ArgumentError, ErrorException} || rethrow()
+        return false
+    end
+end
+
+# The `:auto` cross-check: a map can accept dual numbers and still differentiate wrongly, for
+# example through an iterative solver whose iterations the dual numbers do not see. At the probe,
+# a short tangent run and a short two-trajectory run on the same orbit must agree; they differ
+# only by finite-difference error when the derivative is right.
+const _AUTO_CROSSCHECK_TRANSIENT = 200
+const _AUTO_CROSSCHECK_STEPS = 500
+const _AUTO_CROSSCHECK_TOL = 1e-2
+
+function _map_tangent_agrees_with_screen(sys::DiscreteMap, params::AbstractVector, x::SVector)
+    tangent = _estimate_discrete_map_largest_lyapunov_variational_core(sys.f, params, x,
+        _AUTO_CROSSCHECK_TRANSIENT, _AUTO_CROSSCHECK_STEPS, 1e-8, Inf)
+    screen = _estimate_discrete_map_largest_lyapunov_core(sys.f, params, x,
+        _AUTO_CROSSCHECK_TRANSIENT, _AUTO_CROSSCHECK_STEPS, 1e-8, Inf)
+    # The screen is the reference: when it does not resolve (a collapse onto a superstable orbit,
+    # a divergence), nothing can be said about the derivative. When it does, the tangent run must
+    # resolve too and agree with it; a tangent collapse against a resolved screen is the signature
+    # of a derivative the map's evaluation dropped.
+    (screen.estimation_status == 1 && isfinite(screen.exponent)) || return true
+    (tangent.estimation_status == 1 && isfinite(tangent.exponent)) || return false
+    return abs(tangent.exponent - screen.exponent) <= _AUTO_CROSSCHECK_TOL * max(1.0, abs(screen.exponent))
+end
+
+"""
+Resolve a requested exponent method for a `DiscreteMap` to the one that will run, once per
+analysis so that every cell uses the same method. `:two_trajectory` stays as given.
+`:variational` needs the map function to accept dual numbers and throws otherwise. `:auto` takes
+`:variational` when the map accepts dual numbers and a short tangent run agrees with a short
+two-trajectory run at the probe point, and `:two_trajectory` otherwise.
+"""
+function _resolve_map_lyapunov_method(sys::DiscreteMap, requested::Symbol,
+                                      params::AbstractVector, x::SVector{D, Float64}) where {D}
+    requested in (:auto, :variational, :two_trajectory) || throw(ArgumentError(
+        "Lyapunov method must be :auto, :variational or :two_trajectory, got $(repr(requested))."))
+    requested === :two_trajectory && return :two_trajectory
+    accepts = _map_accepts_duals(sys, params, x)
+    if requested === :variational
+        accepts || throw(ArgumentError("lyapunov method :variational needs the map function of " *
+            "$(sys.name) to accept dual numbers, and evaluating it on a dual-seeded state failed at the " *
+            "probe point. Use :auto or :two_trajectory."))
+        return :variational
+    end
+    return accepts && _map_tangent_agrees_with_screen(sys, params, x) ? :variational : :two_trajectory
+end
+
+"""
+Exponent method a two-parameter map sweep (`bifurcation_map`, `lyapunov_field`) runs with `config`,
+resolved at the grid's first cell `(a_min, b_min)` and `x0`. Region certificates call this for their
+basin seeds, so the seeds use the method the field used.
+"""
+function _map_field_lyapunov_method(sys::DiscreteMap, config::BifurcationMapConfig, x0::SVector)
+    template = map_param_template(config)
+    probe = map_params_from_buffer!(copy(template), template, map_a_write_indices(config),
+                                    map_b_write_indices(config), config.a_min, config.b_min)
+    return _resolve_map_lyapunov_method(sys, config.lyapunov_method, probe, x0)
 end
 
 function _poincare_diagnostics_status(diagnostics::AbstractDict)
@@ -946,7 +1104,8 @@ function _record_discrete_map_lyapunov!(storage,
         _map_lyapunov_transient(config),
         _map_lyapunov_iterations(config),
         config.lyapunov_perturbation,
-        config.divergence_cutoff
+        config.divergence_cutoff;
+        method=config.lyapunov_method
     )
     return _record_map_lyapunov!(storage, i, j, detection, estimate, config.lyapunov_neutral_tolerance)
 end
@@ -1010,7 +1169,8 @@ function _map_lyapunov_result(storage,
                               param_names::Tuple{Symbol, Symbol},
                               timestamp::DateTime;
                               compute_backend::Symbol=:cpu,
-                              normalization::Symbol=:unspecified)
+                              normalization::Symbol=:unspecified,
+                              lyapunov_method::Symbol=:two_trajectory)
     isnothing(storage) && return nothing
     return LyapunovFieldResult(
         a_grid,
@@ -1024,7 +1184,7 @@ function _map_lyapunov_result(storage,
         param_names,
         timestamp;
         compute_backend=compute_backend,
-        lyapunov_method=:two_trajectory,
+        lyapunov_method=lyapunov_method,
         normalization=normalization
     )
 end
