@@ -301,6 +301,27 @@ differentiation. `border_collision_points` detects crossings between adjacent
 refines each honestly in both the parameter and the periodic state by bisection with a
 Newton re-solve of the period-`q` fixed point, deduplicates, and classifies.
 
+Several details keep the classification sound on switched circuits. The colliding phase is
+projected onto the switching manifold before its one-sided Jacobians are formed, because
+the two branches' Jacobians are related by a rank-one jump only on the manifold itself;
+any `δ` whose stencil falls on the wrong side of a curved guard is skipped. Bisection
+continues to the resolution of the bracket. A midpoint solve counts only when it has the
+true period, starts at the seeded phase and lies near the seed; a failed solve is
+reseeded from the current bracket ends, and the branch endpoint nearer the border is
+the fallback. A phase that lies on another of the system's borders at the collision is
+accepted when the refinement brackets, from the widest to the tightest, agree on which
+side of its own border it lies before and after the collision: it either touches that
+border without crossing it, or crosses it together with the primary border. That phase
+then contributes, to each return Jacobian, the one-sided Jacobian of the side it lies on
+there;
+when the sides cannot be established the point is reported as
+`:multiple_border_phases`. When borders at two phases cross together, the return map
+has a single switching manifold only in the coordinates of one of them, so a continuity
+failure is retried with each co-crossed border as the colliding phase, and the reported
+event can then be one that was not scanned. In a
+peak-current converter the current reaching its reference exactly at a clock edge puts
+the next phase on the other border, so both cases arise there.
+
 Continuity is verified as the switching-manifold rank-one condition (`A_L − A_R` must be
 rank one with row space the switching normal); a violation yields status
 `:noncontinuous` and classification is refused (the theory is defined only for

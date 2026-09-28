@@ -299,6 +299,190 @@ _bcnf(τ, δ) = [τ 1.0; -δ 0.0]
         @test abs(pt.classification.transversality_measure) > 1e-6
     end
 
+    @testset "An off-border colliding phase is projected before the one-sided Jacobians" begin
+        # Continuous at x = 0 (both pieces give (y + μ, 0)), but the x·y term makes J_L - J_R
+        # carry a column-2 entry κx off the border, so Jacobians taken at a point 9e-8 off it
+        # break the rank-one condition by more than continuity_tol.
+        τL, δL, τR, δR, κ = 0.5, 0.2, -1.5, 0.3, 2.0
+        f = function (x, p)
+            if x[1] > 0
+                return SVector(τR * x[1] + x[2] + p[1], -δR * x[1])
+            else
+                return SVector(τL * x[1] + x[2] + p[1] + κ * x[1] * x[2], -δL * x[1])
+            end
+        end
+        ev = SwitchingEvent("border", (x, p) -> x[1])
+        sys = DiscreteMap(f, 2, [:mu], "Curved-product border"; switching_events=[ev])
+        pt = border_collision_at_cycle(sys, [[9e-8, 1.0]], [0.0]; period=1)
+        @test pt.classification.status == :ok
+        @test pt.classification.continuity_residual < 1e-10
+        @test pt.classification.jacobian_L ≈ [τL + κ 1.0; -δL 0.0] atol=1e-6
+        @test pt.classification.jacobian_R ≈ [τR 1.0; -δR 0.0] atol=1e-6
+    end
+
+    @testset "One-sided Jacobians skip stencils on the wrong side of the border" begin
+        # The base point lies 1e-5 on the guard-positive side, so the smaller δ of a
+        # guard-negative request never reach the negative branch. With the guard supplied those
+        # δ are skipped and the result stays on the negative branch (slope 3 + 3x²).
+        F = z -> [z[1] > 0 ? 2z[1] + z[1]^3 : 3z[1] + z[1]^3]
+        guard = z -> z[1]
+        x_c = [1e-5]
+        J, _, _ = DynamicsKit._bcb_one_sided_jacobian(F, x_c, [1.0], -1;
+            base_delta=1e-3, steps=14, rel_tol=1e-300, guard=guard)
+        @test only(J) ≈ 3.0 atol=1e-5
+        unguarded, _, _ = DynamicsKit._bcb_one_sided_jacobian(F, x_c, [1.0], -1;
+            base_delta=1e-3, steps=14, rel_tol=1e-300)
+        @test abs(only(unguarded) - 3.0) > 1e-2
+        @test DynamicsKit._bcb_stencil_on_side(guard, [-1e-3], 2.5e-4, -1)
+        @test !DynamicsKit._bcb_stencil_on_side(guard, [-1e-3], 2e-3, -1)
+    end
+
+    @testset "Refinement falls back to the closer bracket endpoint" begin
+        # x -> x + 1 has no fixed point, so every midpoint solve fails; the bracket endpoints are
+        # solutions supplied by the branch, and the one nearer the border is returned.
+        sys = DiscreteMap((x, p) -> SVector(x[1] + 1.0), 1, [:mu], "No fixed point";
+                          switching_events=[SwitchingEvent("border", (x, p) -> x[1])])
+        orbit_lo, orbit_hi = [[-2e-9]], [[5e-9]]
+        refined = DynamicsKit._bcb_refine_crossing(sys, only(switching_events(sys)), 1, [0.0], 1,
+            Int[], 1, 0.0, 1.0, [-2e-9], [5e-9], -2e-9;
+            iterations=20, tol=1e-12, max_iter=5, fd_step=1e-6,
+            endpoint_orbits=(orbit_lo, orbit_hi), phi_hi=5e-9)
+        @test refined !== nothing
+        @test refined[1] == 0.0
+        @test refined[2] == orbit_lo
+    end
+
+    @testset "Linked borders: refusals and side bookkeeping" begin
+        ev_a = SwitchingEvent("a", (x, p) -> x[1])
+        ev_b = SwitchingEvent("b", (x, p) -> x[2])
+        sys = DiscreteMap((x, p) -> SVector(x[2], x[1]), 2, [:mu], "Swap";
+                          switching_events=[ev_a, ev_b])
+        events = [ev_a, ev_b]
+        orbit = [[0.0, 1.0], [1.0, 0.0]]              # phase 1 on border a, phase 2 on border b
+        locate(hint) = DynamicsKit._bcb_locate_colliding(sys, orbit, [0.0], events, 1e-9;
+                                                         crossing=(1, 1), side_hint=hint)
+        # Unknown sides refuse; known sides link the second border.
+        @test locate((entry, primary) -> (0, 0)) === :multiple_border_phases
+        located = locate((entry, primary) -> (1, -1))
+        @test located.phase == 1
+        @test located.linked == [(2, 2, 1, 1, -1)]
+        # A phase on two borders at once is refused whatever the hint says.
+        corner = [[0.0, 0.0], [1.0, 1.0]]
+        @test DynamicsKit._bcb_locate_colliding(sys, corner, [0.0], events, 1e-9;
+            crossing=(1, 1), side_hint=(entry, primary) -> (1, -1)) === :multiple_border_phases
+
+        # Relinking keeps each side attached to the same physical side of the collision.
+        flipped = DynamicsKit._bcb_relink(orbit, [0.0], events,
+            (phase=1, event_index=1, component=1, guard_values=[0.0, 1.0],
+             linked=[(2, 2, 1, 1, -1)]), 1)
+        @test (flipped.phase, flipped.event_index) == (2, 2)
+        @test flipped.linked == [(1, 1, 1, 1, -1)]
+        kept = DynamicsKit._bcb_relink(orbit, [0.0], events,
+            (phase=1, event_index=1, component=1, guard_values=[0.0, 1.0],
+             linked=[(2, 2, 1, -1, 1)]), 1)
+        @test kept.linked == [(1, 1, 1, -1, 1)]
+        @test kept.guard_values == [1.0, 0.0]
+
+        # Sides are read from the refinement brackets: the tightest usable bracket must agree
+        # with the widest, and guards within the Newton noise are unknown.
+        params_at = p -> [0.0]
+        star = [[0.0, 1.0], [1.0, 0.0]]
+        bracket(a1, b2) = (0.0, [[-a1, 1.0], [1.0, b2]], 1.0, [[a1, 1.0], [1.0, -b2]])
+        sides(brackets) = DynamicsKit._bcb_linked_sides((2, 2, 1), (1, 1, 1), brackets, events,
+                                                        params_at, star, 1e-10)
+        @test sides([bracket(1e-3, 1e-3), bracket(1e-6, 1e-6)]) == (1, -1)
+        @test sides([bracket(1e-3, -1e-3), bracket(1e-6, 1e-6)]) == (0, 0)   # sides disagree
+        @test sides([bracket(1e-3, 1e-15)]) == (0, 0)                        # linked guard is noise
+        @test sides([(0.0, [[1e-3, 1.0], [1.0, 1e-3]], 1.0, [[2e-3, 1.0], [1.0, 1e-3]])]) == (0, 0)
+    end
+
+    # Peak-current boost with the parameter sets of Banerjee, Ranjan and Grebogi, IEEE TCAS-I
+    # 47(5):633-643 (2000), Table I; ρ = E / (Iref R) with Iref = 1 A and L = 1.5 mH.
+    brg_system(P) = boost_converter(L=1.5e-3, C=P.C, T=P.T)
+    brg_params(P, ρ) = [1.0, ρ * P.R, P.R, 0.0]
+    function brg_branch(P, period, ρ0, ρ_min; settle_steps=5000, margin=1e-3, ds=2e-4, dsmax=1e-3)
+        sys = brg_system(P)
+        x = SVector(ρ0 * P.R * 1.5, 0.8)
+        for _ in 1:settle_steps
+            x = sys.f(x, brg_params(P, ρ0))
+        end
+        cfg = ContinuationConfig(p_min=ρ_min * P.R, p_max=(ρ0 + margin) * P.R, param_index=2,
+            ds=-ds, dsmax=dsmax, dsmin=1e-11, max_steps=6000, newton_tol=1e-11,
+            newton_max_iter=40, detect_bifurcation=3)
+        branch = continuation_branch(sys, cfg, period; initial_point=collect(x),
+                                     params=brg_params(P, ρ0))
+        return sys, branch
+    end
+    brg_trace_det(spectrum) = (real(sum(spectrum)), real(prod(spectrum)))
+
+    @testset "Boost converter: a border touched at the next clock edge (BRG point A)" begin
+        # When the current reaches the reference exactly at a clock edge, the next phase starts
+        # on the lower border without crossing it. Both default events are scanned.
+        P = (R=40.0, C=10e-6, T=50e-6)
+        sys, branch = brg_branch(P, 2, 0.225, 0.20)
+        pts = border_collision_points(sys, branch, brg_params(P, 0.225))
+        @test length(pts) == 1
+        pt = only(pts)
+        c = pt.classification
+        @test c.status == :ok
+        @test pt.converged
+        @test pt.event_name == "on-time-upper-border"
+        @test pt.param / P.R ≈ 0.2165 atol=2e-4
+        @test c.continuity_residual < c.continuity_tolerance
+        @test any(w -> occursin("touches border on-time-lower-border", w), c.warnings)
+        # Published (τ, δ): (1.3192, 0.5756) on one side, (-0.6079, -0.6697) on the other.
+        sides = sort([brg_trace_det(c.spectrum_L), brg_trace_det(c.spectrum_R)])
+        @test sides[1][1] ≈ -0.6079 atol=2e-3
+        @test sides[1][2] ≈ -0.6697 atol=2e-3
+        @test sides[2][1] ≈ 1.3192 atol=2e-3
+        @test sides[2][2] ≈ 0.5756 atol=2e-3
+        upper_only = border_collision_points(sys, branch, brg_params(P, 0.225);
+            events=[e for e in switching_events(sys) if e.name == "on-time-upper-border"])
+        @test length(upper_only) == 1
+        @test only(upper_only).classification.jacobian_L ≈ c.jacobian_L
+        @test only(upper_only).classification.jacobian_R ≈ c.jacobian_R
+    end
+
+    @testset "Boost converter: two borders crossed at one collision (BRG point D)" begin
+        # The upper border at one phase and the lower border at the next cross together. The
+        # return map is continuous in the coordinates of the upper-border phase, where the two
+        # kinks cancel and the orbit passes through the collision unchanged.
+        P = (R=10.0, C=20e-6, T=200e-6)
+        sys, branch = brg_branch(P, 4, 0.278, 0.2572)
+        pts = border_collision_points(sys, branch, brg_params(P, 0.278))
+        @test length(pts) == 1
+        pt = only(pts)
+        c = pt.classification
+        @test c.status == :ok
+        @test pt.param / P.R ≈ 0.2772 atol=2e-4
+        @test pt.event_name == "on-time-upper-border"
+        @test any(w -> occursin("crosses border on-time-lower-border", w), c.warnings)
+        τL, δL = brg_trace_det(c.spectrum_L)
+        τR, δR = brg_trace_det(c.spectrum_R)
+        @test τL ≈ τR atol=1e-6
+        @test δL ≈ δR rtol=1e-4
+        @test δL ≈ 4.37e-5 rtol=1e-2
+    end
+
+    @testset "Boost converter: a narrow period-8 window (BRG point B)" begin
+        # The period-8 window is about 6e-5 wide in ρ; midpoint solves near the kink can stall,
+        # so this exercises the reseeded and endpoint-fallback refinement.
+        P = (R=20.0, C=20e-6, T=100e-6)
+        sys, branch = brg_branch(P, 8, 0.20849, 0.200; settle_steps=200000, margin=2e-4,
+                                 ds=5e-5, dsmax=2e-4)
+        pts = filter(p -> p.period == 8, border_collision_points(sys, branch, brg_params(P, 0.20849)))
+        @test length(pts) == 1
+        c = only(pts).classification
+        @test c.status == :ok
+        @test only(pts).param / P.R ≈ 0.2085 atol=2e-4
+        # Published (τ, δ): (1.0188, 0.0274) and (-1.9752, -0.0358).
+        sides = sort([brg_trace_det(c.spectrum_L), brg_trace_det(c.spectrum_R)])
+        @test sides[1][2] ≈ -0.0358 rtol=1e-2
+        @test sides[2][2] ≈ 0.0274 rtol=1e-2
+        @test sides[1][1] ≈ -1.9752 rtol=3e-2
+        @test sides[2][1] ≈ 1.0188 rtol=1e-2
+    end
+
     @testset "Serialization round-trips" begin
         c = border_collision_classify(_bcnf(2.0, 0.5), _bcnf(-1.8, 0.5);
             switching_normal=[1.0, 0.0])

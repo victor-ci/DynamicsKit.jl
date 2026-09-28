@@ -365,9 +365,12 @@ end
 # point is pushed a distance `δ` into the target side and the centered stencil uses `h = δ/4`, so
 # every stencil point stays strictly on that side (the guard change `≤ h|∇g|` is smaller than the
 # base guard offset `δ|∇g|`). A halved-`δ` sequence with Richardson extrapolation removes the
-# leading `O(δ)` bias for smooth branches and is exact for piecewise-affine maps.
+# leading `O(δ)` bias for smooth branches and is exact for piecewise-affine maps. When `guard` is
+# given, a `δ` whose base or stencil point falls on the other side of a curved guard is skipped,
+# and the extrapolation restarts from the next usable `δ`.
 function _bcb_one_sided_jacobian(F, x_c::AbstractVector, grad::AbstractVector, side::Int;
-                                 base_delta::Float64, steps::Int, rel_tol::Float64)
+                                 base_delta::Float64, steps::Int, rel_tol::Float64,
+                                 guard=nothing)
     gnorm = norm(grad)
     gnorm > 0 || return (nothing, Inf, false)
     dir = (side / gnorm) .* grad
@@ -378,6 +381,11 @@ function _bcb_one_sided_jacobian(F, x_c::AbstractVector, grad::AbstractVector, s
     for i in 0:(steps - 1)
         delta = base_delta * (0.5^i)
         y = collect(Float64, x_c) .+ delta .* dir
+        if guard !== nothing && !_bcb_stencil_on_side(guard, y, delta / 4, side)
+            prev_J = nothing
+            prev_rich = nothing
+            continue
+        end
         J = _bcb_centered_jacobian(F, y, delta / 4)
         all(isfinite, J) || continue
         if prev_J === nothing
@@ -395,6 +403,40 @@ function _bcb_one_sided_jacobian(F, x_c::AbstractVector, grad::AbstractVector, s
         prev_J = J
     end
     return (out, out_resid, out !== nothing && out_resid <= rel_tol)
+end
+
+# Whether the base point `y` and every centered-stencil point at step `h` lie strictly on `side`.
+function _bcb_stencil_on_side(guard, y::AbstractVector, h::Float64, side::Int)
+    on_side(z) = (value = guard(z); isfinite(value) && side * value > 0)
+    on_side(y) || return false
+    for j in eachindex(y)
+        yp = copy(y); yp[j] += h
+        ym = copy(y); ym[j] -= h
+        (on_side(yp) && on_side(ym)) || return false
+    end
+    return true
+end
+
+# Move `x` onto the zero set of `guard` along its gradient (Newton on the guard, a few steps).
+# The refined collision leaves the colliding phase up to `border_tol` off the manifold, and the
+# two one-sided Jacobians are only related by a rank-one jump on the manifold itself, so they are
+# formed at the projected point. Returns `(point, offset)` with the guard value left at `point`,
+# or the unprojected `x` when a step fails.
+function _bcb_project_to_border(guard, gradient, x::AbstractVector; steps::Int=8)
+    y = collect(Float64, x)
+    value = guard(y)
+    isfinite(value) || return (collect(Float64, x), value)
+    for _ in 1:steps
+        value == 0 && break
+        g = gradient(y)
+        gg = dot(g, g)
+        (all(isfinite, g) && gg > 0) || break
+        candidate = y .- (value / gg) .* g
+        next_value = guard(candidate)
+        (isfinite(next_value) && abs(next_value) < abs(value)) || break
+        y, value = candidate, next_value
+    end
+    return (y, value)
 end
 
 # Single-map-step Jacobian at an interior phase (definite side), via AD with an FD fallback.
@@ -432,10 +474,23 @@ function _bcb_reconstruct_orbit(sys::DiscreteMap, seed::AbstractVector, params::
     return orbit
 end
 
-# Locate the unique on-border (phase, event, component) among the orbit's phases. Returns a
-# named tuple or a status symbol (`:no_border_phase` / `:multiple_border_phases`).
+# Locate the colliding (phase, event, component) among the orbit's phases. Returns a named tuple
+# or a status symbol (`:no_border_phase` / `:multiple_border_phases`).
+#
+# Without `crossing` the on-border entry must be unique. The branch scanner passes the
+# `(event_index, component)` whose sign change it bracketed as `crossing`, plus a `side_hint`
+# `(entry, primary) -> (s_neg, s_pos)` giving the side of that entry's guard on the
+# guard-negative and guard-positive sides of the primary crossing (`0` when unknown). Another
+# on-border entry at a different phase is then accepted as linked when both sides are known and no
+# phase lies on two borders: with
+# `s_neg == s_pos` the orbit touches that border without crossing it, and with opposite signs it
+# crosses that border together with the primary one. In a peak-current converter, for instance,
+# the current reaching the reference exactly at a clock edge puts the next phase on the other
+# border at the same parameter.
 function _bcb_locate_colliding(sys::DiscreteMap, orbit::AbstractVector, params::AbstractVector,
-                               events::AbstractVector{SwitchingEvent}, border_tol::Float64)
+                               events::AbstractVector{SwitchingEvent}, border_tol::Float64;
+                               crossing::Union{Nothing, Tuple{Int, Int}}=nothing,
+                               side_hint=nothing)
     q = length(orbit)
     guard_table = Dict{Tuple{Int, Int}, Vector{Float64}}()   # (event_idx, comp) -> per-phase values
     on_border = Tuple{Int, Int, Int}[]                       # (phase, event_idx, comp)
@@ -450,9 +505,58 @@ function _bcb_locate_colliding(sys::DiscreteMap, orbit::AbstractVector, params::
         end
     end
     isempty(on_border) && return :no_border_phase
-    length(on_border) == 1 || return :multiple_border_phases
-    phase, ei, comp = on_border[1]
-    return (phase=phase, event_index=ei, component=comp, guard_values=guard_table[(ei, comp)])
+    linked = Tuple{Int, Int, Int, Int, Int}[]                # (phase, event_idx, comp, s_neg, s_pos)
+    if crossing === nothing
+        length(on_border) == 1 || return :multiple_border_phases
+        phase, ei, comp = on_border[1]
+    else
+        primary = filter(entry -> (entry[2], entry[3]) == crossing, on_border)
+        isempty(primary) && return :no_border_phase
+        length(primary) == 1 || return :multiple_border_phases
+        phases = first.(on_border)
+        length(unique(phases)) == length(phases) || return :multiple_border_phases
+        phase, ei, comp = primary[1]
+        for entry in on_border
+            entry == primary[1] && continue
+            s_neg, s_pos = side_hint === nothing ? (0, 0) : side_hint(entry, primary[1])
+            (s_neg != 0 && s_pos != 0) || return :multiple_border_phases
+            push!(linked, (entry..., s_neg, s_pos))
+        end
+    end
+    return (phase=phase, event_index=ei, component=comp, guard_values=guard_table[(ei, comp)],
+            linked=linked)
+end
+
+# A branch-scan point whose colliding phase is ambiguous, reported with its refusal status.
+function _bcb_refused_point(orbit::AbstractVector, param::Float64, q::Int, event_name::String,
+                            comp::Int, continuity_tol::Float64)
+    classification = BorderCollisionClassification(;
+        scenario=:undetermined, status=:multiple_border_phases, period=q,
+        continuity_tolerance=continuity_tol,
+        warnings=["Several phases lie on borders at this collision and the side each occupies " *
+                  "could not be established; the colliding phase is ambiguous."],
+        inference=_bcb_inference(:undetermined, :multiple_border_phases, q;
+            stable_L=nothing, stable_R=nothing, companion_exists=nothing, companion_stable=nothing))
+    return BorderCollisionPoint(param, orbit, 0, Int[], event_name, comp, Float64[], q,
+                                classification, false)
+end
+
+# Re-express a located collision with its `k`-th linked border as the primary one. Linked sides are
+# stored relative to the primary guard, so they are swapped when the new primary is positive on
+# the old primary's negative side.
+function _bcb_relink(orbit::AbstractVector, params::AbstractVector,
+                     events::AbstractVector{SwitchingEvent}, located, k::Int)
+    phase, ei, comp, a, _ = located.linked[k]
+    flip = a > 0
+    sidepair(s_neg, s_pos) = flip ? (s_pos, s_neg) : (s_neg, s_pos)
+    linked = Tuple{Int, Int, Int, Int, Int}[(located.phase, located.event_index, located.component,
+                                            sidepair(-1, 1)...)]
+    for (j, l) in pairs(located.linked)
+        j == k && continue
+        push!(linked, (l[1], l[2], l[3], sidepair(l[4], l[5])...))
+    end
+    guard_values = Float64[_bcb_guard_components(events[ei], state, params)[comp] for state in orbit]
+    return (phase=phase, event_index=ei, component=comp, guard_values=guard_values, linked=linked)
 end
 
 # Build the two one-sided q-return Jacobians (guard-negative `A_L`, guard-positive `A_R`) based
@@ -460,33 +564,66 @@ end
 function _bcb_cycle_return_jacobians(sys::DiscreteMap, orbit::AbstractVector, params::AbstractVector,
                                      event::SwitchingEvent, comp::Int, colliding_phase::Int;
                                      jacobian_base_delta::Float64, jacobian_steps::Int,
-                                     jacobian_rel_tol::Float64)
+                                     jacobian_rel_tol::Float64,
+                                     events::AbstractVector{SwitchingEvent}=SwitchingEvent[],
+                                     linked::AbstractVector=Tuple{Int, Int, Int, Int, Int}[])
     dim = sys.dim
     q = length(orbit)
-    grad = _bcb_guard_gradient(event, comp, orbit[colliding_phase], params)
+    guard = z -> _bcb_guard_components(event, z, params)[comp]
+    gradient = z -> _bcb_guard_gradient(event, comp, z, params)
+    x_border, _ = _bcb_project_to_border(guard, gradient, orbit[colliding_phase])
+    grad = gradient(x_border)
     Fstep = z -> collect(Float64, sys.f(SVector{dim}(z), params))
-    A_neg, r_neg, ok_neg = _bcb_one_sided_jacobian(Fstep, orbit[colliding_phase], grad, -1;
-        base_delta=jacobian_base_delta, steps=jacobian_steps, rel_tol=jacobian_rel_tol)
-    A_pos, r_pos, ok_pos = _bcb_one_sided_jacobian(Fstep, orbit[colliding_phase], grad, +1;
-        base_delta=jacobian_base_delta, steps=jacobian_steps, rel_tol=jacobian_rel_tol)
-    (A_neg === nothing || A_pos === nothing) && return (nothing, nothing, grad, false, r_neg, r_pos)
+    A_neg, r_neg, ok_neg = _bcb_one_sided_jacobian(Fstep, x_border, grad, -1;
+        base_delta=jacobian_base_delta, steps=jacobian_steps, rel_tol=jacobian_rel_tol,
+        guard=guard)
+    A_pos, r_pos, ok_pos = _bcb_one_sided_jacobian(Fstep, x_border, grad, +1;
+        base_delta=jacobian_base_delta, steps=jacobian_steps, rel_tol=jacobian_rel_tol,
+        guard=guard)
+    (A_neg === nothing || A_pos === nothing) && return (nothing, nothing, grad, false, r_neg, r_pos, 0.0)
 
-    interior = Dict{Int, Matrix{Float64}}()
+    interior_neg = Dict{Int, Matrix{Float64}}()
+    interior_pos = Dict{Int, Matrix{Float64}}()
+    linked_converged = true
+    r_linked = 0.0
+    for (phase, ei, lcomp, s_neg, s_pos) in linked
+        # A linked phase lies on another border at the collision, where automatic differentiation
+        # could take either branch, so each return Jacobian uses the one-sided Jacobian of the side
+        # that phase occupies on its own side of the collision.
+        lguard = z -> _bcb_guard_components(events[ei], z, params)[lcomp]
+        lgradient = z -> _bcb_guard_gradient(events[ei], lcomp, z, params)
+        l_border, _ = _bcb_project_to_border(lguard, lgradient, orbit[phase])
+        l_grad = lgradient(l_border)
+        sided = Dict{Int, Matrix{Float64}}()
+        for side in unique((s_neg, s_pos))
+            J, r_side, ok = _bcb_one_sided_jacobian(Fstep, l_border, l_grad, side;
+                base_delta=jacobian_base_delta, steps=jacobian_steps, rel_tol=jacobian_rel_tol,
+                guard=lguard)
+            J === nothing && return (nothing, nothing, grad, false, r_neg, r_pos, Inf)
+            sided[side] = J
+            linked_converged &= ok
+            r_linked = max(r_linked, r_side)
+        end
+        interior_neg[phase] = sided[s_neg]
+        interior_pos[phase] = sided[s_pos]
+    end
     for phase in 1:q
-        phase == colliding_phase && continue
-        interior[phase] = _bcb_phase_jacobian(sys, orbit[phase], params)
+        (phase == colliding_phase || haskey(interior_neg, phase)) && continue
+        J = _bcb_phase_jacobian(sys, orbit[phase], params)
+        interior_neg[phase] = J
+        interior_pos[phase] = J
     end
 
     A_L = Matrix{Float64}(I, dim, dim)
     A_R = Matrix{Float64}(I, dim, dim)
     for i in 0:(q - 1)
         phase = mod1(colliding_phase + i, q)
-        Jm, Jp = i == 0 ? (A_neg, A_pos) : (interior[phase], interior[phase])
+        Jm, Jp = i == 0 ? (A_neg, A_pos) : (interior_neg[phase], interior_pos[phase])
         A_L = Jm * A_L
         A_R = Jp * A_R
     end
-    converged = ok_neg && ok_pos
-    return (A_L, A_R, grad, converged, r_neg, r_pos)
+    converged = ok_neg && ok_pos && linked_converged
+    return (A_L, A_R, grad, converged, r_neg, r_pos, r_linked)
 end
 
 # Assemble a BorderCollisionPoint from a reconstructed cycle at a known colliding phase.
@@ -504,10 +641,11 @@ function _bcb_classify_located_cycle(sys::DiscreteMap, orbit::AbstractVector, pa
     itinerary = Int[v > 0 ? 1 : v < 0 ? -1 : 0 for v in located.guard_values]
     itinerary[colliding_phase] = 0
 
-    A_L, A_R, grad, jac_converged, r_neg, r_pos = _bcb_cycle_return_jacobians(
+    linked = get(located, :linked, Tuple{Int, Int, Int, Int, Int}[])
+    A_L, A_R, grad, jac_converged, r_neg, r_pos, r_linked = _bcb_cycle_return_jacobians(
         sys, orbit, params, event, comp, colliding_phase;
         jacobian_base_delta=jacobian_base_delta, jacobian_steps=jacobian_steps,
-        jacobian_rel_tol=jacobian_rel_tol)
+        jacobian_rel_tol=jacobian_rel_tol, events=events, linked=linked)
 
     if A_L === nothing
         classification = BorderCollisionClassification(;
@@ -522,8 +660,19 @@ function _bcb_classify_located_cycle(sys::DiscreteMap, orbit::AbstractVector, pa
     end
 
     extra = String[]
+    side_name(s) = s > 0 ? "guard-positive" : "guard-negative"
+    for (phase, ei, lcomp, s_neg, s_pos) in linked
+        push!(extra, s_neg == s_pos ?
+            "Phase $phase also touches border $(events[ei].name) (component $lcomp) without " *
+            "crossing it; its Jacobian is taken from the $(side_name(s_neg)) side, which that phase " *
+            "occupies before and after the collision." :
+            "Phase $phase crosses border $(events[ei].name) (component $lcomp) at the same " *
+            "collision; each return Jacobian takes that phase's Jacobian from the side it occupies " *
+            "($(side_name(s_neg)) with A_L, $(side_name(s_pos)) with A_R).")
+    end
     jac_converged || push!(extra, "One-sided return Jacobians did not fully converge under " *
-        "δ-refinement (residuals: negative=$(round(r_neg, sigdigits=3)), positive=$(round(r_pos, sigdigits=3))).")
+        "δ-refinement (residuals: negative=$(round(r_neg, sigdigits=3)), positive=$(round(r_pos, sigdigits=3))" *
+        (isempty(linked) ? ")." : ", linked phases=$(round(r_linked, sigdigits=3)))."))
 
     classification = border_collision_classify(A_L, A_R; switching_normal=grad, period=q,
         transversality=transversality, continuity_tol=continuity_tol, eigen_tol=eigen_tol,
@@ -545,8 +694,8 @@ guard component must be found, and the two one-sided ordered `q`-return Jacobian
 differ only at that colliding phase (the other `q-1` itinerary symbols are held fixed).
 
 The colliding phase's one-sided Jacobians are computed with forced one-sided finite differences
-(robust when branch selection invalidates naive automatic differentiation at the border); interior
-phases use automatic differentiation. Zero on-border phases yield status `:no_border_phase`
+(robust when branch selection invalidates naive automatic differentiation at the border), at the
+phase state projected onto the switching manifold; interior phases use automatic differentiation. Zero on-border phases yield status `:no_border_phase`
 (reported through `:unavailable`), and multiple on-border phases yield `:multiple_border_phases`.
 
 # Keyword arguments
@@ -649,25 +798,65 @@ function _bcb_resolve_cycle(sys::DiscreteMap, seed::AbstractVector, params::Abst
 end
 
 # Bisect a bracketed sign change of the nearest-border value into a refined collision, honestly
-# re-solving the periodic orbit at each trial parameter. Returns `(param, orbit)` or `nothing`.
+# re-solving the periodic orbit at each trial parameter. Each midpoint is seeded by interpolating
+# the current bracket and then from either bracket end, because a finite-difference Newton step
+# whose stencil straddles the border can stall; a solve counts only when it has the true period,
+# starts at the seeded phase, and lies near the seed, so a coexisting or lower-period cycle is not
+# followed. The branch endpoints are solutions already, so the one nearer the border is the
+# fallback. Returns `(param, orbit, brackets)` or `nothing`, where `brackets` lists the successive
+# `(p_lo, orbit_lo, p_hi, orbit_hi)` brackets from the branch endpoints inwards.
 function _bcb_refine_crossing(sys::DiscreteMap, event::SwitchingEvent, comp::Int,
                               base::Vector{Float64}, param_index::Int, linked::Vector{Int},
                               period::Int, p_lo::Float64, p_hi::Float64,
                               x_lo::Vector{Float64}, x_hi::Vector{Float64}, phi_lo::Float64;
-                              iterations::Int, border_tol::Float64, tol::Float64, max_iter::Int,
-                              fd_step::Float64)
+                              iterations::Int, tol::Float64, max_iter::Int,
+                              fd_step::Float64, endpoint_orbits=nothing, phi_hi::Float64=NaN)
     t_lo, t_hi = 0.0, 1.0
     phi_low = phi_lo
     best = nothing
     best_abs = Inf
+    brackets = Tuple{Float64, Vector{Vector{Float64}}, Float64, Vector{Vector{Float64}}}[]
+    cur_lo = (p_lo, [collect(Float64, x_lo)])
+    cur_hi = (p_hi, [collect(Float64, x_hi)])
+    if endpoint_orbits !== nothing
+        orbit_lo, orbit_hi = endpoint_orbits
+        if isfinite(phi_lo) && !isempty(orbit_lo)
+            best, best_abs = (p_lo, orbit_lo), abs(phi_lo)
+        end
+        if isfinite(phi_hi) && !isempty(orbit_hi) && abs(phi_hi) < best_abs
+            best, best_abs = (p_hi, orbit_hi), abs(phi_hi)
+        end
+        if !isempty(orbit_lo) && !isempty(orbit_hi)
+            cur_lo, cur_hi = (p_lo, orbit_lo), (p_hi, orbit_hi)
+            push!(brackets, (p_lo, orbit_lo, p_hi, orbit_hi))
+        end
+    end
+    dim = sys.dim
+    p_prev = NaN
     for _ in 1:iterations
         t_mid = 0.5 * (t_lo + t_hi)
         (t_mid == t_lo || t_mid == t_hi) && break
         p_mid = (1 - t_mid) * p_lo + t_mid * p_hi
-        seed = (1 - t_mid) .* x_lo .+ t_mid .* x_hi
+        p_mid == p_prev && break
+        p_prev = p_mid
         local_params = inject_param(base, param_index, p_mid, linked)
-        orbit = _bcb_resolve_cycle(sys, seed, local_params, period;
-                                   tol=tol, max_iter=max_iter, fd_step=fd_step)
+        a, b = cur_lo[2][1], cur_hi[2][1]
+        interp = 0.5 .* (a .+ b)
+        reach = max(2 * norm(b .- a), 1e-6 * max(1.0, norm(interp)))
+        step = z -> collect(Float64, sys.f(SVector{dim}(z), local_params))
+        orbit = Vector{Vector{Float64}}()
+        for seed in (interp, a, b)
+            candidate = _bcb_resolve_cycle(sys, seed, local_params, period;
+                                           tol=tol, max_iter=max_iter, fd_step=fd_step)
+            isempty(candidate) && continue
+            d0 = norm(candidate[1] .- interp)
+            d0 <= reach || continue
+            all(k -> norm(candidate[k] .- interp) > d0, 2:length(candidate)) || continue
+            _is_true_period(step, candidate[1], period,
+                            100 * tol * max(1.0, norm(candidate[1]))) || continue
+            orbit = candidate
+            break
+        end
         isempty(orbit) && break
         phi_mid = _bcb_nearest_border_value(orbit, event, comp, local_params)
         isfinite(phi_mid) || break
@@ -675,14 +864,52 @@ function _bcb_refine_crossing(sys::DiscreteMap, event::SwitchingEvent, comp::Int
             best_abs = abs(phi_mid)
             best = (p_mid, orbit)
         end
-        abs(phi_mid) <= border_tol && break
+        phi_mid == 0 && break
         if sign(phi_mid) == sign(phi_low)
             t_lo, phi_low = t_mid, phi_mid
+            cur_lo = (p_mid, orbit)
         else
             t_hi = t_mid
+            cur_hi = (p_mid, orbit)
         end
+        length(cur_lo[2]) == period && length(cur_hi[2]) == period &&
+            push!(brackets, (cur_lo[1], cur_lo[2], cur_hi[1], cur_hi[2]))
     end
-    return best
+    best === nothing && return nothing
+    return (param=best[1], orbit=best[2], brackets=brackets)
+end
+
+# Sides of a linked on-border entry relative to the primary crossing, read from the refinement
+# brackets. A bracket is usable when the primary guard at its phase has opposite signs at the two
+# ends and the linked guard is clear of the Newton noise at both; the sides are taken from the
+# tightest usable bracket and must agree with the widest one, so a linked guard with another zero
+# inside the branch step, or one that stays within the Newton noise of its border across the whole bracket, is refused
+# (`(0, 0)`).
+function _bcb_linked_sides(entry, primary, brackets, events::AbstractVector{SwitchingEvent},
+                           params_at, orbit_star::AbstractVector, tol::Float64)
+    phase, lei, lcomp = entry
+    p_phase, pei, pcomp = primary
+    guard(ei, comp, orbit, p, ph) = _bcb_guard_components(events[ei], orbit[ph], params_at(p))[comp]
+    noise(ei, comp, ph) = 100 * tol * max(norm(_bcb_guard_gradient(events[ei], comp,
+        orbit_star[ph], params_at(NaN))), floatmin(Float64)) * max(1.0, norm(orbit_star[ph]))
+    noise_p = noise(pei, pcomp, p_phase)
+    noise_l = noise(lei, lcomp, phase)
+    function sides(bracket)
+        p_lo, orbit_lo, p_hi, orbit_hi = bracket
+        (length(orbit_lo) >= max(phase, p_phase) && length(orbit_hi) >= max(phase, p_phase)) ||
+            return nothing
+        gp_lo, gp_hi = guard(pei, pcomp, orbit_lo, p_lo, p_phase), guard(pei, pcomp, orbit_hi, p_hi, p_phase)
+        gl_lo, gl_hi = guard(lei, lcomp, orbit_lo, p_lo, phase), guard(lei, lcomp, orbit_hi, p_hi, phase)
+        all(isfinite, (gp_lo, gp_hi, gl_lo, gl_hi)) || return nothing
+        (abs(gp_lo) > noise_p && abs(gp_hi) > noise_p && sign(gp_lo) != sign(gp_hi)) || return nothing
+        (abs(gl_lo) > noise_l && abs(gl_hi) > noise_l) || return nothing
+        s_lo, s_hi = Int(sign(gl_lo)), Int(sign(gl_hi))
+        return gp_lo < 0 ? (s_lo, s_hi) : (s_hi, s_lo)
+    end
+    usable = [s for s in (sides(b) for b in brackets) if s !== nothing]
+    isempty(usable) && return (0, 0)
+    first(usable) == last(usable) || return (0, 0)
+    return last(usable)
 end
 
 """
@@ -700,10 +927,24 @@ with `border_collision_at_cycle`. A finite-difference `d(guard)/d(param)` across
 passed through as the transversality measure. Duplicate detections (same event/component, nearby
 parameter and colliding-phase state) are removed.
 
+Bisection runs to the resolution of the bracket. A midpoint solve counts only when it has the true
+period, starts at the seeded phase and lies near the seed; a failed solve is reseeded from the
+current bracket ends, and the branch endpoint nearer the border is the fallback. A phase that lies
+on another border at the collision (any of `events` or of `switching_events(sys)`) is accepted when
+the refinement brackets agree, from the widest to the tightest, on which side of its own border it
+lies before and after the collision. It either touches that border without crossing it or crosses
+it together with the primary border, and each return Jacobian takes that phase's one-sided Jacobian
+from the side it lies on there; when the sides cannot be established the point is returned with status
+`:multiple_border_phases`. When two borders cross together and the scanned one fails the
+continuity check, each co-crossed border is tried as the colliding phase, since the return map has
+a single switching manifold only in the coordinates of one of them; the reported `event_name` can
+then be a border that was not in `events`.
+
 # Keyword arguments
 - `linked_param_indices`: Parameter slots tied to `branch.param_name`.
 - `events`: Switching events to scan (default `switching_events(sys)`).
-- `border_tol`: Magnitude below which a guard component counts as on-border during refinement.
+- `border_tol`: Magnitude below which a guard component counts as on-border at the refined
+  collision, and below which the refinement is reported as converged.
 - `refine_iterations`: Maximum bisection steps per bracket.
 - `tol`, `max_iter`, `fd_step`: Fixed-point Newton controls used while re-solving cycles.
 - `duplicate_param_tol`, `duplicate_state_tol`: Deduplication tolerances.
@@ -733,6 +974,12 @@ function border_collision_points(sys::DiscreteMap, branch::BranchResult, base_pa
     base = collect(Float64, base_params)
     linked = collect(Int, linked_param_indices)
     event_list = collect(SwitchingEvent, events)
+    # The system's other borders are checked too, so a phase that lies on one of them at the
+    # collision is differentiated from the correct side even when that border is not scanned.
+    touch_events = copy(event_list)
+    for extra_event in switching_events(sys)
+        any(e -> e.name == extra_event.name, touch_events) || push!(touch_events, extra_event)
+    end
 
     points = _branch_points(branch)
     length(points) >= 2 || return BorderCollisionPoint[]
@@ -747,6 +994,7 @@ function border_collision_points(sys::DiscreteMap, branch::BranchResult, base_pa
     end
 
     located_points = BorderCollisionPoint[]
+    covered = NamedTuple{(:param, :bracket, :crossings), Tuple{Float64, Int, Set{Tuple{Int, Int}}}}[]
     for (ei, event) in pairs(event_list)
         ncomp = 0
         for i in 1:n
@@ -770,23 +1018,60 @@ function border_collision_points(sys::DiscreteMap, branch::BranchResult, base_pa
                 seed_hi = orbits[i + 1][1]
                 refined = _bcb_refine_crossing(sys, event, comp, base, param_index, linked, period,
                     params[i], params[i + 1], seed_lo, seed_hi, phi[i];
-                    iterations=refine_iterations, border_tol=border_tol, tol=tol,
-                    max_iter=max_iter, fd_step=fd_step)
+                    iterations=refine_iterations, tol=tol,
+                    max_iter=max_iter, fd_step=fd_step,
+                    endpoint_orbits=(orbits[i], orbits[i + 1]), phi_hi=phi[i + 1])
                 refined === nothing && continue
-                p_star, orbit_star = refined
+                p_star, orbit_star = refined.param, refined.orbit
                 local_params = inject_param(base, param_index, p_star, linked)
                 span = params[i + 1] - params[i]
                 transversality = span == 0 ? nothing : (phi[i + 1] - phi[i]) / span
-                located = _bcb_locate_colliding(sys, orbit_star, local_params, event_list, border_tol)
-                located isa Symbol && continue
-                (located.event_index == ei && located.component == comp) || continue
+                params_at = p -> inject_param(base, param_index, isnan(p) ? p_star : p, linked)
+                side_hint = (entry, primary) -> _bcb_linked_sides(entry, primary, refined.brackets,
+                    touch_events, params_at, orbit_star, tol)
+                located = _bcb_locate_colliding(sys, orbit_star, local_params, touch_events, border_tol;
+                                                crossing=(ei, comp), side_hint=side_hint)
+                # A border crossed together with an earlier one is the same collision seen from
+                # another phase; it was classified already.
+                any(c -> (c.bracket == i || abs(c.param - p_star) <= duplicate_param_tol) &&
+                         (ei, comp) in c.crossings, covered) && continue
+                if located isa Symbol
+                    # Refusals are reported, so a collision the classifier cannot resolve is not
+                    # mistaken for the absence of one.
+                    located === :multiple_border_phases && push!(located_points,
+                        _bcb_refused_point(orbit_star, p_star, period, event.name, comp, continuity_tol))
+                    continue
+                end
+                push!(covered, (param=p_star, bracket=i, crossings=Set([(ei, comp);
+                    [(l[2], l[3]) for l in located.linked if l[4] != l[5]]])))
                 converged = abs(_bcb_nearest_border_value(orbit_star, event, comp, local_params)) <= border_tol
-                point = _bcb_classify_located_cycle(sys, orbit_star, local_params, event_list, located;
-                    param=p_star, transversality=transversality, refine_converged=converged,
+                classify = (loc, trans) -> _bcb_classify_located_cycle(sys, orbit_star, local_params,
+                    touch_events, loc;
+                    param=p_star, transversality=trans, refine_converged=converged,
                     jacobian_base_delta=jacobian_base_delta, jacobian_steps=jacobian_steps,
                     jacobian_rel_tol=jacobian_rel_tol, continuity_tol=continuity_tol,
                     eigen_tol=eigen_tol, stability_tol=stability_tol,
                     transversality_tol=transversality_tol)
+                point = classify(located, transversality)
+                # When borders at different phases cross together, the return map has a single
+                # switching manifold only in the coordinates of one of them, so a continuity
+                # failure is retried with each co-crossed border as the colliding phase. Other
+                # refusals stand.
+                if point.classification.status === :noncontinuous
+                    lo_params = inject_param(base, param_index, params[i], linked)
+                    hi_params = inject_param(base, param_index, params[i + 1], linked)
+                    for (k, l) in pairs(located.linked)
+                        l[4] == l[5] && continue
+                        alt = _bcb_relink(orbit_star, local_params, touch_events, located, k)
+                        g_lo = _bcb_guard_components(touch_events[l[2]], orbits[i][l[1]], lo_params)[l[3]]
+                        g_hi = _bcb_guard_components(touch_events[l[2]], orbits[i + 1][l[1]], hi_params)[l[3]]
+                        alt_point = classify(alt, span == 0 ? nothing : (g_hi - g_lo) / span)
+                        if alt_point.classification.status === :ok
+                            point = alt_point
+                            break
+                        end
+                    end
+                end
                 push!(located_points, point)
             end
         end
