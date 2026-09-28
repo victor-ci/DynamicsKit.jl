@@ -108,7 +108,7 @@ function _recover_window_branches(sys::DiscreteMap,
         "continuationAttempts" => continuation_attempts,
         "seedReuse" => seed_reuse_diag,
         "reseedCount" => reseed_count[],
-        "reseedParams" => copy(reseed_params)
+        "reseedParams" => sort(reseed_params)
     )
 
     branches, trim_diagnostics = _atlas_trim_recovered_branches(
@@ -126,7 +126,7 @@ function _recover_window_branches(sys::DiscreteMap,
         "minimalPeriodTrim" => trim_diagnostics,
         "seedReuse" => seed_reuse_diag,
         "reseedCount" => reseed_count[],
-        "reseedParams" => copy(reseed_params)
+        "reseedParams" => sort(reseed_params)
     )
 
     distinct = _collect_distinct_period_branches([branches], min(atlas_config.max_total_branches, length(branches)), 1e-2, 0.5)
@@ -140,7 +140,7 @@ function _recover_window_branches(sys::DiscreteMap,
         "minimalPeriodTrim" => trim_diagnostics,
         "seedReuse" => seed_reuse_diag,
         "reseedCount" => reseed_count[],
-        "reseedParams" => copy(reseed_params)
+        "reseedParams" => sort(reseed_params)
     )
 end
 
@@ -231,7 +231,9 @@ function _recover_window_branches(sys::ContinuousODE,
             "ds" => retry_config.ds,
             "searchMin" => copy(seed_data.search_min),
             "searchMax" => copy(seed_data.search_max),
-            "errors" => copy(retry_errors)
+            # Threaded searches report in arrival order; sorting gives the
+            # diagnostics one canonical order, so identical runs serialize identically.
+            "errors" => sort(retry_errors)
         ))
         isempty(search.branches) || break
     end
@@ -246,7 +248,7 @@ function _recover_window_branches(sys::ContinuousODE,
         "continuationAttempts" => continuation_attempts,
         "seedReuse" => seed_reuse_diag,
         "reseedCount" => reseed_count[],
-        "reseedParams" => copy(reseed_params)
+        "reseedParams" => sort(reseed_params)
     )
 
     branches, trim_diagnostics = _atlas_trim_recovered_branches(
@@ -268,7 +270,7 @@ function _recover_window_branches(sys::ContinuousODE,
         "minimalPeriodTrim" => trim_diagnostics,
         "seedReuse" => seed_reuse_diag,
         "reseedCount" => reseed_count[],
-        "reseedParams" => copy(reseed_params)
+        "reseedParams" => sort(reseed_params)
     )
 
     distinct = _collect_distinct_period_branches([branches], min(atlas_config.max_total_branches, length(branches)), 1e-2, 0.75)
@@ -282,7 +284,7 @@ function _recover_window_branches(sys::ContinuousODE,
         "minimalPeriodTrim" => trim_diagnostics,
         "seedReuse" => seed_reuse_diag,
         "reseedCount" => reseed_count[],
-        "reseedParams" => copy(reseed_params)
+        "reseedParams" => sort(reseed_params)
     )
 end
 

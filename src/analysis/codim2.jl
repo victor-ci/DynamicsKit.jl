@@ -567,9 +567,9 @@ end
 Forward-difference Jacobian with columns evaluated across threads. Uses the
 same per-column stencil as `_fd_jacobian`; the win is wall-time when each
 column evaluation is expensive (ODE defining systems: every column costs
-Poincaré-return integrations). Threading changes the BLAS execution context,
-so results can differ from the serial path in the last bit — numerically
-equivalent, but at ill-conditioned seeds a continuation decision may flip.
+Poincaré-return integrations). Each column is computed independently with the
+same arithmetic as the serial stencil, so the result is bitwise identical to
+`_fd_jacobian` at any thread count.
 """
 function _codim2_fd_jacobian_threaded(F, x, delta::Float64)
     x0 = collect(Float64, x)

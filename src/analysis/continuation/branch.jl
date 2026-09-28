@@ -477,6 +477,10 @@ end
 
 Find seeds at multiple skeleton parameter values and continue all distinct branches found for the
 requested periods. This mirrors the MATLAB multi-skeleton workflow natively.
+
+The result does not depend on the thread count. Seeds from neighbouring skeleton parameters are
+recycled only when `reuse_neighbor_seeds=true` is passed; that mode chains the skeleton
+parameters, so it runs them serially.
 """
 function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, periods::AbstractVector{Int};
                                skeleton_params::AbstractVector{<:Real},
@@ -508,7 +512,9 @@ function continuation_branches(sys::ContinuousODE, config::ContinuationConfig, p
     results = BranchResult[]
     base_params = _resolve_continuous_params(sys, params)
     skeleton_threaded = isnothing(threaded_skeleton) ? !threaded : threaded_skeleton
-    reuse_seeds = isnothing(reuse_neighbor_seeds) ? !threaded : reuse_neighbor_seeds
+    # Seed recycling is opt-in: tying its default to `threaded` made the algorithm, and so the
+    # result, depend on how many threads the session started with.
+    reuse_seeds = isnothing(reuse_neighbor_seeds) ? false : reuse_neighbor_seeds
     period_threaded = threaded && Threads.nthreads() > 1 && !reuse_seeds && length(periods) > 1
 
     if period_threaded

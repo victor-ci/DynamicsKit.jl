@@ -165,6 +165,54 @@ function _atlas_time_budget_exhausted(config::AtlasConfig, started_at::Float64)
     return _atlas_elapsed_seconds(started_at) >= config.time_budget_s
 end
 
+"""
+Budget state for one atlas run: the wall-clock start, the number of window-recovery searches
+made so far, and whether either budget refused a search that would otherwise have run. One
+attempt is one window-recovery search, whether for a reconnaissance window or for a local
+window inside a gap refinement. Attempts advance in the atlas's serial window and gap order,
+so the work budget stops a run at the same point whatever the machine or thread count.
+"""
+mutable struct _AtlasBudget
+    started_at::Float64
+    attempts::Int
+    work_refused::Bool
+    time_refused::Bool
+end
+_AtlasBudget(started_at::Float64=time()) = _AtlasBudget(started_at, 0, false, false)
+
+_atlas_elapsed_seconds(budget::_AtlasBudget) = _atlas_elapsed_seconds(budget.started_at)
+_atlas_time_budget_exhausted(config::AtlasConfig, budget::_AtlasBudget) =
+    _atlas_time_budget_exhausted(config, budget.started_at)
+
+"""Return whether the deterministic recovery-attempt budget has been spent."""
+function _atlas_work_budget_exhausted(config::AtlasConfig, budget::_AtlasBudget)
+    isnothing(config.max_recovery_attempts) && return false
+    return budget.attempts >= config.max_recovery_attempts
+end
+
+"""
+Return which budget refuses the next recovery search (`:time_budget`, `:work_budget`), or
+`nothing` when it may run. A refusal is recorded on the budget, so the result flags a budget only
+when it actually cut work.
+"""
+function _atlas_budget_refusal!(config::AtlasConfig, budget::_AtlasBudget)
+    if _atlas_time_budget_exhausted(config, budget)
+        budget.time_refused = true
+        return :time_budget
+    elseif _atlas_work_budget_exhausted(config, budget)
+        budget.work_refused = true
+        return :work_budget
+    end
+    return nothing
+end
+
+"""Take one recovery attempt from the budget; returns the refusal reason, or `nothing` when taken."""
+function _atlas_take_attempt!(config::AtlasConfig, budget::_AtlasBudget)
+    refusal = _atlas_budget_refusal!(config, budget)
+    isnothing(refusal) && (budget.attempts += 1)
+    return refusal
+end
+
 """Return a stable unique identifier for atlas branch/gap records."""
 function _atlas_next_id!(counter::Base.RefValue{Int}, prefix::AbstractString)
     id = "$(prefix)-$(counter[])"

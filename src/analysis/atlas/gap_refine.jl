@@ -1,11 +1,29 @@
-"""Return whether a gap is worth refining recursively."""
-function _atlas_should_refine_gap(gap::AtlasGap, config::AtlasConfig, started_at::Float64)
-    gap.retryable || return false
-    gap.depth < config.max_refinement_depth || return false
-    gap.confidence >= min(max(config.coverage_threshold / 2, 0.1), 0.6) || return false
-    !_atlas_time_budget_exhausted(config, started_at) || return false
-    return _atlas_interval_span(gap.param_min, gap.param_max) > 100eps(Float64)
+"""
+Return why a gap will not be refined (`:not_retryable`, `:max_depth`, `:low_confidence`,
+`:too_narrow`, `:time_budget`), or `nothing` when it will. The time budget is checked last, so
+a time refusal always means an otherwise eligible refinement was cut. The recovery-attempt
+budget is not checked here: entering a refinement costs no attempt, and the searches it goes on
+to run are each taken from that budget inside the refinement.
+"""
+function _atlas_gap_refusal(gap::AtlasGap, config::AtlasConfig, budget::_AtlasBudget)
+    gap.retryable || return :not_retryable
+    gap.depth < config.max_refinement_depth || return :max_depth
+    gap.confidence >= min(max(config.coverage_threshold / 2, 0.1), 0.6) || return :low_confidence
+    _atlas_interval_span(gap.param_min, gap.param_max) > 100eps(Float64) || return :too_narrow
+    if _atlas_time_budget_exhausted(config, budget)
+        budget.time_refused = true
+        return :time_budget
+    end
+    return nothing
 end
+
+"""Return whether a gap is worth refining recursively."""
+_atlas_should_refine_gap(gap::AtlasGap, config::AtlasConfig, budget::_AtlasBudget) =
+    isnothing(_atlas_gap_refusal(gap, config, budget))
+
+"""Reason recorded on a gap that is left unrefined."""
+_atlas_unrefined_reason(gap::AtlasGap, refusal) =
+    refusal in (:time_budget, :work_budget) ? :budget_exhausted : gap.reason
 
 """Return a human-readable label for a BifurcationKit special point."""
 function _atlas_specialpoint_label(special)
@@ -718,7 +736,7 @@ function _atlas_refine_gap(sys::DynamicalSystem,
                            cont_config::ContinuationConfig,
                            atlas_config::AtlasConfig,
                            id_counter::Base.RefValue{Int},
-                           started_at::Float64;
+                           budget::_AtlasBudget;
                            initial_point::Union{Nothing, AbstractVector}=nothing,
                             solver=Tsit5(),
                             reltol::Float64=1e-8,
@@ -727,7 +745,7 @@ function _atlas_refine_gap(sys::DynamicalSystem,
                             log::Union{Nothing, Function}=nothing,
                             seed_cache::Union{Nothing, _AtlasSeedCache}=nothing,
                             seed_reuse_events::Union{Nothing, Vector{Dict{String, Any}}}=nothing)
-    _atlas_should_refine_gap(gap, atlas_config, started_at) || return AtlasBranchRecord[], AtlasGap[gap], Dict(
+    _atlas_should_refine_gap(gap, atlas_config, budget) || return AtlasBranchRecord[], AtlasGap[gap], Dict(
         "gapId" => gap.id,
         "depth" => gap.depth,
         "refined" => false,
@@ -775,6 +793,7 @@ function _atlas_refine_gap(sys::DynamicalSystem,
         threaded=atlas_config.threaded,
         cache_enabled=false,
         time_budget_s=atlas_config.time_budget_s,
+        max_recovery_attempts=atlas_config.max_recovery_attempts,
         reseed=atlas_config.reseed
     )
 
@@ -859,6 +878,23 @@ function _atlas_refine_gap(sys::DynamicalSystem,
                 "depth" => gap.depth + 1
             ))
         )
+        refusal = _atlas_take_attempt!(atlas_config, budget)
+        if !isnothing(refusal)
+            push!(leaf_gaps, AtlasGap(
+                _atlas_next_id!(id_counter, "atlas-gap"),
+                gap.period,
+                target_window.param_min,
+                target_window.param_max,
+                target_window.mean_confidence,
+                :budget_exhausted,
+                gap.depth + 1,
+                false,
+                Dict("parentGapId" => gap.id, "parentWindowId" => parent_window.id,
+                     "sourceWindowId" => target_window.id, "retryable" => false,
+                     "budget" => string(refusal))
+            ))
+            continue
+        end
         new_records, reason, attempt_diag = _atlas_attempt_window_recovery(
             sys,
             target_window,
@@ -913,7 +949,8 @@ function _atlas_refine_gap(sys::DynamicalSystem,
                     "attemptDiagnostics" => attempt_diag
                 )
             )
-            if _atlas_should_refine_gap(child_gap, atlas_config, started_at)
+            child_refusal = _atlas_gap_refusal(child_gap, atlas_config, budget)
+            if isnothing(child_refusal)
                 nested_records, nested_leaf_gaps, nested_diag = _atlas_refine_gap(
                     sys,
                     child_gap,
@@ -924,7 +961,7 @@ function _atlas_refine_gap(sys::DynamicalSystem,
                     cont_config,
                     atlas_config,
                     id_counter,
-                    started_at;
+                    budget;
                     initial_point=initial_point,
                     solver=solver,
                     reltol=reltol,
@@ -944,7 +981,7 @@ function _atlas_refine_gap(sys::DynamicalSystem,
                     child_gap.param_min,
                     child_gap.param_max,
                     child_gap.confidence,
-                    child_gap.reason,
+                    _atlas_unrefined_reason(child_gap, child_refusal),
                     child_gap.depth,
                     false,
                     merge(copy(child_gap.diagnostics), Dict("retryable" => false))
@@ -1188,12 +1225,34 @@ function continuation_atlas(sys::DynamicalSystem,
     refinement_attempts = 0
     max_depth_reached = 0
     window_attempt_count = 0
-    time_budget_exhausted = false
+    budget = _AtlasBudget(started_at)
     branch_switching_diags = Dict{String, Any}[]
     seed_reuse_diags = Dict{String, Any}[]
     seed_cache = effective_config.reuse_neighbor_seeds ? _atlas_seed_cache() : nothing
 
-    for window in windows
+    for (window_index, window) in enumerate(windows)
+        refusal = _atlas_take_attempt!(effective_config, budget)
+        if !isnothing(refusal)
+            _atlas_log!(log, refusal === :time_budget ?
+                "Atlas time budget exhausted before window $(window.id); $(length(windows) - window_index + 1) window(s) left unattempted." :
+                "Atlas recovery-attempt budget ($(effective_config.max_recovery_attempts)) spent before window $(window.id); $(length(windows) - window_index + 1) window(s) left unattempted.")
+            # Every window the budget refused stays in the result, with its whole interval
+            # as a gap, so a stopped run cannot read as a fully covered one.
+            for skipped in windows[window_index:end]
+                push!(resolved_windows, AtlasWindow(
+                    skipped.id, skipped.period, skipped.param_min, skipped.param_max,
+                    skipped.support, skipped.mean_confidence, skipped.classification,
+                    copy(skipped.sample_indices), skipped.priority_score, :unattempted,
+                    merge(copy(skipped.diagnostics), Dict("recoveryReason" => "budget_exhausted",
+                                                          "budget" => string(refusal)))))
+                push!(gaps, AtlasGap(
+                    _atlas_next_id!(id_counter, "atlas-gap"), skipped.period,
+                    skipped.param_min, skipped.param_max, skipped.mean_confidence,
+                    :budget_exhausted, 0, false,
+                    Dict("windowId" => skipped.id, "retryable" => false, "budget" => string(refusal))))
+            end
+            break
+        end
         new_records, reason, attempt_diag = _atlas_attempt_window_recovery(
             sys,
             window,
@@ -1266,7 +1325,8 @@ function continuation_atlas(sys::DynamicalSystem,
                 )
             )
 
-            if _atlas_should_refine_gap(gap, effective_config, started_at)
+            gap_refusal = _atlas_gap_refusal(gap, effective_config, budget)
+            if isnothing(gap_refusal)
                 refinement_attempts += 1
                 new_gap_records, leaf_gaps, refine_diag = _atlas_refine_gap(
                     sys,
@@ -1278,7 +1338,7 @@ function continuation_atlas(sys::DynamicalSystem,
                     cont_config,
                     effective_config,
                     id_counter,
-                    started_at;
+                    budget;
                     initial_point=initial_point,
                     solver=solver,
                     reltol=reltol,
@@ -1299,16 +1359,11 @@ function continuation_atlas(sys::DynamicalSystem,
                     gap.param_min,
                     gap.param_max,
                     gap.confidence,
-                    gap.reason,
+                    _atlas_unrefined_reason(gap, gap_refusal),
                     gap.depth,
                     false,
                     merge(copy(gap.diagnostics), Dict("retryable" => false))
                 ))
-            end
-
-            if _atlas_time_budget_exhausted(effective_config, started_at)
-                time_budget_exhausted = true
-                break
             end
         end
 
@@ -1337,10 +1392,6 @@ function continuation_atlas(sys::DynamicalSystem,
             window_diagnostics
         ))
 
-        if time_budget_exhausted
-            _atlas_log!(log, "Atlas time budget exhausted after processing window $(window.id).")
-            break
-        end
     end
 
     isempty(gaps) && (gaps = _atlas_gap_records(resolved_windows, branch_records, effective_config.coverage_threshold, effective_config.max_refinement_depth))
@@ -1368,7 +1419,15 @@ function continuation_atlas(sys::DynamicalSystem,
             "windowAttemptCount" => window_attempt_count,
             "refinementAttempts" => refinement_attempts,
             "maxRefinementDepthReached" => max_depth_reached,
-            "timeBudgetExceeded" => time_budget_exhausted,
+            # Each flag is set only when its budget refused a search that would otherwise
+            # have run; reaching a limit with nothing left to do sets neither.
+            "timeBudgetExceeded" => budget.time_refused,
+            "workBudgetExceeded" => budget.work_refused,
+            "recoveryAttempts" => budget.attempts,
+            "maxRecoveryAttempts" => effective_config.max_recovery_attempts,
+            # A wall-clock stop depends on machine speed; every other outcome is fixed by the
+            # configuration and the system.
+            "reproducible" => !budget.time_refused,
             "configuredReconPrecision" => config.recon_precision,
             "effectiveReconPrecision" => effective_config.recon_precision,
             "reconCalibration" => recon_calibration_diag,

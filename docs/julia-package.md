@@ -1098,6 +1098,8 @@ Set `auto_refine_sparse_branches=false` (or `auto_refine_max_passes=0`) to disab
 
 Set `recon_calibration=:auto` to replace the fixed `recon_precision` with a run-specific threshold. Both estimated scales are closure *ratios* in the units `recon_precision` is compared against (tail closure distance over the local state scale), not absolute distances. The noise scale comes from periodic anchors whose own orbit closes to numerical precision — Newton-confirmed, and admitted only within `recon_calibration_min_separation` of the solver/Newton tolerance floor, since a chaotic attractor's embedded periodic orbits make Newton verification alone uninformative about the sampled orbit. The recurrence scale comes from the smallest-ratio samples that stay aperiodic under an extra-transient recheck. The selected threshold, both scales, separation margin, anchor counts, `scaleUnits`, and any refusal status are stored in `atlas.diagnostics["reconCalibration"]`. If the scales do not separate, window recovery is skipped and robust-chaos certificates treat the atlas layer as inconclusive.
 
+Threaded and serial atlas runs return the same records. To bound the work of a run reproducibly, set `max_recovery_attempts`, which caps window-recovery searches in the atlas's serial order; `time_budget_s` caps wall-clock time instead, so a run it stops is not reproducible. Searches a budget refuses stay in the result as `:unattempted` windows and `:budget_exhausted` gaps, and `atlas.diagnostics` records `workBudgetExceeded`, `timeBudgetExceeded`, `recoveryAttempts`, and `reproducible`.
+
 Important atlas output fields:
 
 | Field              | Meaning                                                                         |
