@@ -47,6 +47,11 @@ Configuration for a 1D largest-Lyapunov-Exponent parameter sweep.
 - `neutral_tolerance`: Absolute exponent threshold used to classify near-neutral samples
 - `divergence_cutoff`: Optional state-amplitude cutoff; `Inf` disables bailout
 - `min_crossing_time`: Ignore section crossings before this time for continuous-time Poincare-return estimation
+- `method`: `:auto` (default), `:variational`, or `:two_trajectory`. For a `DiscreteMap`, `:auto`
+  takes the tangent map through the forward-mode Jacobian when the map accepts dual numbers and the
+  two-trajectory estimator otherwise; `:variational` requires the tangent map. For a `ContinuousODE`
+  the diagram uses the two-trajectory Poincaré-return estimator, and only `:auto` and
+  `:two_trajectory` are accepted; use `lyapunov_field` for the variational flow estimator.
 """
 @with_kw struct LyapunovConfig
     param_min::Float64
@@ -61,6 +66,8 @@ Configuration for a 1D largest-Lyapunov-Exponent parameter sweep.
     neutral_tolerance::Float64 = 1e-3
     divergence_cutoff::Float64 = Inf
     min_crossing_time::Float64 = 1e-6
+    method::Symbol = :auto
+    @assert method in (:auto, :variational, :two_trajectory) "LyapunovConfig.method must be :auto, :variational, or :two_trajectory"
     @assert isfinite(param_min) && isfinite(param_max) && param_max >= param_min "LyapunovConfig requires finite param_min/param_max with param_max >= param_min"
     @assert param_steps >= 1 "LyapunovConfig.param_steps must be >= 1"
     @assert param_index >= 1 "LyapunovConfig.param_index must be >= 1"
@@ -499,7 +506,10 @@ Configuration for 2D bifurcation map (two-parameter periodicity sweep).
  - `lyapunov_neutral_tolerance`: Absolute exponent threshold for neutral/quasiperiodic candidates
  - `lyapunov_method`: Lyapunov estimation method — `:auto` (default), `:variational`, or `:two_trajectory`.
    `:auto` resolves to `:variational` for `ContinuousODE` (tangent-space, normalized by flow time,
-   GPU-eligible when the system has a constant section normal) and `:two_trajectory` for `DiscreteMap`.
+   GPU-eligible when the system has a constant section normal). For `DiscreteMap` it resolves to
+   `:variational` (the tangent map through the forward-mode Jacobian, normalized per iteration) when
+   the map function accepts dual numbers, and to `:two_trajectory` otherwise; the method is resolved
+   once per analysis, so every cell uses the same one, and the result records it.
    `:two_trajectory` keeps the coupled two-trajectory Poincaré estimator as an explicit cheap screen.
  - `min_crossing_time`: Ignore section crossings before this time for continuous-time maps and Lyapunov-field runs
 """

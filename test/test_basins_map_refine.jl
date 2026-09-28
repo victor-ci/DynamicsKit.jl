@@ -559,7 +559,8 @@ end
         lyapunov = diagnostics["lyapunov"]
 
         @test lyapunov["enabled"] == true
-        @test lyapunov["method"] == "two_trajectory_discrete_map"
+        # The map is differentiable, so :auto takes the tangent map.
+        @test lyapunov["method"] == "variational_discrete_map"
         @test size(lyapunov["exponents"]) == size(result.periodicity)
         @test result.periodicity[1, 1] > 0
         @test result.periodicity[2, 1] == 0

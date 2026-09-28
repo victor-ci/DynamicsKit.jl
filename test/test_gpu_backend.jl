@@ -11,6 +11,8 @@
 using Metal
 using KernelAbstractions: @kernel, @index, @Const
 
+using Setfield
+
 @testset "GPU compute backend" begin
     BE = DynamicsKit
 
@@ -168,6 +170,19 @@ using KernelAbstractions: @kernel, @index, @Const
         @test lf_gpu.estimation_status_codes == lf_cpu.estimation_status_codes
         @test lf_gpu.sample_counts == lf_cpu.sample_counts
         @test lf_gpu.compute_backend == :_ka_cpu_test
+        # Hénon is differentiable, so both paths ran the tangent map. The explicit two-trajectory
+        # run below checks CPU/GPU parity for that estimator as well.
+        @test lf_cpu.lyapunov_method == :variational
+        @test lf_gpu.lyapunov_method == :variational
+        @test r_cpu.lyapunov.lyapunov_method == :variational
+        @test r_gpu.lyapunov.lyapunov_method == :variational
+        cfg_two = Setfield.@set cfg.lyapunov_method = :two_trajectory
+        lt_cpu = lyapunov_field(sys, cfg_two)
+        lt_gpu = lyapunov_field(sys, cfg_two; backend=gpu_backend(:_ka_cpu_test))
+        @test lt_gpu.exponents ≈ lt_cpu.exponents nans=true
+        @test lt_gpu.estimation_status_codes == lt_cpu.estimation_status_codes
+        @test lt_cpu.lyapunov_method == :two_trajectory
+        @test lt_gpu.lyapunov_method == :two_trajectory
     end
 
     @testset "a divergent/chaotic fixture still gives GPU/CPU parity" begin

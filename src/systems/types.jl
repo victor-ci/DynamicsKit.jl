@@ -381,7 +381,9 @@ end
 """
     LyapunovDiagramResult
 
-Result of a 1D largest-Lyapunov-Exponent sweep over one bifurcation parameter.
+Result of a 1D largest-Lyapunov-Exponent sweep over one bifurcation parameter. `lyapunov_method`
+records the estimator that ran (`:variational` or `:two_trajectory`); results built without it,
+including older serialized payloads, record `:two_trajectory`.
 """
 struct LyapunovDiagramResult
     params::Vector{Float64}
@@ -393,7 +395,13 @@ struct LyapunovDiagramResult
     system_name::String
     param_name::Symbol
     timestamp::DateTime
+    lyapunov_method::Symbol
 end
+
+LyapunovDiagramResult(params, exponents, classifications, estimation_statuses, sample_counts,
+                      neutral_tolerance, system_name, param_name, timestamp) =
+    LyapunovDiagramResult(params, exponents, classifications, estimation_statuses, sample_counts,
+                          neutral_tolerance, system_name, param_name, timestamp, :two_trajectory)
 
 """
     BasinsResult

@@ -681,10 +681,31 @@ function MapCellGrid(na::Int, nb::Int; lyapunov::Bool=false)
     )
 end
 
+"""
+Return `config` with its Lyapunov method resolved for `sys` at the sweep's first cell and `x0`, so
+the sweep runs one method on every cell and backend. A config without the Lyapunov layer is
+returned unchanged.
+"""
+function _map_config_with_resolved_lyapunov(sys::DiscreteMap, config::BifurcationMapConfig, x0::SVector)
+    _map_lyapunov_enabled(config) || return config
+    return Setfield.@set config.lyapunov_method = _map_field_lyapunov_method(sys, config, x0)
+end
+
 function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
                           initial_point::Union{Nothing, AbstractVector}=nothing,
                           cells::Union{Nothing, MapCellGrid}=nothing,
                           backend::ComputeBackend=CPUBackend())
+    x0 = isnothing(initial_point) ? zeros(SVector{sys.dim, Float64}) : SVector{sys.dim}(initial_point)
+    return _bifurcation_map_resolved(sys, _map_config_with_resolved_lyapunov(sys, config, x0);
+        initial_point=initial_point, cells=cells, backend=backend)
+end
+
+function _bifurcation_map_resolved(sys::DiscreteMap, config::BifurcationMapConfig;
+                                   initial_point::Union{Nothing, AbstractVector}=nothing,
+                                   cells::Union{Nothing, MapCellGrid}=nothing,
+                                   backend::ComputeBackend=CPUBackend())
+    (_map_lyapunov_enabled(config) && config.lyapunov_method === :auto) && throw(ArgumentError(
+        "_bifurcation_map_resolved needs a resolved Lyapunov method; call _bifurcation_map, which resolves :auto."))
     a_vals = collect(range(config.a_min, config.a_max, length=config.a_steps + 1))
     b_vals = collect(range(config.b_min, config.b_max, length=config.b_steps + 1))
     na, nb = length(a_vals), length(b_vals)
@@ -773,7 +794,8 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
                 sys.f, template_sv, a_index, b_index, x0, points_to_drop, config.max_period,
                 config.precision, config.divergence_cutoff,
                 _map_lyapunov_transient(config), _map_lyapunov_iterations(config),
-                config.lyapunov_perturbation, config.lyapunov_neutral_tolerance
+                config.lyapunov_perturbation, config.lyapunov_neutral_tolerance,
+                Val(config.lyapunov_method)
             )
         end
     elseif seed_mode == :fixed
@@ -884,7 +906,8 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
     timestamp = now()
     lyapunov = _map_lyapunov_result(
         lyapunov_storage, a_vals, b_vals, config, sys.name, param_names, timestamp;
-        compute_backend=compute_backend_used, normalization=:per_iteration)
+        compute_backend=compute_backend_used, normalization=:per_iteration,
+        lyapunov_method=config.lyapunov_method)
     result = BifurcationMapResult(a_vals, b_vals, periodicity, config.max_period,
                                   sys.name, param_names, timestamp; lyapunov=lyapunov, compute_backend=compute_backend_used)
     diagnostics = _map_neighbor_seed_diagnostics(
@@ -914,7 +937,7 @@ function _bifurcation_map(sys::DiscreteMap, config::BifurcationMapConfig;
     _map_lyapunov_enabled(config) && (diagnostics["lyapunov"] = _map_lyapunov_diagnostics(
         lyapunov_storage,
         config,
-        :two_trajectory_discrete_map
+        Symbol(config.lyapunov_method, :_discrete_map)
     ))
     return result, diagnostics
 end

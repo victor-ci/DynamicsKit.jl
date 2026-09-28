@@ -352,7 +352,10 @@ sequence over one clock period:
   Clamping handles both saturation rails (`duration ≤ 0` → mode skipped;
   `duration ≥ remaining` → mode consumes the rest) matching the behaviour
   of the hand-coded `boost_converter` and the `tn ≥ T` guard in
-  `buck_converter`.
+  `buck_converter`. Write `duration_fn` in closed form where possible: the
+  tangent-map Lyapunov estimator differentiates the generated map with
+  forward-mode AD, and a duration found by an iterative solver inside
+  `duration_fn` would hide its dependence on the state from that derivative.
 - **The final mode** consumes the remaining period exactly (its
   `duration_fn` must be `nothing`).
 

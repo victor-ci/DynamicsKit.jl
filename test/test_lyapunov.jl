@@ -303,7 +303,13 @@
             b_min=0.0, b_max=0.0, b_steps=0,
             a_index=1, b_index=2, base_params=[0.5, 0.0],
             lyapunov_method=:variational)
-        @test_throws ArgumentError lyapunov_field(discrete, cfg)
+        # The tangent map is available for maps: x -> a x has exponent log(a) exactly.
+        field = lyapunov_field(discrete, cfg; initial_point=[1.0])
+        @test field.lyapunov_method == :variational
+        @test field.exponents[1, 1] ≈ log(0.5) atol=1e-12
+        @test_throws AssertionError BifurcationMapConfig(
+            a_min=0.5, a_max=0.5, a_steps=0, b_min=0.0, b_max=0.0, b_steps=0,
+            a_index=1, b_index=2, base_params=[0.5, 0.0], lyapunov_method=:tangent)
     end
 
     @testset "Vilnius Lyapunov field variational on CPU seam" begin
@@ -339,5 +345,123 @@
         r2 = lyapunov_field(sys, cfg; cells=cells)
         @test r1.exponents == r2.exponents
         @test r1.classification_status_codes == r2.classification_status_codes
+    end
+end
+
+using Setfield
+
+@testset "Tangent-map exponents for discrete maps" begin
+    SV = StaticArrays.SVector
+    est = (sys, p, x0, m; n=100_000) -> DynamicsKit._estimate_discrete_map_largest_lyapunov(
+        sys, p, SV{sys.dim, Float64}(x0), 1000, n, 1e-8, Inf; method=m)
+
+    @testset "analytic exponents" begin
+        # A skew tent with non-dyadic slopes keeps its float orbit off the origin; its invariant
+        # density is uniform, so the exponent is -c log c - (1 - c) log(1 - c).
+        c = 0.4
+        tent = DiscreteMap((x, p) -> SV(x[1] < c ? x[1] / c : (1 - x[1]) / (1 - c), 0.3x[2]), 2, [:c], "skew tent")
+        @test est(tent, [c], [0.1234567, 0.1], :variational).exponent ≈ -c * log(c) - (1 - c) * log(1 - c) atol=1e-2
+        logistic = DiscreteMap((x, p) -> SV(p[1] * x[1] * (1 - x[1]), 0.2x[2]), 2, [:r], "logistic")
+        @test est(logistic, [4.0], [0.1234567, 0.1], :variational).exponent ≈ log(2) atol=5e-3
+        @test est(henon_map(), [1.4, 0.3], [0.1, 0.1], :variational).exponent ≈ 0.4192 atol=5e-3
+        # A superstable cycle annihilates the tangent vector: the logistic map at r = 2 maps
+        # x* = 1/2 to itself with zero derivative.
+        @test est(logistic, [2.0], [0.5, 0.0], :variational; n=10).estimation_status == :collapsed
+    end
+
+    @testset "wrap points of mod" begin
+        # ForwardDiff's rule for mod is not finite where its argument is a whole multiple of the
+        # modulus. A circle map with a stable fixed point exactly at the wrap point must still
+        # resolve, through the per-step finite-difference fallback.
+        circle = DiscreteMap((x, p) -> SV(mod(x[1] - p[1] / (2pi) * sin(2pi * x[1]), 1.0), 0.2x[2]),
+            2, [:K], "circle map")
+        r = est(circle, [0.5], [0.0, 0.1], :variational; n=2000)
+        @test r.estimation_status == :ok
+        @test r.exponent ≈ log(0.5) atol=1e-6
+        cat = DiscreteMap((x, p) -> SV(mod(x[1] + x[2], 1.0), mod(x[1] + 2 * x[2], 1.0)), 2, [:p], "cat")
+        r = est(cat, [0.0], [0.5, 0.25], :variational; n=2000)
+        @test r.estimation_status == :ok
+        @test r.exponent ≈ log((3 + sqrt(5)) / 2) atol=1e-2
+    end
+
+    @testset "method resolution" begin
+        probe = SV(0.1234567, 0.1)
+        @test DynamicsKit._resolve_map_lyapunov_method(henon_map(), :auto, [1.4, 0.3], SV(0.1, 0.1)) == :variational
+        @test DynamicsKit._resolve_map_lyapunov_method(henon_map(), :two_trajectory, [1.4, 0.3], SV(0.1, 0.1)) == :two_trajectory
+        # A map written against a concrete Float64 buffer cannot carry dual numbers. The buffer is
+        # allocated per call, so the threaded field below shares no state.
+        buffered = DiscreteMap((x, p) -> (b = Vector{Float64}(undef, 2); b[1] = p[1] * x[1] * (1 - x[1]);
+                                          b[2] = p[2] * x[2]; SV(b[1], b[2])), 2, [:r, :s], "buffered")
+        @test DynamicsKit._resolve_map_lyapunov_method(buffered, :auto, [3.9, 0.2], probe) == :two_trajectory
+        @test_throws ArgumentError DynamicsKit._resolve_map_lyapunov_method(buffered, :variational, [3.9, 0.2], probe)
+        # A map that finds an internal quantity by bisection accepts dual numbers but drops that
+        # quantity's derivative: here the true map is x -> 2.5x mod 1, and the tangent map would see
+        # slope 2. The :auto cross-check must refuse it.
+        function hidden_half(x)
+            lo, hi = 0.0, 1.0
+            for _ in 1:60
+                mid = (lo + hi) / 2
+                mid - 0.5x > 0 ? (hi = mid) : (lo = mid)
+            end
+            return (lo + hi) / 2
+        end
+        solver_map = DiscreteMap((x, p) -> SV(mod(2x[1] + hidden_half(x[1]), 1.0), 0.2x[2]), 2, [:p], "inner solver")
+        @test DynamicsKit._resolve_map_lyapunov_method(solver_map, :auto, [0.0], probe) == :two_trajectory
+        @test_throws ArgumentError DynamicsKit._estimate_discrete_map_largest_lyapunov(
+            henon_map(), [1.4, 0.3], SV(0.1, 0.1), 10, 10, 1e-8, Inf; method=:auto)
+        @test_throws AssertionError LyapunovConfig(param_min=1.0, param_max=1.4, method=:tangent)
+        field = lyapunov_field(buffered, BifurcationMapConfig(a_min=3.7, a_max=3.9, a_steps=1,
+            b_min=0.2, b_max=0.2, b_steps=0, a_index=1, b_index=2, base_params=[3.8, 0.2],
+            lyapunov_iterations=500, lyapunov_transient=100); initial_point=[0.2, 0.1])
+        @test field.lyapunov_method == :two_trajectory
+    end
+
+    @testset "diagram, field and certificate record the method that ran" begin
+        sys = henon_map()
+        diagram_cfg = LyapunovConfig(param_min=1.2, param_max=1.4, param_steps=4, param_index=1,
+            fixed_params=[1.3, 0.3], transient=500, iterations=2000)
+        auto = lyapunov_diagram(sys, diagram_cfg; initial_point=[0.1, 0.1])
+        tangent = lyapunov_diagram(sys, Setfield.@set(diagram_cfg.method = :variational); initial_point=[0.1, 0.1])
+        screen = lyapunov_diagram(sys, Setfield.@set(diagram_cfg.method = :two_trajectory); initial_point=[0.1, 0.1])
+        @test auto.lyapunov_method == :variational
+        @test screen.lyapunov_method == :two_trajectory
+        @test auto.exponents == tangent.exponents
+        @test auto.exponents != screen.exponents
+        @test maximum(abs.(auto.exponents .- screen.exponents)) < 1e-2
+
+        data = DynamicsKit._serialize_robust_chaos_lyapunov(auto)
+        @test data["lyapunovMethod"] == "variational"
+        @test DynamicsKit._deserialize_robust_chaos_lyapunov(data).lyapunov_method == :variational
+        delete!(data, "lyapunovMethod")
+        @test DynamicsKit._deserialize_robust_chaos_lyapunov(data).lyapunov_method == :two_trajectory
+
+        field = lyapunov_field(sys, BifurcationMapConfig(a_min=1.3, a_max=1.4, a_steps=2,
+            b_min=0.28, b_max=0.3, b_steps=1, a_index=1, b_index=2, base_params=[1.35, 0.3],
+            lyapunov_iterations=1000, lyapunov_transient=200); initial_point=[0.1, 0.1])
+        @test field.lyapunov_method == :variational
+        @test field.normalization == :per_iteration
+
+        cat = DiscreteMap((x, p) -> SV(mod(x[1] + x[2], 1.0), mod(x[1] + 2 * x[2], 1.0)),
+            2, [:p], "cat_map_method_test")
+        ip = [sqrt(2) - 1, sqrt(3) - 1]
+        cfg = RobustChaosConfig(
+            lyapunov=LyapunovConfig(param_min=0.5, param_max=1.0, param_steps=3, param_index=1,
+                fixed_params=[0.7], transient=40, iterations=100),
+            atlas=AtlasConfig(brute_force=BruteForceConfig(param_min=0.5, param_max=1.0,
+                    param_index=1, fixed_params=[0.7], param_steps=4, iterations=60, transient=30),
+                continuation=ContinuationConfig(p_min=0.5, p_max=1.0, param_index=1, ds=0.05,
+                    dsmax=0.1, max_steps=30),
+                periods=[1, 2], max_period=2, recon_steps=3, cache_enabled=false, threaded=false),
+            basins=BasinsConfig(bif_param=0.7, param_index=1, fixed_params=[0.7],
+                x_min=0.1, x_max=0.9, x_steps=2, y_min=0.1, y_max=0.9, y_steps=2,
+                iterations=20, max_period=2))
+        lyapunov_item(c) = only(filter(i -> i["layer"] == "lyapunov", c.certificate_items))
+        cert = robust_chaos_certificate(cat, cfg; initial_point=ip)
+        @test lyapunov_item(cert)["method"] == "variational"
+        # A supplied diagram's method is adopted for the basin seeds and recorded in the
+        # Lyapunov item.
+        supplied = lyapunov_diagram(cat, Setfield.@set(cfg.lyapunov.method = :two_trajectory).lyapunov; initial_point=ip)
+        reused = robust_chaos_certificate(cat, cfg; initial_point=ip, lyapunov_result=supplied)
+        @test lyapunov_item(reused)["method"] == "two_trajectory"
     end
 end

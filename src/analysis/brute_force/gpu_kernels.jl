@@ -51,7 +51,8 @@ end
                                                        x0::SVector{D, Float64}, transient::Int, max_period::Int,
                                                        precision::Float64, divergence_cutoff::Float64,
                                                        lyap_transient::Int, lyap_iterations::Int,
-                                                       lyap_perturbation::Float64, lyap_neutral_tolerance::Float64) where {F, N, D}
+                                                       lyap_perturbation::Float64, lyap_neutral_tolerance::Float64,
+                                                       lyap_method::Val{M}) where {F, N, D, M}
     i, j = @index(Global, NTuple)
     @inbounds if !known[i, j]
         p = setindex(setindex(template, a_vals[i], a_index), b_vals[j], b_index)
@@ -63,7 +64,7 @@ end
         observed_points[i, j] = core.observed_points
         closure_confidence[i, j] = core.closure_confidence
 
-        estimate = _estimate_discrete_map_largest_lyapunov_core(f, p, core.final_point, lyap_transient, lyap_iterations, lyap_perturbation, divergence_cutoff)
+        estimate = _map_lyapunov_core(lyap_method, f, p, core.final_point, lyap_transient, lyap_iterations, lyap_perturbation, divergence_cutoff)
         exponent = Float64(estimate.exponent)
         lyap_exponents[i, j] = exponent
         lyap_status_codes[i, j] = _map_lyapunov_classification(core.period, core.status, exponent, estimate.estimation_status, lyap_neutral_tolerance)
@@ -77,11 +78,11 @@ end
                                              f::F, template::SVector{N, Float64}, a_index::Int, b_index::Int,
                                              x0::SVector{D, Float64}, transient::Int, iterations::Int,
                                              perturbation::Float64, divergence_cutoff::Float64,
-                                             neutral_tolerance::Float64) where {F, N, D}
+                                             neutral_tolerance::Float64, method::Val{M}) where {F, N, D, M}
     i, j = @index(Global, NTuple)
     @inbounds if !known[i, j]
         p = setindex(setindex(template, a_vals[i], a_index), b_vals[j], b_index)
-        estimate = _estimate_discrete_map_largest_lyapunov_core(f, p, x0, transient, iterations, perturbation, divergence_cutoff)
+        estimate = _map_lyapunov_core(method, f, p, x0, transient, iterations, perturbation, divergence_cutoff)
         exponent = Float64(estimate.exponent)
         exponents[i, j] = exponent
         status_codes[i, j] = _lyapunov_point_classification(exponent, estimate.estimation_status, neutral_tolerance)

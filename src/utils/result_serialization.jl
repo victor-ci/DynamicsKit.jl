@@ -1248,6 +1248,7 @@ function _serialize_robust_chaos_lyapunov(result::LyapunovDiagramResult)
         "systemName" => result.system_name,
         "paramName" => String(result.param_name),
         "timestamp" => _serialize_timestamp(result.timestamp),
+        "lyapunovMethod" => String(result.lyapunov_method),
     )
 end
 
@@ -1276,6 +1277,9 @@ function _deserialize_robust_chaos_lyapunov(data::AbstractDict)
         _as_string(get(data, "systemName", ""), ""),
         Symbol(_as_string(get(data, "paramName", "p"), "p")),
         _deserialize_timestamp(get(data, "timestamp", _serialize_timestamp(now()))),
+        # Only the two known estimators are accepted, so an arbitrary string is never interned
+        # as a Symbol; older payloads carry no method and ran the two-trajectory estimator.
+        get(data, "lyapunovMethod", "two_trajectory") == "variational" ? :variational : :two_trajectory,
     )
 end
 

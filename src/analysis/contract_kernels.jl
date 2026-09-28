@@ -29,7 +29,11 @@ const detect_discrete_map_period = _detect_discrete_map_period
 const detect_continuous_poincare_period = _detect_continuous_poincare_period
 
 # --- largest-Lyapunov estimation (returns (exponent, estimation_status, sample_count)) ---
-"""    estimate_discrete_map_largest_lyapunov(sys::DiscreteMap, params, initial_point::SVector, transient, steps, perturbation, divergence_cutoff)"""
+"""    estimate_discrete_map_largest_lyapunov(sys::DiscreteMap, params, initial_point::SVector, transient, steps, perturbation, divergence_cutoff; method=:two_trajectory)
+
+Raw per-point estimator. `method` is `:two_trajectory` or `:variational` (the tangent map through the
+forward-mode Jacobian); this kernel does not resolve `:auto`, so it runs exactly the estimator asked for.
+The sweeps and certificates resolve `:auto` once per analysis and pass the result here."""
 const estimate_discrete_map_largest_lyapunov = _estimate_discrete_map_largest_lyapunov
 """    estimate_continuous_poincare_largest_lyapunov(sys::ContinuousODE, params, initial_state, transient, steps, perturbation, divergence_cutoff; solver, reltol, abstol, …)"""
 const estimate_continuous_poincare_largest_lyapunov = _estimate_continuous_poincare_largest_lyapunov
